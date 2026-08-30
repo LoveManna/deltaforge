@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Model weights — never committed, downloaded per instance
+models/
+weights/
+*.safetensors
+*.gguf
+
+# Secrets
+.env
+.vast_api_key
+
+# Local scratch
+.scratch/
+*.log
