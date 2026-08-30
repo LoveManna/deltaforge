@@ -146,16 +146,33 @@ instance burns roughly $13/day. Guardrails are therefore structural.
 
 1. **Month-to-date gate.** `remote/provision.sh` reads `ledger/spend.jsonl` and refuses to provision if
    month-to-date spend is ≥ $45, leaving headroom under the ceiling.
-2. **Per-session cap.** Target ~$2 per session.
-3. **Client-side watchdog.** A watchdog process runs *on the local machine*, not the rented box, and
-   destroys the instance after 90 minutes regardless of what the remote is doing. A remote that hangs
-   cannot defeat its own kill switch. A remote-side `shutdown` timer is set as a second line of defence.
-4. **Trap-based teardown.** The whole remote run executes inside a shell trap on `EXIT`/`INT`/`TERM`, so
+2. **Session GPU-time gate (soft, 60 minutes).** Before starting any new hypothesis run — whether that
+   means provisioning a fresh instance or launching another run on a live one — the session sums the
+   billed instance minutes it has already consumed, read from `ledger/spend.jsonl`. At 60 cumulative
+   minutes the session **may not start another hypothesis**. It destroys any live instance, then
+   finishes recording, writing up, and merging the work it already completed — none of which needs a
+   GPU — and ends.
+
+   The check happens *before* a run starts, never during one. A benchmark already executing at minute
+   59 finishes normally rather than being killed halfway, which would waste the money already spent on
+   it.
+
+   This is the gate expected to fire in ordinary operation. It exists to kill the "just one more
+   attempt" pattern that otherwise runs a session into the hard watchdog with work in flight.
+3. **Per-instance hard watchdog (90 minutes).** A watchdog process runs *on the local machine*, not the
+   rented box, and destroys the instance after 90 minutes regardless of what the remote is doing. A
+   remote that hangs cannot defeat its own kill switch. A remote-side `shutdown` timer is set as a
+   second line of defence. This is a backstop, not a routine control: if it ever fires, something went
+   wrong and the session must report that rather than treat it as a normal ending.
+4. **Per-session dollar cap.** ~$2 per session, independent of the clock, as protection against an
+   unexpectedly expensive fallback card. At the $0.60/hr ceiling the 60-minute gate normally binds
+   first, at roughly $0.60 per session.
+5. **Trap-based teardown.** The whole remote run executes inside a shell trap on `EXIT`/`INT`/`TERM`, so
    a crash, a failed benchmark, or an interrupted session still destroys the instance.
-5. **Ledger written before use.** The spend row is appended at provision time with the hourly rate and
+6. **Ledger written before use.** The spend row is appended at provision time with the hourly rate and
    an estimated ceiling, then reconciled with actuals at destroy time. A session that dies mid-run
    still leaves a record of what it started.
-6. **Instance filters.** On-demand only (never interruptible — a benchmark that dies mid-sweep costs
+7. **Instance filters.** On-demand only (never interruptible — a benchmark that dies mid-sweep costs
    more than it saves), host reliability > 0.98, single GPU, hourly rate ceiling.
 
 ## 9. Remote GPU: provider and instance selection
@@ -253,16 +270,19 @@ Codified in `AGENT.md`. Each fresh working session:
    sentence before writing any code**, including what mechanism is expected to produce the win.
 3. Branch `hyp/NNN-slug`.
 4. Write the Triton kernel and its correctness test locally. No GPU needed for this step.
-5. Run `remote/run_remote.sh`, which provisions, syncs, runs correctness gates, benchmarks, pulls
+5. **Check the session GPU-time gate.** If this session has already consumed 60 cumulative billed
+   minutes, do not start another hypothesis: destroy any live instance, finish recording and merging
+   whatever is already complete, and end the session cleanly.
+6. Run `remote/run_remote.sh`, which provisions, syncs, runs correctness gates, benchmarks, pulls
    results back, and destroys the instance.
-6. Record the outcome in `results/hypotheses/` and `LEADERBOARD.md` — **win or lose**. A loss updates
+7. Record the outcome in `results/hypotheses/` and `LEADERBOARD.md` — **win or lose**. A loss updates
    the graveyard with the mechanism that failed and why.
-7. Promote to champion in the registry only if the candidate's median ratio exceeds the incumbent's
+8. Promote to champion in the registry only if the candidate's median ratio exceeds the incumbent's
    by more than the interquartile spread of the scoring rounds. A margin inside the noise band is
    recorded as *inconclusive*, not as a win — it neither promotes nor enters the graveyard, and the
    hypothesis stays open for a cleaner measurement.
-8. Open a PR whose body is the writeup; self-merge once gates are green and the ledger is updated.
-9. Confirm the spend ledger reflects the run.
+9. Open a PR whose body is the writeup; self-merge once gates are green and the ledger is updated.
+10. Confirm the spend ledger reflects the run.
 
 **Session 1 is a bootstrap and ships no hypothesis.** It builds the harness, the reference
 implementation, the provisioning and cost machinery, and establishes the recorded baseline. Attempting
@@ -307,7 +327,7 @@ Ordered roughly by expected yield per GPU hour:
 | Nsight Compute counters blocked | Profiling leans on CUDA events and `torch.profiler`; `ncu` is a bonus, not a dependency |
 | Reference implementation is subtly wrong | Validated against HF transformers as an oracle before any kernel work begins |
 | Qwen3.5-4B architecture unknowns | Resolved in the bootstrap session before any kernel is written |
-| $50/mo is only ~90 GPU-hours | Sessions are short and scoped; kernels are written locally, GPU time is for validation and measurement only |
+| $50/mo is only ~90 GPU-hours | The 60-minute soft gate caps a session near $0.60, giving roughly 75 sessions per month; kernels are written locally, so GPU time buys validation and measurement only |
 
 ## 16. Open items
 
@@ -331,4 +351,5 @@ Ordered roughly by expected yield per GPU hour:
 | Git flow | PR per hypothesis, always merged | Visible failures are what make the log credible |
 | Merge authority | Session self-merges on green gates | Keeps the loop unblocked |
 | Spend autonomy | Autonomous within code-enforced caps | Prose guardrails do not stop a forgotten instance |
+| Session GPU time | 60-min soft gate, 90-min hard watchdog | The soft gate fires routinely and preserves work in flight; the watchdog is a backstop for hangs and its firing is itself a reportable fault |
 | Visibility | Private now, written for public | Flipping it public should be one click, not a rewrite |
