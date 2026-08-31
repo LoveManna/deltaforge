@@ -71,6 +71,22 @@ while [ $# -gt 0 ]; do
 done
 export DF_DRY_RUN
 
+# Make the paths absolute before anything uses them.
+#
+# This is not tidiness. POSIX `.` searches $PATH when its argument contains no slash, so
+# sourcing a relative state file like `--state-file mystate` fails with "not found" — and
+# the failure lands *after* the instance has been created. Teardown would then see an
+# empty DF_INSTANCE_ID, conclude nothing was provisioned, and leave the GPU running,
+# which is the exact leak this script exists to prevent.
+df_absolute() {
+    case "$1" in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s/%s\n' "$PWD" "$1" ;;
+    esac
+}
+DF_STATE_FILE=$(df_absolute "$DF_STATE_FILE")
+DF_LEDGER=$(df_absolute "$DF_LEDGER")
+
 DF_INSTANCE_ID=""
 DF_INSTANCE_GPU=""
 DF_INSTANCE_RATE="0"

@@ -523,6 +523,44 @@ def test_teardown_still_runs_when_the_run_fails_part_way_through(workdir, stage)
     assert not (workdir / "state").exists()
 
 
+def test_teardown_works_when_paths_are_given_relative(tmp_path):
+    """Regression: a relative `--state-file` used to leave the instance running.
+
+    POSIX `.` searches $PATH when its argument contains no slash, so sourcing a relative
+    state file failed with "not found" — *after* the instance had been created. Teardown
+    then saw an empty instance id, decided nothing had been provisioned, and destroyed
+    nothing. Every other test here passes absolute paths, which is exactly why this
+    slipped through.
+    """
+    result = subprocess.run(
+        [
+            "sh",
+            str(REMOTE / "run_remote.sh"),
+            "--dry-run",
+            "--session-id",
+            "relative-paths",
+            "--ledger",
+            "scratch.jsonl",
+            "--state-file",
+            "scratch-state",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(tmp_path),  # relative paths resolve against here, not the repo
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "not found" not in result.stderr
+    assert "[teardown] destroying instance" in result.stderr
+    assert "no instance was created" not in result.stderr
+
+    rows = [json.loads(line) for line in (tmp_path / "scratch.jsonl").read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["provision", "destroy"], (
+        "the instance must be destroyed and reconciled even with relative paths"
+    )
+
+
 def test_a_failure_before_provisioning_leaves_nothing_to_tear_down(workdir):
     ledger = workdir / "ledger" / "spend.jsonl"
 
