@@ -1,0 +1,110 @@
+{
+  "_comment": [
+    "Offer fixture for `remote/provision.sh --dry-run`. Shaped like a real POST /bundles/",
+    "response; the values reflect the live market observed on 2026-08-30 (single RTX 5090s",
+    "at $0.32-$0.35/hr, 32 GB, CUDA 13.0). No credentials and no account data.",
+    "Most entries exist to be REJECTED, so the dry run exercises the filter rather than",
+    "just the happy path: 9001 is bid-only (interruptible), 9002 has two GPUs, 9003 has",
+    "reliability below 0.98, 9004 is over the rate ceiling, 9005 is not rentable, and 9006",
+    "is a fallback-generation card. Only 9007 and 9008 should survive, and 9008 is cheaper,",
+    "so provision.sh must select 9008."
+  ],
+  "offers": [
+    {
+      "id": 9001,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": true,
+      "reliability2": 0.995,
+      "dph_total": 0.2100,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Finland"
+    },
+    {
+      "id": 9002,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 2,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9930,
+      "dph_total": 0.2900,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Poland"
+    },
+    {
+      "id": 9003,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9412,
+      "dph_total": 0.3000,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Romania"
+    },
+    {
+      "id": 9004,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9971,
+      "dph_total": 0.6400,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "United States"
+    },
+    {
+      "id": 9005,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": false,
+      "is_bid_only": false,
+      "reliability2": 0.9988,
+      "dph_total": 0.3150,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Germany"
+    },
+    {
+      "id": 9006,
+      "gpu_name": "RTX 4090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9954,
+      "dph_total": 0.2750,
+      "gpu_ram": 24564,
+      "cuda_max_good": 12.8,
+      "geolocation": "Sweden"
+    },
+    {
+      "id": 9007,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9903,
+      "dph_total": 0.3480,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Norway"
+    },
+    {
+      "id": 9008,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9982,
+      "dph_total": 0.3240,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Iceland"
+    }
+  ]
+}

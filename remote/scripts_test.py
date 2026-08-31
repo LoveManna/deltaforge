@@ -1,0 +1,829 @@
+"""Dry-run tests for the cost machinery.
+
+The scripts in `remote/` are the only thing preventing an autonomous agent from leaving a
+GPU running. That makes them safety-critical *and* awkward to test, because exercising
+them for real costs money. Hence the dry-run mode: every branch of the logic runs, the
+create and destroy endpoints are never contacted, and nothing is spent.
+
+Two properties get the most attention here:
+
+* **The gates fail closed.** Both the month-to-date gate and the session GPU-time gate
+  must refuse, and refuse *before* anything is created.
+* **Teardown is unconditional.** The trap must destroy the instance and reconcile the
+  ledger even when the run fails part way through, which is exactly when a forgotten
+  instance is most likely.
+
+The shell gates are also cross-checked against `deltaforge.ledger`: two implementations
+of the same arithmetic that must agree on shared fixtures, so a change to one that
+diverges from the other fails here.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+from datetime import datetime, timezone
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REMOTE = REPO_ROOT / "remote"
+EPOCH = int(datetime(2026, 8, 30, 12, 0, tzinfo=timezone.utc).timestamp())
+
+pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="the offer-selection path requires jq")
+
+
+def run(script: str, *args: str, expect: int | None = 0, env=None) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        ["sh", str(REMOTE / script), *args],
+        capture_output=True,
+        text=True,
+        timeout=180,
+        cwd=str(REPO_ROOT),
+        env=env,
+    )
+    if expect is not None and result.returncode != expect:
+        raise AssertionError(
+            f"{script} exited {result.returncode}, expected {expect}\n"
+            f"--- stdout ---\n{result.stdout}\n--- stderr ---\n{result.stderr}"
+        )
+    return result
+
+
+def ledger_line(**kwargs) -> str:
+    base = {
+        "ts": "2026-08-30T12:00:00Z",
+        "ts_epoch": EPOCH,
+        "event": "provision",
+        "session_id": "s1",
+        "instance_id": "i1",
+        "gpu_model": "RTX 5090",
+        "hourly_rate_usd": 0.324,
+        "estimated_ceiling_usd": 0.486,
+        "estimated_minutes": 90,
+        "actual_minutes": None,
+        "actual_cost_usd": None,
+        "hypothesis": "",
+        "note": "",
+    }
+    base.update(kwargs)
+    return json.dumps(base, separators=(",", ":"))
+
+
+def write_ledger(path: Path, lines: list[str]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(line + "\n" for line in lines))
+    return path
+
+
+@pytest.fixture
+def workdir(tmp_path):
+    (tmp_path / "ledger").mkdir()
+    return tmp_path
+
+
+# =====================================================================================
+# The month-to-date budget gate
+# =====================================================================================
+
+
+def test_provision_refuses_when_month_to_date_spend_is_at_the_limit(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(instance_id="a"),
+            ledger_line(
+                event="destroy",
+                instance_id="a",
+                ts=f"{datetime.now(timezone.utc):%Y-%m}-01T00:00:00Z",
+                actual_minutes=600,
+                actual_cost_usd=45.0,
+            ),
+        ],
+    )
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "gate-test",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=1,
+    )
+
+    assert "REFUSED by month-to-date budget gate" in result.stderr
+    assert "No instance was created" in result.stderr
+    # The refusal happened before any selection: nothing was chosen and no row written.
+    assert "selected offer" not in result.stderr
+    assert not (workdir / "state").exists()
+    assert len(ledger.read_text().strip().splitlines()) == 2, "no new ledger row"
+
+
+def test_provision_proceeds_when_month_to_date_spend_is_below_the_limit(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(instance_id="a"),
+            ledger_line(
+                event="destroy",
+                instance_id="a",
+                ts=f"{datetime.now(timezone.utc):%Y-%m}-01T00:00:00Z",
+                actual_minutes=60,
+                actual_cost_usd=10.0,
+            ),
+        ],
+    )
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "gate-test",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "selected offer" in result.stderr
+    assert (workdir / "state").exists()
+
+
+def test_spend_from_a_previous_month_does_not_block_provisioning(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(instance_id="old", ts="2026-01-05T12:00:00Z"),
+            ledger_line(
+                event="destroy",
+                instance_id="old",
+                ts="2026-01-05T13:00:00Z",
+                actual_minutes=600,
+                actual_cost_usd=49.0,
+            ),
+        ],
+    )
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "gate-test",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "selected offer" in result.stderr
+
+
+def test_an_unreconciled_instance_counts_toward_the_gate(workdir):
+    """The gate must fail closed: a running instance counts at its estimated ceiling."""
+    month = f"{datetime.now(timezone.utc):%Y-%m}"
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(instance_id=f"i{i}", ts=f"{month}-02T00:00:00Z", estimated_ceiling_usd=9.0)
+            for i in range(5)
+        ],
+    )
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "gate-test",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=1,
+    )
+
+    assert "REFUSED by month-to-date budget gate" in result.stderr
+
+
+# =====================================================================================
+# The session GPU-time soft gate
+# =====================================================================================
+
+
+def test_run_remote_refuses_a_session_that_has_used_sixty_minutes(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="spent", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="spent",
+                instance_id="a",
+                actual_minutes=60.0,
+                actual_cost_usd=0.324,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "spent",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=3,
+    )
+
+    assert "REFUSED by the session GPU-time gate" in result.stderr
+    assert "Do not start another hypothesis" in result.stderr
+    # It refused before provisioning, so nothing was created and nothing recorded.
+    assert "provisioning..." not in result.stderr
+    assert len(ledger.read_text().strip().splitlines()) == 2
+
+
+def test_run_remote_proceeds_for_a_session_under_the_gate(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="fresh", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="fresh",
+                instance_id="a",
+                actual_minutes=30.0,
+                actual_cost_usd=0.162,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "fresh",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "has used 30.000000 billed GPU minutes" in result.stderr
+    assert "provisioning..." in result.stderr
+
+
+def test_the_session_gate_is_checked_before_the_run_not_during_it(workdir):
+    """A benchmark executing at minute 59 must finish: killing it halfway would waste the
+    money already spent and leave nothing recorded in exchange. So the gate appears once,
+    at the start, and never again."""
+    ledger = workdir / "ledger" / "spend.jsonl"
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "fresh",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    lines = result.stderr.splitlines()
+    gate_lines = [i for i, line in enumerate(lines) if "billed GPU minutes" in line]
+    bench_lines = [i for i, line in enumerate(lines) if "running the benchmark" in line]
+
+    assert len(gate_lines) == 1, "the gate is evaluated exactly once"
+    assert gate_lines[0] < bench_lines[0], "and before the run starts"
+
+
+# =====================================================================================
+# Offer selection
+# =====================================================================================
+
+
+def test_selection_applies_every_filter_and_takes_the_cheapest_survivor(workdir):
+    """The fixture is built so that most offers must be rejected: bid-only, multi-GPU,
+    low reliability, over-rate, and not-rentable. Only 9007 and 9008 survive, and 9008 is
+    cheaper."""
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "select",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "selected offer 9008" in result.stderr
+    assert "RTX 5090" in result.stderr
+    for rejected in ("9001", "9002", "9003", "9004", "9005"):
+        assert f"selected offer {rejected}" not in result.stderr
+
+
+def test_interruptible_offers_are_never_selected(workdir):
+    """A run that dies mid-sweep wastes more than the discount saves."""
+    offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())
+    bid_only = [o for o in offers["offers"] if o.get("is_bid_only")]
+    assert bid_only, "the fixture must contain an interruptible offer to reject"
+    assert min(o["dph_total"] for o in bid_only) < min(
+        o["dph_total"] for o in offers["offers"] if not o.get("is_bid_only")
+    ), "and it must be the cheapest, so selecting on price alone would pick it"
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "select",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert f"selected offer {bid_only[0]['id']}" not in result.stderr
+
+
+def test_falls_back_to_the_second_generation_card_when_none_match(workdir):
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "fallback",
+        "--gpu",
+        "RTX 6090",  # nothing in the fixture matches
+        "--fallback-gpu",
+        "RTX 4090",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "no RTX 6090 offer met the filters" in result.stderr
+    assert "selected offer 9006" in result.stderr
+    assert "RTX 4090" in result.stderr
+
+
+def test_exits_cleanly_when_nothing_meets_the_filters(workdir):
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "none",
+        "--gpu",
+        "RTX 6090",
+        "--fallback-gpu",
+        "",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        expect=4,
+    )
+
+    assert "no offer met the filters" in result.stderr
+
+
+def test_the_rate_ceiling_is_enforced(workdir):
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "cheap",
+        "--max-rate",
+        "0.10",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        expect=4,
+    )
+
+    assert "no offer met the filters" in result.stderr
+
+
+# =====================================================================================
+# The ledger is written before the instance is used
+# =====================================================================================
+
+
+def test_the_provision_row_is_written_before_the_instance_is_used(workdir):
+    ledger = workdir / "ledger" / "spend.jsonl"
+
+    run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "record",
+        "--hypothesis",
+        "001-fused-rmsnorm",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["event"] == "provision"
+    assert rows[0]["session_id"] == "record"
+    assert rows[0]["hypothesis"] == "001-fused-rmsnorm"
+    assert rows[0]["gpu_model"] == "RTX 5090"
+    assert rows[0]["hourly_rate_usd"] == 0.3240
+    # 90 minutes at $0.324/hr.
+    assert rows[0]["estimated_ceiling_usd"] == pytest.approx(0.486)
+    assert rows[0]["actual_minutes"] is None, "not reconciled until destroy"
+
+
+def test_the_ledger_row_is_parseable_by_the_python_reader(workdir):
+    """The two readers must agree on the format, or the shell gate and the Python gate
+    drift apart silently."""
+    from deltaforge.ledger import read_rows
+
+    ledger = workdir / "ledger" / "spend.jsonl"
+    run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "compat",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    rows = read_rows(ledger)
+
+    assert len(rows) == 1
+    assert rows[0].event == "provision"
+    assert rows[0].gpu_model == "RTX 5090"
+
+
+# =====================================================================================
+# Teardown
+# =====================================================================================
+
+
+def test_teardown_runs_on_the_happy_path(workdir):
+    ledger = workdir / "ledger" / "spend.jsonl"
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "happy",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "[teardown] destroying instance" in result.stderr
+    assert "[teardown] complete" in result.stderr
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["provision", "destroy"]
+    assert not (workdir / "state").exists(), "the state file is cleaned up"
+
+
+@pytest.mark.parametrize("stage", ["sync", "correctness", "bench", "pull"])
+def test_teardown_still_runs_when_the_run_fails_part_way_through(workdir, stage):
+    """The trap is the whole point: a crash, a failed benchmark or an interrupt must
+    still destroy the instance and reconcile the ledger."""
+    ledger = workdir / "ledger" / "spend.jsonl"
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        f"fail-{stage}",
+        "--simulate-failure",
+        stage,
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=1,
+    )
+
+    assert f"simulated failure at stage: {stage}" in result.stderr
+    assert "[teardown] destroying instance" in result.stderr
+    assert "[teardown] complete" in result.stderr
+
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert [r["event"] for r in rows] == ["provision", "destroy"]
+    assert rows[1]["actual_minutes"] is not None, "the ledger is reconciled even on failure"
+    assert not (workdir / "state").exists()
+
+
+def test_a_failure_before_provisioning_leaves_nothing_to_tear_down(workdir):
+    ledger = workdir / "ledger" / "spend.jsonl"
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "early",
+        "--simulate-failure",
+        "provision",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=1,
+    )
+
+    assert "no instance was created; nothing to destroy" in result.stderr
+    assert not ledger.exists() or ledger.read_text().strip() == ""
+
+
+def test_teardown_never_contacts_the_destroy_endpoint_in_dry_run(workdir):
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "safe",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "(dry-run) would DELETE /instances/" in result.stderr
+
+
+def test_the_watchdog_is_armed_before_any_work_is_attempted(workdir):
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "watch",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    lines = result.stderr.splitlines()
+    armed = next(i for i, line in enumerate(lines) if "watchdog started" in line)
+    work = next(i for i, line in enumerate(lines) if "would rsync" in line)
+    assert armed < work
+
+
+# =====================================================================================
+# The watchdog
+# =====================================================================================
+
+
+def test_the_watchdog_fires_and_destroys_after_its_timeout(workdir):
+    ledger = workdir / "ledger" / "spend.jsonl"
+
+    result = run(
+        "watchdog.sh",
+        "--dry-run",
+        "--instance-id",
+        "test-instance",
+        "--timeout-seconds",
+        "1",
+        "--poll-seconds",
+        "1",
+        "--ledger",
+        str(ledger),
+        "--session-id",
+        "wd",
+        "--rate",
+        "0.324",
+        expect=2,
+    )
+
+    assert "WATCHDOG FIRED" in result.stderr
+    assert "This is a fault, not a normal ending" in result.stderr
+    assert "(dry-run) would DELETE /instances/test-instance/" in result.stderr
+
+
+def test_the_watchdog_stands_down_when_the_run_finishes(workdir):
+    cancel = workdir / "cancel"
+    cancel.touch()
+
+    result = run(
+        "watchdog.sh",
+        "--dry-run",
+        "--instance-id",
+        "test-instance",
+        "--timeout-seconds",
+        "600",
+        "--poll-seconds",
+        "1",
+        "--cancel-file",
+        str(cancel),
+        expect=0,
+    )
+
+    assert "watchdog cancelled" in result.stderr
+    assert "WATCHDOG FIRED" not in result.stderr
+
+
+def test_the_watchdog_requires_an_instance_id():
+    result = run("watchdog.sh", "--dry-run", expect=1)
+    assert "--instance-id is required" in result.stderr
+
+
+# =====================================================================================
+# Shell and Python gate implementations must agree
+# =====================================================================================
+
+
+AGREEMENT_FIXTURES = {
+    "empty": [],
+    "single_unreconciled": [ledger_line(instance_id="a")],
+    "single_reconciled": [
+        ledger_line(instance_id="a"),
+        ledger_line(event="destroy", instance_id="a", actual_minutes=30.0, actual_cost_usd=0.162),
+    ],
+    "mixed": [
+        ledger_line(instance_id="a"),
+        ledger_line(event="destroy", instance_id="a", actual_minutes=12.5, actual_cost_usd=0.0675),
+        ledger_line(instance_id="b", estimated_ceiling_usd=1.25),
+        ledger_line(instance_id="c", session_id="s2"),
+        ledger_line(
+            event="destroy",
+            instance_id="c",
+            session_id="s2",
+            actual_minutes=44.0,
+            actual_cost_usd=0.2376,
+        ),
+    ],
+    "spans_months": [
+        ledger_line(instance_id="old", ts="2026-07-31T23:00:00Z"),
+        ledger_line(
+            event="destroy",
+            instance_id="old",
+            ts="2026-08-01T00:30:00Z",
+            actual_minutes=90.0,
+            actual_cost_usd=0.486,
+        ),
+    ],
+}
+
+
+@pytest.mark.parametrize("name", sorted(AGREEMENT_FIXTURES))
+def test_shell_and_python_month_to_date_agree(workdir, name):
+    from deltaforge.ledger import month_to_date_usd, read_rows
+
+    ledger = write_ledger(workdir / "ledger" / "spend.jsonl", AGREEMENT_FIXTURES[name])
+    month = "2026-08"
+
+    shell = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; df_ledger_month_to_date "{ledger}" "{month}"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+    assert float(shell.stdout.strip()) == pytest.approx(
+        month_to_date_usd(read_rows(ledger), month=month), abs=1e-6
+    )
+
+
+@pytest.mark.parametrize("name", sorted(AGREEMENT_FIXTURES))
+def test_shell_and_python_session_minutes_agree(workdir, name):
+    from deltaforge.ledger import read_rows, session_minutes
+
+    ledger = write_ledger(workdir / "ledger" / "spend.jsonl", AGREEMENT_FIXTURES[name])
+    now = EPOCH + 3600
+
+    shell = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; '
+            f'df_ledger_session_minutes "{ledger}" "s1" {now}',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+
+    assert float(shell.stdout.strip()) == pytest.approx(
+        session_minutes(read_rows(ledger), "s1", now_epoch=now), abs=1e-6
+    )
+
+
+# =====================================================================================
+# The API key must never leak
+# =====================================================================================
+
+
+def test_the_api_key_never_appears_in_output(workdir, monkeypatch):
+    """The key is passed to curl through a config file on stdin, so it is never in argv,
+    never on disk, and must never reach a log, a results file or a PR body."""
+    secret = "vast-secret-value-that-must-not-appear-anywhere"
+    env = {
+        **dict(__import__("os").environ),
+        "VAST_API_KEY": secret,
+    }
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "secret-test",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        env=env,
+    )
+
+    assert secret not in result.stdout
+    assert secret not in result.stderr
+    assert secret not in (workdir / "state").read_text()
+    assert secret not in (workdir / "ledger" / "spend.jsonl").read_text()
+    # It confirms the key loaded without disclosing it.
+    assert "API key loaded" in result.stderr
+    assert str(len(secret)) in result.stderr
+
+
+def test_the_api_key_is_read_from_a_dotenv_file(workdir):
+    env_file = workdir / ".env"
+    env_file.write_text('VAST_API_KEY="dotenv-secret-0123456789"\n')
+
+    probe = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'DF_REPO_ROOT="{workdir}"; . "{REMOTE}/lib.sh"; '
+            'df_load_api_key && printf "%s" "${#DF_API_KEY}"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+        env={k: v for k, v in __import__("os").environ.items() if k != "VAST_API_KEY"},
+    )
+
+    assert probe.stdout.strip() == str(len("dotenv-secret-0123456789"))
+    assert "dotenv-secret" not in probe.stderr
+
+
+def test_dotenv_is_gitignored():
+    assert ".env" in (REPO_ROOT / ".gitignore").read_text().splitlines()
+
+
+def test_sync_never_transfers_the_dotenv_file():
+    assert "--exclude=.env" in (REMOTE / "sync.sh").read_text()
+
+
+def test_sync_dry_run_reports_both_directions(workdir):
+    up = run("sync.sh", "up", "--dry-run")
+    down = run("sync.sh", "down", "--dry-run")
+
+    assert "would rsync" in up.stderr
+    assert "excluding .env" in up.stderr
+    assert "results/" in down.stderr
+
+
+# =====================================================================================
+# Shell hygiene
+# =====================================================================================
+
+
+@pytest.mark.parametrize("script", ["lib.sh", "provision.sh", "watchdog.sh", "sync.sh", "run_remote.sh"])
+def test_scripts_parse_as_posix_sh(script):
+    result = subprocess.run(["sh", "-n", str(REMOTE / script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("script", ["provision.sh", "watchdog.sh", "sync.sh", "run_remote.sh"])
+def test_scripts_are_executable_and_support_help(script):
+    assert (REMOTE / script).stat().st_mode & 0o111, f"{script} is not executable"
+    result = run(script, "--help")
+    assert "Usage:" in result.stdout
+
+
+@pytest.mark.parametrize("script", ["provision.sh", "watchdog.sh", "sync.sh", "run_remote.sh"])
+def test_every_script_supports_dry_run(script):
+    assert "--dry-run" in (REMOTE / script).read_text()
+
+
+@pytest.mark.parametrize("script", ["lib.sh", "provision.sh", "watchdog.sh", "sync.sh", "run_remote.sh"])
+def test_no_script_enables_shell_tracing(script):
+    """`set -x` would print the API key. The scripts must never turn it on."""
+    body = (REMOTE / script).read_text()
+    for line in body.splitlines():
+        stripped = line.strip()
+        assert not stripped.startswith("set -x")
+        assert "set -eux" not in stripped
