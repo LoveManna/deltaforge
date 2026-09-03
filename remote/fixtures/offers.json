@@ -17,10 +17,13 @@
       "rentable": true,
       "is_bid_only": true,
       "reliability2": 0.995,
-      "dph_total": 0.2100,
+      "dph_total": 0.21,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Finland"
+      "geolocation": "Finland",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9002,
@@ -28,11 +31,14 @@
       "num_gpus": 2,
       "rentable": true,
       "is_bid_only": false,
-      "reliability2": 0.9930,
-      "dph_total": 0.2900,
+      "reliability2": 0.993,
+      "dph_total": 0.29,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Poland"
+      "geolocation": "Poland",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9003,
@@ -41,10 +47,13 @@
       "rentable": true,
       "is_bid_only": false,
       "reliability2": 0.9412,
-      "dph_total": 0.3000,
+      "dph_total": 0.3,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Romania"
+      "geolocation": "Romania",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9004,
@@ -53,10 +62,13 @@
       "rentable": true,
       "is_bid_only": false,
       "reliability2": 0.9971,
-      "dph_total": 0.6400,
+      "dph_total": 0.64,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "United States"
+      "geolocation": "United States",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9005,
@@ -65,10 +77,13 @@
       "rentable": false,
       "is_bid_only": false,
       "reliability2": 0.9988,
-      "dph_total": 0.3150,
+      "dph_total": 0.315,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Germany"
+      "geolocation": "Germany",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9006,
@@ -77,10 +92,13 @@
       "rentable": true,
       "is_bid_only": false,
       "reliability2": 0.9954,
-      "dph_total": 0.2750,
+      "dph_total": 0.275,
       "gpu_ram": 24564,
       "cuda_max_good": 12.8,
-      "geolocation": "Sweden"
+      "geolocation": "Sweden",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9007,
@@ -89,10 +107,13 @@
       "rentable": true,
       "is_bid_only": false,
       "reliability2": 0.9903,
-      "dph_total": 0.3480,
+      "dph_total": 0.348,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Norway"
+      "geolocation": "Norway",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
     },
     {
       "id": 9008,
@@ -101,10 +122,43 @@
       "rentable": true,
       "is_bid_only": false,
       "reliability2": 0.9982,
-      "dph_total": 0.3240,
+      "dph_total": 0.324,
       "gpu_ram": 32607,
       "cuda_max_good": 13.0,
-      "geolocation": "Iceland"
+      "geolocation": "Iceland",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true
+    },
+    {
+      "id": 9009,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9991,
+      "dph_total": 0.22,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Nowhere, XX",
+      "verified": true,
+      "inet_down": 42.0,
+      "static_ip": true
+    },
+    {
+      "id": 9010,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9993,
+      "dph_total": 0.23,
+      "gpu_ram": 32607,
+      "cuda_max_good": 13.0,
+      "geolocation": "Nowhere, XX",
+      "verified": false,
+      "inet_down": 900.0,
+      "static_ip": true
     }
   ]
 }

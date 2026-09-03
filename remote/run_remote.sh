@@ -30,7 +30,9 @@ DF_REMOTE_DIR="${DF_REMOTE_DIR:-/workspace/deltaforge}"
 DF_WEIGHTS_DIR="${DF_WEIGHTS_DIR:-/workspace/qwen3.5-4b}"
 DF_STATE_FILE="${DF_STATE_FILE:-$DF_REPO_ROOT/.deltaforge-instance}"
 DF_SIMULATE_FAILURE="${DF_SIMULATE_FAILURE:-}"
-DF_SSH_READY_TIMEOUT="${DF_SSH_READY_TIMEOUT:-600}"
+# A fresh instance pulls a ~9 GB container image before sshd exists. 600s was not enough
+# headroom for that on a well-connected host and turned a slow pull into a lost rental.
+DF_SSH_READY_TIMEOUT="${DF_SSH_READY_TIMEOUT:-1200}"
 # Ceiling on the single longest remote step. `max-autotune` compiles three columns and
 # can run away on a large graph; without a bound the run would sit there until the
 # 90-minute watchdog fired, and a watchdog firing is a reportable fault rather than a
@@ -268,7 +270,7 @@ wait_for_ssh() {
             fi
         fi
         if [ "${DF_DEBUG_POLL:-0}" = "1" ]; then
-            df_log "raw row: $(printf '%s' "$_row" | head -c 400)"
+            df_log "raw row: $(printf '%s' "$_row" | head -c 2500)"
         fi
         if [ -z "$_row" ] && [ "$_dumped" = "0" ]; then
             # One raw dump the first time the instance is not in its own listing. Ten

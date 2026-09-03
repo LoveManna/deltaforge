@@ -33,6 +33,13 @@ DF_GPU="${DF_GPU:-RTX 5090}"
 DF_FALLBACK_GPU="${DF_FALLBACK_GPU:-RTX 4090}"
 DF_MIN_RELIABILITY="${DF_MIN_RELIABILITY:-0.98}"
 DF_MIN_GPU_RAM="${DF_MIN_GPU_RAM:-24000}"
+# Two filters bought with rented time rather than reasoning. The cheapest single RTX 5090
+# on the market was an unverified consumer host that never finished pulling the container
+# image across three provisioning attempts, and whose ssh proxy was unreachable from
+# here. Every minute of that is billed. A run downloads a ~9 GB image and a ~9 GB
+# checkpoint before it computes anything, so link speed is a cost input, not a nicety.
+DF_REQUIRE_VERIFIED="${DF_REQUIRE_VERIFIED:-1}"
+DF_MIN_INET_DOWN="${DF_MIN_INET_DOWN:-300}"
 DF_DISK_GB="${DF_DISK_GB:-40}"
 DF_MAX_MINUTES="${DF_MAX_MINUTES:-90}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
@@ -112,8 +119,10 @@ fi
 # `type` is a bare string in this API; passing it as an object like the other filters is
 # rejected. Verified against the live API on 2026-08-30.
 offers_query() {
-    printf '{"gpu_name":{"eq":"%s"},"num_gpus":{"eq":1},"rentable":{"eq":true},"reliability2":{"gt":%s},"dph_total":{"lte":%s},"type":"on-demand","order":[["dph_total","asc"]],"limit":64}' \
-        "$1" "$DF_MIN_RELIABILITY" "$DF_MAX_RATE"
+    _verified=true
+    [ "$DF_REQUIRE_VERIFIED" = "1" ] || _verified=false
+    printf '{"gpu_name":{"eq":"%s"},"num_gpus":{"eq":1},"rentable":{"eq":true},"reliability2":{"gt":%s},"dph_total":{"lte":%s},"verified":{"eq":%s},"inet_down":{"gt":%s},"type":"on-demand","order":[["dph_total","asc"]],"limit":64}' \
+        "$1" "$DF_MIN_RELIABILITY" "$DF_MAX_RATE" "$_verified" "$DF_MIN_INET_DOWN"
 }
 
 fetch_offers() {
@@ -135,7 +144,9 @@ select_offer() {
     fetch_offers "$_gpu" | jq -r --arg gpu "$_gpu" \
         --argjson maxrate "$DF_MAX_RATE" \
         --argjson minrel "$DF_MIN_RELIABILITY" \
-        --argjson minram "$DF_MIN_GPU_RAM" '
+        --argjson minram "$DF_MIN_GPU_RAM" \
+        --argjson mindown "$DF_MIN_INET_DOWN" \
+        --argjson wantverified "$DF_REQUIRE_VERIFIED" '
         .offers // []
         | map(select(
             .gpu_name == $gpu
@@ -145,6 +156,8 @@ select_offer() {
             and (.reliability2 // 0) > $minrel
             and (.dph_total // 1e9) <= $maxrate
             and (.gpu_ram // 0) >= $minram
+            and (.inet_down // 0) > $mindown
+            and ($wantverified == 0 or (.verified // false) == true)
           ))
         | sort_by(.dph_total)
         | .[0]

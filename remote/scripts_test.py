@@ -1003,3 +1003,39 @@ def test_a_deprecated_or_broken_response_yields_no_row_rather_than_a_crash():
         assert _shell(f"df_instance_row '{payload}' 49700454") == "", (
             f"{payload!r} should parse to no row, not to a false positive"
         )
+
+
+def test_a_slow_link_is_rejected_however_cheap_it_is(workdir):
+    """A run downloads a ~9 GB image and a ~9 GB checkpoint before it computes anything,
+    so link speed is a cost input. Offer 9009 is the cheapest in the fixture and has a
+    42 Mbit link; it must never be selected."""
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "slow-link",
+        "--ledger",
+        str(write_ledger(workdir / "ledger" / "spend.jsonl", [])),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "selected offer 9009" not in result.stderr
+
+
+def test_an_unverified_host_is_rejected_however_cheap_it_is(workdir):
+    """Three provisioning attempts were spent on an unverified consumer host that never
+    finished pulling the image and whose ssh proxy was unreachable. Offer 9010 stands in
+    for it."""
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "unverified",
+        "--ledger",
+        str(write_ledger(workdir / "ledger" / "spend.jsonl", [])),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "selected offer 9010" not in result.stderr
