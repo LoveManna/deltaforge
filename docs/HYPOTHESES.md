@@ -30,6 +30,14 @@ traffic by roughly two thirds for this operation.
 against `max-autotune`, not against eager. This may be the smallest margin in the list,
 which is why it is first: it is also the cheapest to write and calibrates the harness.
 
+**Attempted 2026-09-03 on branch `hyp/001-fused-rmsnorm-residual`: kernel written and
+gated, NOT MEASURED.** Eight rentals ($0.4783, all destroyed cleanly) produced no number —
+every instance was billed but never finished pulling its container image. This stays
+**open**, not graveyarded: a graveyard entry means a mechanism was tried and failed, and
+this mechanism has not been tried. The kernel, its gates and a full account are in
+`results/hypotheses/001-fused-rmsnorm-residual/`. A funded session should re-run it before
+picking anything else from this list.
+
 ### 2. Fused SwiGLU
 
 **Mechanism.** `silu(gate_proj(x)) * up_proj(x)` materialises two `9216`-wide

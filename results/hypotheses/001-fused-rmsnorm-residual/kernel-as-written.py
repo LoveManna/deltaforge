@@ -1,3 +1,9 @@
+# Frozen snapshot of the Triton kernel for hypothesis 001.
+#
+# Source of truth: src/deltaforge/kernels/fused_rmsnorm_residual.py
+# Commit: ab0864b
+# Status: written and gated on CPU, NEVER EXECUTED ON A GPU. See README.md here.
+
 """Hypothesis 001 — fused residual-add + RMSNorm.
 
 **Mechanism.** In a decoder layer the residual add, the norm's reduction and the norm's

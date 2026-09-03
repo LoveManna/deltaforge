@@ -26,12 +26,14 @@ shapes against the real checkpoint, cache contract, causality, the mRoPE reducti
 not yet proven to interpret the weight *values* correctly. Every subsequent number depends
 on that.
 
-**GPU access.** The blocker that stopped the bootstrap session has cleared: as of
-2026-09-02 the Vast.ai account is email-verified with $8.00 of signup credit, and a live
-offer query returned single RTX 5090s at $0.3215/hr under the provisioning filters — about
-24 GPU-hours of headroom against a session that costs roughly $0.60. Check the balance
-yourself rather than trusting this line; it records the state on one day, and the budget
-gates in `remote/` are the actual enforcement.
+**GPU access is blocked again, for a different reason.** The account is email-verified
+and carries signup credit, and provisioning works — eight instances were created, billed
+and destroyed on 2026-09-03. None of them ever finished pulling a container image, across
+four machines, three images and two registries. The account has never made a payment
+(`paid_verified: 0.0`, `has_billing: false`), which is the strongest remaining explanation:
+instances are created and billed but not permitted to pull. Adding a payment method and
+re-running `remote/run_remote.sh` unchanged is the cheap test. Full account of the eight
+rentals: `results/hypotheses/001-fused-rmsnorm-residual/README.md`.
 
 ## Baseline
 
