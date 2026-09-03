@@ -23,7 +23,8 @@
       "geolocation": "Finland",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100001
     },
     {
       "id": 9002,
@@ -38,7 +39,8 @@
       "geolocation": "Poland",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100002
     },
     {
       "id": 9003,
@@ -53,7 +55,8 @@
       "geolocation": "Romania",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100003
     },
     {
       "id": 9004,
@@ -68,7 +71,8 @@
       "geolocation": "United States",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100004
     },
     {
       "id": 9005,
@@ -83,7 +87,8 @@
       "geolocation": "Germany",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100005
     },
     {
       "id": 9006,
@@ -98,7 +103,8 @@
       "geolocation": "Sweden",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100006
     },
     {
       "id": 9007,
@@ -113,7 +119,8 @@
       "geolocation": "Norway",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100007
     },
     {
       "id": 9008,
@@ -128,7 +135,8 @@
       "geolocation": "Iceland",
       "verified": true,
       "inet_down": 780.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100008
     },
     {
       "id": 9009,
@@ -143,7 +151,8 @@
       "geolocation": "Nowhere, XX",
       "verified": true,
       "inet_down": 42.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100009
     },
     {
       "id": 9010,
@@ -158,7 +167,8 @@
       "geolocation": "Nowhere, XX",
       "verified": false,
       "inet_down": 900.0,
-      "static_ip": true
+      "static_ip": true,
+      "machine_id": 100010
     }
   ]
 }

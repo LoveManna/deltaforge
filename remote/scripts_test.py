@@ -1039,3 +1039,29 @@ def test_an_unverified_host_is_rejected_however_cheap_it_is(workdir):
     )
 
     assert "selected offer 9010" not in result.stderr
+
+
+def test_a_machine_that_already_cost_a_rental_can_be_excluded(workdir):
+    """The market is ordered by price and deterministic, so a host that burns a rental
+    without producing a result gets selected again on the next run unless it is named."""
+    args = (
+        "--dry-run",
+        "--session-id",
+        "excluded-machine",
+        "--ledger",
+        str(write_ledger(workdir / "ledger" / "spend.jsonl", [])),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    normal = run("provision.sh", *args)
+    assert "selected offer 9008" in normal.stderr
+
+    excluded = run(
+        "provision.sh",
+        *args,
+        env={**os.environ, "DF_EXCLUDE_MACHINES": "100008"},
+    )
+
+    assert "selected offer 9008" not in excluded.stderr
+    assert "selected offer" in excluded.stderr, "excluding one machine must not empty the market"

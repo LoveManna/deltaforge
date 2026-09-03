@@ -21,18 +21,22 @@ DF_REPO_ROOT=$(cd -- "$(dirname -- "$DF_SCRIPT_PATH")/.." && pwd)
 export DF_REPO_ROOT
 . "$DF_REPO_ROOT/remote/lib.sh"
 
-# The spec's "PyTorch 2.11 + CUDA 12.8 preinstalled" requirement, on the *runtime* tag.
+# Vast's own small base image, plus torch from PyTorch's CDN in the prep step.
 #
-# The `-devel` tag is 14.1 GB and the `-runtime` tag is 4.26 GB for the same torch and
-# CUDA. A rental is billed from creation, so the image pull is paid time before anything
-# computes: one 20-minute rental was spent watching `-devel` fail to land. The toolchain
-# `-devel` adds is not needed — Triton ships its own compiler and ptxas — and the one
-# piece that can be missing, a C++ compiler for inductor, is installed by the prep step
-# only when it is absent.
-DF_IMAGE="${DF_IMAGE:-pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime}"
+# The spec asks for a preinstalled-PyTorch image so a run does not pay for a dependency
+# install. Measured on the market, that trade runs the other way: billing starts at
+# instance creation, and `pytorch/pytorch` pulls from Docker Hub stalled on every host
+# tried — 20 minutes without landing 4.26 GB, and the same for 14.1 GB. Two rentals ended
+# with the image still "Pulling". `vastai/*` images come from the registry Vast hosts
+# mirror and cache, and the mini tag is 2.5 GB; torch then comes from
+# download.pytorch.org, a CDN with no anonymous pull limit, in about a minute.
+DF_IMAGE="${DF_IMAGE:-vastai/base-image:cuda-12.9-mini-py312-2026-08-28}"
 
-# Live market check on 2026-08-30 returned 6+ single RTX 5090s at $0.32-$0.35/hr. The
-# ceiling is set from that observation, not from the spec's older $0.45-0.60 estimate.
+# Machines that have already cost a rental without producing a result. The market is
+# ordered by price and deterministic, so without this the next run lands on exactly the
+# same failing host.
+DF_EXCLUDE_MACHINES="${DF_EXCLUDE_MACHINES:-}"
+
 DF_MAX_RATE="${DF_MAX_RATE:-0.45}"
 DF_GPU="${DF_GPU:-RTX 5090}"
 DF_FALLBACK_GPU="${DF_FALLBACK_GPU:-RTX 4090}"
@@ -151,7 +155,8 @@ select_offer() {
         --argjson minrel "$DF_MIN_RELIABILITY" \
         --argjson minram "$DF_MIN_GPU_RAM" \
         --argjson mindown "$DF_MIN_INET_DOWN" \
-        --argjson wantverified "$DF_REQUIRE_VERIFIED" '
+        --argjson wantverified "$DF_REQUIRE_VERIFIED" \
+        --arg excluded "$DF_EXCLUDE_MACHINES" '
         .offers // []
         | map(select(
             .gpu_name == $gpu
@@ -166,6 +171,8 @@ select_offer() {
             # field null, so a client-side `== true` rejects the entire market. Reject an
             # explicit false and let absent mean "the server already filtered on it".
             and ($wantverified == 0 or (.verified != false))
+            and ((.machine_id // 0) as $m
+                 | ($excluded | split(",") | map(select(length > 0)) | index($m | tostring)) == null)
           ))
         | sort_by(.dph_total)
         | .[0]

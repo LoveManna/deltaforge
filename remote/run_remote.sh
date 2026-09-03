@@ -322,7 +322,11 @@ remote_sh() {
 
 df_log "preparing the remote environment"
 remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq g++)"
-remote_sh "pip install --no-deps -e . && pip install safetensors transformers tokenizers pytest"
+# torch from PyTorch's own CDN rather than baked into the image: see the note on DF_IMAGE
+# in provision.sh. The cu128 wheel brings its matching Triton with it.
+remote_sh "pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128"
+remote_sh "pip install --quiet --no-deps -e . && pip install --quiet safetensors transformers tokenizers pytest"
+remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
 remote_sh "python -m deltaforge.cli fetch-weights --dest '$DF_WEIGHTS_DIR'"
 
 # The GPU-marked tests skip themselves on a CPU machine, so this is the first place they
