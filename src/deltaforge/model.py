@@ -1,0 +1,127 @@
+"""Assembles the reference model, optionally with the registry's champion kernels.
+
+`reference.py` is the baseline and never changes to accommodate a kernel. This module is
+where a champion gets installed on top of it, which keeps the baseline's "no custom
+kernels, ever" invariant mechanically true rather than merely intended.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Mapping
+from pathlib import Path
+
+import torch
+
+from .config import ModelConfig, qwen3_5_4b_config
+from .kernels import REGISTRY, KernelEntry, KernelRegistry
+from .reference import DecodeCache, ReferenceModel
+
+__all__ = [
+    "INSTALLERS",
+    "InstallerMissing",
+    "apply_champions",
+    "build_model",
+    "greedy_decode",
+    "register_installer",
+]
+
+
+class InstallerMissing(RuntimeError):
+    """A champion kernel exists for an operation, but nothing knows how to install it."""
+
+
+#: Operation name -> a function that splices a kernel implementation into a built model.
+#:
+#: Ships **empty**, on purpose. An installer describes precisely how one reference
+#: operation is swapped out, and writing that before the kernel exists means guessing at
+#: a seam. The session that writes the first kernel adds its installer here, next to it.
+#: `apply_champions` fails loudly rather than silently running the reference if a
+#: champion has no installer — silently benchmarking the baseline as if it were the
+#: candidate is the worst failure this harness could have.
+INSTALLERS: dict[str, Callable[[ReferenceModel, KernelEntry], None]] = {}
+
+
+def register_installer(op: str, installer: Callable[[ReferenceModel, KernelEntry], None]) -> None:
+    if op in INSTALLERS:
+        raise ValueError(f"installer for {op!r} is already registered")
+    INSTALLERS[op] = installer
+
+
+def apply_champions(
+    model: ReferenceModel,
+    registry: KernelRegistry = REGISTRY,
+    installers: Mapping[str, Callable[[ReferenceModel, KernelEntry], None]] | None = None,
+) -> tuple[str, ...]:
+    """Install every champion kernel into ``model``. Returns the names installed.
+
+    With an empty registry this is a no-op and returns ``()`` — which is exactly the
+    state the bootstrap session leaves the repo in.
+    """
+    registry.check_invariants()
+    table = INSTALLERS if installers is None else installers
+    applied: list[str] = []
+    for op, entry in registry.champions().items():
+        installer = table.get(op)
+        if installer is None:
+            raise InstallerMissing(
+                f"{entry.name!r} is champion of {op!r} but no installer is registered for "
+                f"{op!r}. Add one to deltaforge.model.INSTALLERS alongside the kernel; "
+                "refusing to run, because falling back to the reference here would "
+                "benchmark the baseline while labelling it the candidate."
+            )
+        installer(model, entry)
+        applied.append(entry.name)
+    return tuple(applied)
+
+
+def build_model(
+    config: ModelConfig | None = None,
+    weights_path: str | Path | None = None,
+    *,
+    device: torch.device | str = "cpu",
+    dtype: torch.dtype = torch.bfloat16,
+    registry: KernelRegistry | None = None,
+    verbose: bool = True,
+) -> ReferenceModel:
+    """Build a model, load weights if given, and install champions if a registry is given.
+
+    ``registry=None`` means "pure reference" — that is what the ``eager`` and ``compiled``
+    benchmark columns use. Pass ``REGISTRY`` to build the ``candidate`` column.
+    """
+    config = config or qwen3_5_4b_config()
+    model = ReferenceModel(config).to(device=device, dtype=dtype).eval()
+    if weights_path is not None:
+        from .weights import load_weights  # noqa: PLC0415 - keeps safetensors optional
+
+        load_weights(model, weights_path, dtype=dtype, verbose=verbose)
+    if registry is not None:
+        apply_champions(model, registry)
+    return model
+
+
+@torch.no_grad()
+def greedy_decode(
+    model: ReferenceModel,
+    input_ids: torch.Tensor,
+    max_new_tokens: int,
+    cache: DecodeCache | None = None,
+) -> torch.Tensor:
+    """Greedy-decode ``max_new_tokens`` and return only the generated ids.
+
+    Used by the layer-2 correctness gate, where the candidate's token sequence must
+    match eager's exactly, and by the benchmark's decode workload.
+    """
+    if max_new_tokens < 1:
+        raise ValueError("max_new_tokens must be at least 1")
+    batch, prompt_len = input_ids.shape
+    if cache is None:
+        cache = model.new_cache(batch, prompt_len + max_new_tokens)
+
+    logits, _ = model(input_ids, cache, num_logits_to_keep=1)
+    next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+    generated = [next_token]
+    for _ in range(max_new_tokens - 1):
+        logits, _ = model(next_token, cache, num_logits_to_keep=1)
+        next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+        generated.append(next_token)
+    return torch.cat(generated, dim=1)

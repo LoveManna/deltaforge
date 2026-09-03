@@ -17,3 +17,16 @@ weights/
 # Local scratch
 .scratch/
 *.log
+
+# uv lock is deliberately not committed: the CPU dev/CI environment and the GPU box's
+# preinstalled CUDA torch differ fundamentally, and a lock pinned to one fights the other.
+uv.lock
+
+# Local run state
+.deltaforge-instance
+.deltaforge-watchdog-cancel
+.pytest_cache/
+.ruff_cache/
+
+# Dry-run rehearsal ledger (never the real spend record)
+.deltaforge-dryrun-spend.jsonl

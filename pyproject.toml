@@ -1,0 +1,81 @@
+[project]
+name = "deltaforge"
+version = "0.1.0"
+description = "Hand-written Triton kernels for the Qwen3.5-4B decode path, measured against torch.compile."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+
+# Core stays CUDA-free on purpose: the reference implementation, the harness, the
+# registry and the ledger all run on a CPU-only laptop. Triton lives in the `gpu`
+# extra so a local checkout never drags a CUDA toolchain in.
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.24",
+    "safetensors>=0.4",
+]
+
+[project.optional-dependencies]
+# Installed only on the rented box. The Vast image ships torch 2.11 / CUDA 12.8
+# with a matching Triton already present, so these bounds stay deliberately loose
+# to avoid resolving a second, conflicting torch.
+gpu = [
+    "triton>=3.0",
+    "transformers>=4.57",
+    "tokenizers>=0.20",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+deltaforge = "deltaforge.cli:main"
+
+# Resolve torch from PyTorch's CPU index by default. The acceptance bar for this repo is
+# that `uv run pytest` works on a clean CPU-only checkout with no CUDA present, and the
+# default PyPI wheel drags ~3 GB of nvidia-* packages in to satisfy that.
+#
+# The rented GPU box does NOT use this path: its image already has torch 2.11 / CUDA 12.8
+# installed, and `remote/run_remote.sh` installs DeltaForge on top of it with
+# `pip install --no-deps -e .` so this pin can never downgrade the box to CPU torch.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/deltaforge"]
+
+[tool.pytest.ini_options]
+# Tests are colocated with the code they exercise, as `<module>_test.py`.
+testpaths = ["src", "remote"]
+python_files = ["*_test.py"]
+markers = [
+    "gpu: requires a CUDA device; skipped automatically when none is present",
+    "weights: requires the full ~9 GB Qwen3.5-4B checkpoint on disk",
+]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 110
+src = ["src"]
+
+[tool.ruff.lint.per-file-ignores]
+# The correctness prompts are data, not code: wrapping them to satisfy a line limit
+# would obscure exactly what the gate asks the model.
+"src/deltaforge/harness/prompts.py" = ["E501"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E741",  # ambiguous names: `l`, `I` are natural for tensor dims here
+    "B905",  # zip(strict=) is 3.10+, but we support 3.10 as the floor
+]

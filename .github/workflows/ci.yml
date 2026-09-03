@@ -1,0 +1,105 @@
+name: CI
+
+# The CPU gate. Kernels are written and tested locally, so this must stay green on a
+# runner with no CUDA — that is the point: everything except measurement is provable
+# without renting anything.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        # pyproject pins torch to PyTorch's CPU index, so this resolves a CUDA-free
+        # environment and does not pull ~3 GB of nvidia-* wheels onto the runner.
+        run: uv sync --extra dev
+
+      - name: Confirm the runner really has no CUDA
+        # The suite must pass without a GPU, and the deferred GPU tests must skip on a
+        # real condition rather than being disabled. If a runner ever did have CUDA, the
+        # skip logic would silently stop being exercised.
+        run: |
+          uv run python - <<'PY'
+          import torch
+          assert not torch.cuda.is_available(), "expected a CPU-only runner"
+          print("torch", torch.__version__, "- no CUDA, as expected")
+          PY
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format
+        run: uv run ruff format --check .
+
+      - name: Tests
+        run: uv run pytest -v
+
+      - name: Verify the cost machinery end to end
+        # Exercises both budget gates, the offer filter and the teardown trap without
+        # contacting the create or destroy endpoints and without spending anything.
+        # Writes to a scratch ledger: CI must never touch the committed spend record.
+        run: |
+          remote/run_remote.sh --dry-run \
+            --session-id "ci-${{ github.run_id }}" \
+            --ledger "$RUNNER_TEMP/spend.jsonl" \
+            --state-file "$RUNNER_TEMP/deltaforge-instance"
+          echo "--- scratch ledger written by the dry run ---"
+          cat "$RUNNER_TEMP/spend.jsonl"
+
+      - name: Confirm the dry run left no ledger entry behind
+        run: |
+          if [ -s ledger/spend.jsonl ]; then
+            echo "the CI dry run wrote to the committed ledger; it must use a scratch file" >&2
+            git --no-pager diff -- ledger/spend.jsonl
+            exit 1
+          fi
+
+  shell:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck --shell=sh --severity=warning remote/*.sh
+
+      - name: POSIX sh syntax
+        run: for f in remote/*.sh; do sh -n "$f"; done
+
+  secrets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No credentials in tracked files
+        # A leaked API key is unrecoverable once pushed. Cheap to check, so check it.
+        run: |
+          if git grep -nIE '(VAST_API_KEY|api[_-]?key)[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9]{20,}' \
+               -- . ':!*.lock'; then
+            echo "possible credential in a tracked file" >&2
+            exit 1
+          fi
+          if git ls-files --error-unmatch .env >/dev/null 2>&1; then
+            echo ".env must never be tracked" >&2
+            exit 1
+          fi
+          echo "no credentials found in tracked files"
