@@ -157,7 +157,10 @@ select_offer() {
             and (.dph_total // 1e9) <= $maxrate
             and (.gpu_ram // 0) >= $minram
             and (.inet_down // 0) > $mindown
-            and ($wantverified == 0 or (.verified // false) == true)
+            # The query filters on `verified`, but the offer objects come back with the
+            # field null, so a client-side `== true` rejects the entire market. Reject an
+            # explicit false and let absent mean "the server already filtered on it".
+            and ($wantverified == 0 or (.verified != false))
           ))
         | sort_by(.dph_total)
         | .[0]
