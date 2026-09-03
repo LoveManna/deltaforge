@@ -47,6 +47,16 @@ df_require_cmd() {
     done
 }
 
+# The rented box is reached with a dedicated key, not the operator's default identity:
+# an ephemeral marketplace instance should never be handed a key that opens anything
+# else. Generate it once with
+#   ssh-keygen -t ed25519 -f ~/.ssh/deltaforge_vast -N ""
+# and register the public half on the Vast account. Falls back to ssh's own defaults when
+# the file is absent, so nothing here breaks on a machine that has not set one up.
+DF_SSH_KEY="${DF_SSH_KEY:-$HOME/.ssh/deltaforge_vast}"
+DF_SSH_ID=""
+[ -f "$DF_SSH_KEY" ] && DF_SSH_ID="-i $DF_SSH_KEY -o IdentitiesOnly=yes"
+
 df_now_epoch() { date -u +%s; }
 df_now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 df_this_month(){ date -u +%Y-%m; }

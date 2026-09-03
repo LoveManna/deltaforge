@@ -55,7 +55,7 @@ if [ "$DF_DRY_RUN" != "1" ]; then
     df_require_cmd rsync ssh
 fi
 
-RSYNC_SSH="ssh -p $DF_SSH_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
+RSYNC_SSH="ssh $DF_SSH_ID -p $DF_SSH_PORT -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20"
 
 # .env carries the API key and must never be transferred. Listing it here is belt and
 # braces: it is gitignored too, but rsync does not read .gitignore.
@@ -80,7 +80,8 @@ case "$DF_DIRECTION" in
         fi
         df_log "syncing repo up to $DF_SSH_HOST:$DF_REMOTE_DIR"
         # shellcheck disable=SC2086
-        ssh -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
+        # shellcheck disable=SC2086
+        ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
             "mkdir -p '$DF_REMOTE_DIR'"
         # shellcheck disable=SC2086
         rsync -az --delete $EXCLUDES -e "$RSYNC_SSH" \

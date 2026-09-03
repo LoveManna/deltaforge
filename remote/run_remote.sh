@@ -31,6 +31,12 @@ DF_WEIGHTS_DIR="${DF_WEIGHTS_DIR:-/workspace/qwen3.5-4b}"
 DF_STATE_FILE="${DF_STATE_FILE:-$DF_REPO_ROOT/.deltaforge-instance}"
 DF_SIMULATE_FAILURE="${DF_SIMULATE_FAILURE:-}"
 DF_SSH_READY_TIMEOUT="${DF_SSH_READY_TIMEOUT:-600}"
+# Ceiling on the single longest remote step. `max-autotune` compiles three columns and
+# can run away on a large graph; without a bound the run would sit there until the
+# 90-minute watchdog fired, and a watchdog firing is a reportable fault rather than a
+# normal ending. Exceeding this fails the step cleanly, with teardown and the results
+# already pulled.
+DF_BENCH_TIMEOUT="${DF_BENCH_TIMEOUT:-2400}"
 DF_PROVISION_ARGS=""
 
 usage() {
@@ -270,7 +276,8 @@ remote_sh() {
     if df_dry "would run on the instance: $*"; then
         return 0
     fi
-    ssh -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
+    # shellcheck disable=SC2086
+    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
         "cd '$DF_REMOTE_DIR' && $*"
 }
 
@@ -305,8 +312,8 @@ sh "$DF_REPO_ROOT/remote/sync.sh" down $SYNC_FLAGS \
 if df_stage_should_fail bench; then
     df_die "benchmark failed (simulated)"
 fi
-df_log "running the benchmark"
-remote_sh "python -m deltaforge.cli bench --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
+df_log "running the benchmark (remote step ceiling ${DF_BENCH_TIMEOUT}s)"
+remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
 
 if df_stage_should_fail pull; then
     df_die "pulling results failed (simulated)"
