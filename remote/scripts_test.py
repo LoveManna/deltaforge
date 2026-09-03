@@ -944,3 +944,50 @@ def test_an_explicit_ledger_path_is_honoured_even_in_a_dry_run(workdir):
 
     rows = [line for line in ledger.read_text().splitlines() if line.strip()]
     assert any('"event":"provision"' in row for row in rows)
+
+
+# =====================================================================================
+# Instance readiness polling
+#
+# `GET /api/v0/instances/<id>/` answers `{"instances": null}` for a live instance instead
+# of failing, so a poller built on it burns its entire timeout reporting an unknown
+# status — which is exactly what cost one provisioning cycle. The listing moved to v1 and
+# returns a list; these pin the shape the poller depends on.
+# =====================================================================================
+
+
+INSTANCES_FIXTURE = REMOTE / "fixtures" / "instances.json"
+
+
+def _row(instance_id: str) -> str:
+    return _shell(
+        f'df_instance_row "$(cat {INSTANCES_FIXTURE})" "{instance_id}"',
+    )
+
+
+def test_the_running_instance_is_found_by_id_in_a_v1_listing():
+    row = json.loads(_row("49700454"))
+
+    assert row["actual_status"] == "running"
+    assert row["ssh_host"] == "ssh5.vast.ai"
+    assert row["ssh_port"] == 41234
+
+
+def test_another_instance_in_the_same_listing_is_not_confused_for_ours():
+    """Two instances on the account is the ordinary case once anything runs in parallel;
+    picking the wrong row would ssh into someone else's work."""
+    row = json.loads(_row("49700999"))
+
+    assert row["actual_status"] == "loading"
+    assert row["gpu_name"] == "RTX 4090"
+
+
+def test_an_instance_absent_from_the_listing_yields_no_row():
+    assert _row("1234") == ""
+
+
+def test_a_deprecated_or_broken_response_yields_no_row_rather_than_a_crash():
+    for payload in ('{"instances": null}', '{"success": false, "error": "deprecated_endpoint"}', "not json"):
+        assert _shell(f"df_instance_row '{payload}' 49700454") == "", (
+            f"{payload!r} should parse to no row, not to a false positive"
+        )

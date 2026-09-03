@@ -230,20 +230,48 @@ df_log "watchdog started (pid $DF_WATCHDOG_PID, ${DF_WATCHDOG_MINUTES} minute ha
 # ---------------------------------------------------------------------------
 
 wait_for_ssh() {
-    if df_dry "would poll GET /instances/$DF_INSTANCE_ID/ until ssh is reachable"; then
+    if df_dry "would poll GET /api/v1/instances/ until $DF_INSTANCE_ID is running and ssh answers"; then
         DF_SSH_HOST="root@dry-run.invalid"
         DF_SSH_PORT="22"
         return 0
     fi
     _deadline=$(( $(df_now_epoch) + DF_SSH_READY_TIMEOUT ))
+    _dumped=0
     while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
-        _info=$(df_api GET "/instances/$DF_INSTANCE_ID/" 2>/dev/null || true)
-        _status=$(printf '%s' "$_info" | jq -r '.instances.actual_status // empty' 2>/dev/null || true)
+        _listing=$(df_api_v1 GET "/instances/" 2>/dev/null || true)
+        _row=$(df_instance_row "$_listing" "$DF_INSTANCE_ID")
+        _status=$(printf '%s' "$_row" | jq -r '.actual_status // empty' 2>/dev/null || true)
         if [ "$_status" = "running" ]; then
-            DF_SSH_HOST="root@$(printf '%s' "$_info" | jq -r '.instances.ssh_host')"
-            DF_SSH_PORT=$(printf '%s' "$_info" | jq -r '.instances.ssh_port')
-            df_log "instance is running: $DF_SSH_HOST port $DF_SSH_PORT"
-            return 0
+            _host=$(printf '%s' "$_row" | jq -r '.ssh_host // empty')
+            _port=$(printf '%s' "$_row" | jq -r '.ssh_port // empty')
+            if [ -n "$_host" ] && [ -n "$_port" ]; then
+                DF_SSH_HOST="root@$_host"
+                DF_SSH_PORT="$_port"
+                df_log "instance is running: $DF_SSH_HOST port $DF_SSH_PORT"
+                # "running" means the container started, not that sshd is accepting yet.
+                # Probe until it answers, so the first real command is not the thing that
+                # discovers the connection is not up.
+                while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
+                    # shellcheck disable=SC2086
+                    if ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new \
+                        -o ConnectTimeout=15 -o BatchMode=yes "$DF_SSH_HOST" true 2>/dev/null; then
+                        df_log "ssh is answering"
+                        return 0
+                    fi
+                    df_log "instance is running; waiting for sshd"
+                    sleep 10
+                done
+                df_die "instance $DF_INSTANCE_ID started but ssh never answered within ${DF_SSH_READY_TIMEOUT}s"
+            fi
+        fi
+        if [ -z "$_row" ] && [ "$_dumped" = "0" ]; then
+            # One raw dump the first time the instance is not in its own listing. Ten
+            # minutes of "status: unknown" with nothing to look at is what made the last
+            # API change cost a provisioning cycle to diagnose.
+            df_warn "instance $DF_INSTANCE_ID not present in the listing; raw response follows"
+            printf '%s\n' "$_listing" | head -c 600 >&2
+            printf '\n' >&2
+            _dumped=1
         fi
         df_log "waiting for instance to start (status: ${_status:-unknown})"
         sleep 10

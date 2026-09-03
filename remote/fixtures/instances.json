@@ -1,0 +1,25 @@
+{
+  "success": true,
+  "total_instances": 2,
+  "instances": [
+    {
+      "id": 49700454,
+      "actual_status": "running",
+      "cur_state": "running",
+      "gpu_name": "RTX 5090",
+      "ssh_host": "ssh5.vast.ai",
+      "ssh_port": 41234,
+      "dph_total": 0.2128
+    },
+    {
+      "id": 49700999,
+      "actual_status": "loading",
+      "cur_state": "running",
+      "gpu_name": "RTX 4090",
+      "ssh_host": null,
+      "ssh_port": null,
+      "dph_total": 0.41
+    }
+  ],
+  "next_token": null
+}

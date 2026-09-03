@@ -15,7 +15,13 @@
 # in `ps`), never in a file on disk, and never in a log. `set -x` is explicitly disabled
 # inside the functions that touch it.
 
-DF_API_BASE="${DF_API_BASE:-https://console.vast.ai/api/v0}"
+DF_API_HOST="${DF_API_HOST:-https://console.vast.ai}"
+DF_API_BASE="${DF_API_BASE:-$DF_API_HOST/api/v0}"
+# Instance *listing* moved to v1: `GET /api/v0/instances/` now answers
+# "deprecated_endpoint", and `GET /api/v0/instances/<id>/` answers `{"instances": null}`
+# for a live instance rather than failing, so a poller built on it waits out its whole
+# timeout while reporting an unknown status. Offers, create and destroy are still v0.
+DF_API_BASE_V1="${DF_API_BASE_V1:-$DF_API_HOST/api/v1}"
 DF_DRY_RUN="${DF_DRY_RUN:-0}"
 
 # ---------------------------------------------------------------------------
@@ -90,7 +96,10 @@ df_load_api_key() {
 
 # df_api METHOD PATH [BODY]
 # Emits the raw response body on stdout.
-df_api() {
+df_api()    { _df_api_base="$DF_API_BASE";    _df_api_call "$@"; }
+df_api_v1() { _df_api_base="$DF_API_BASE_V1"; _df_api_call "$@"; }
+
+_df_api_call() {
     set +x
     _method="$1"; _path="$2"; _body="${3:-}"
     [ -n "$DF_API_KEY" ] || df_die "no API key: set VAST_API_KEY or put it in $DF_REPO_ROOT/.env"
@@ -99,11 +108,11 @@ df_api() {
         printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' \
             "$DF_API_KEY" \
         | curl --silent --show-error --fail-with-body --max-time 60 \
-               --config - --request "$_method" --data "$_body" "$DF_API_BASE$_path"
+               --config - --request "$_method" --data "$_body" "$_df_api_base$_path"
     else
         printf 'header = "Authorization: Bearer %s"\n' "$DF_API_KEY" \
         | curl --silent --show-error --fail-with-body --max-time 60 \
-               --config - --request "$_method" "$DF_API_BASE$_path"
+               --config - --request "$_method" "$_df_api_base$_path"
     fi
 }
 
@@ -240,6 +249,14 @@ df_dryrun_ledger() {
         : > "$_scratch"
     fi
     printf '%s\n' "$_scratch"
+}
+
+# df_instance_row JSON INSTANCE_ID -> that instance's object from a v1 listing, or empty.
+#
+# `.instances` is a list in v1, and ids come back as numbers, so the comparison is made
+# on strings to avoid a jq type error when the id is quoted either way.
+df_instance_row() {
+    printf '%s' "$1" | jq -c --arg id "$2" '.instances[]? | select((.id|tostring) == $id)' 2>/dev/null || true
 }
 
 # Float comparison without bc, which is not universally installed.
