@@ -21,15 +21,33 @@ def registry():
     return KernelRegistry()
 
 
-# -- the repo ships with no kernels ---------------------------------------------------
+# -- the shipped registry -------------------------------------------------------------
 
 
-def test_the_shipped_registry_is_empty():
-    """The bootstrap session builds the harness that measures kernels; writing a kernel
-    in the same session as its own measuring device produces a meaningless number."""
-    assert len(REGISTRY) == 0
-    assert REGISTRY.champions() == {}
+def test_the_shipped_registry_holds_its_invariants():
+    """Whatever kernels are registered, the process-wide registry must be internally
+    consistent at import time: at most one champion per operation, and every entry
+    replacing an operation the reference actually exposes."""
     REGISTRY.check_invariants()
+    for op, entry in REGISTRY.champions().items():
+        assert entry.replaces == op
+        assert entry.status is KernelStatus.CHAMPION
+
+
+def test_every_shipped_champion_has_an_installer():
+    """A champion with no installer is a hard error at build time. Catching it here means
+    catching it on a CPU laptop instead of after paying to provision a GPU."""
+    from ..model import INSTALLERS
+
+    for op, entry in REGISTRY.champions().items():
+        assert op in INSTALLERS, f"{entry.name!r} is champion of {op!r} with no installer"
+
+
+def test_every_shipped_kernel_names_the_hypothesis_that_produced_it():
+    """The registry is part of the record: an entry with no hypothesis cannot be traced
+    back to the measurement that justified it."""
+    for entry in REGISTRY:
+        assert entry.hypothesis, f"{entry.name!r} carries no hypothesis id"
 
 
 # -- registration ---------------------------------------------------------------------

@@ -102,9 +102,14 @@ def cmd_correctness(args: argparse.Namespace) -> int:
     from .harness.correctness import CorrectnessReport, check_end_to_end
     from .harness.prompts import CORRECTNESS_PROMPTS, PROMPT_DIGEST
     from .harness.report import ResultRecord, render_markdown, write_record
+    from .kernels import build_kernel_checks
 
     _config, reference, candidate = _load_models(args)
     prompt_ids = _tokenize_prompts(Path(args.weights), CORRECTNESS_PROMPTS)
+
+    # Layer 1: every champion kernel against the reference operation it replaces, on real
+    # shapes. Checks run against `reference`, whose modules are untouched by any install.
+    kernel_checks = build_kernel_checks(reference, device="cuda")
 
     end_to_end = check_end_to_end(
         reference,
@@ -113,10 +118,7 @@ def cmd_correctness(args: argparse.Namespace) -> int:
         max_new_tokens=args.max_new_tokens,
         prompt_digest=PROMPT_DIGEST,
     )
-    # Layer 1 has nothing to check while the registry is empty: with no kernels
-    # registered there is no per-kernel comparison to make. It populates itself as soon
-    # as the first kernel lands.
-    report = CorrectnessReport(kernel_checks=(), end_to_end=end_to_end)
+    report = CorrectnessReport(kernel_checks=kernel_checks, end_to_end=end_to_end)
 
     record = ResultRecord(
         kind="hypothesis" if args.hypothesis else "baseline",
@@ -172,6 +174,17 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
         ("compiled", reference, "max-autotune"),
         ("compiled_nocudagraphs", reference, "max-autotune-no-cudagraphs"),
         ("candidate", candidate, None),
+        # The scoring column. `candidate` alone is eager, so measuring it against a
+        # CUDA-graphed `compiled` compares Python dispatch overhead across 32 layers
+        # rather than kernels, and no memory-bound hypothesis can win it however good
+        # the Triton is. Giving the candidate the *same* max-autotune treatment leaves
+        # exactly one difference between the two columns — who wrote the kernel — which
+        # is what "beat what the compiler generates" has to mean. The kernels are
+        # registered as custom ops so inductor may schedule and CUDA-graph around them
+        # but may not decompose them back into the ops they replace. `candidate` stays
+        # as a diagnostic: the gap between it and this column is the compiler's
+        # contribution, and the gap between this column and `compiled` is the kernel's.
+        ("candidate_compiled", candidate, "max-autotune"),
     ):
         setups[label], columns[label] = make(model, mode)
     return columns, setups, workload

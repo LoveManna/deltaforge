@@ -125,3 +125,17 @@ def greedy_decode(
         next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
         generated.append(next_token)
     return torch.cat(generated, dim=1)
+
+
+# -- installers --------------------------------------------------------------------
+#
+# One entry per replaceable operation, registered next to the kernel that needs it.
+
+
+def _install_fused_rmsnorm_residual(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.fused_rmsnorm_residual import install  # noqa: PLC0415 - keeps Triton optional
+
+    install(model, entry)
+
+
+register_installer("rms_norm_residual", _install_fused_rmsnorm_residual)

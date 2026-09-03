@@ -20,12 +20,15 @@ from dataclasses import dataclass, replace
 from enum import Enum
 
 __all__ = [
+    "CHECK_BUILDERS",
     "REGISTRY",
     "REPLACEABLE_OPS",
     "KernelEntry",
     "KernelRegistry",
     "KernelStatus",
     "RegistryError",
+    "build_kernel_checks",
+    "register_checks",
 ]
 
 
@@ -205,3 +208,53 @@ class KernelRegistry:
 
 #: The process-wide registry. Kernel modules register into this on import.
 REGISTRY = KernelRegistry()
+
+
+#: Operation name -> a builder returning that kernel's layer-1 `KernelCheck`s.
+#:
+#: Mirrors `model.INSTALLERS`: a kernel declares how it is *installed* there and how it is
+#: *checked* here, both next to the kernel itself. A champion with no checks is allowed —
+#: the end-to-end gate still covers it — but it is reported as unchecked rather than as
+#: passing.
+CHECK_BUILDERS: dict[str, Callable[..., tuple]] = {}
+
+
+def register_checks(op: str, builder: Callable[..., tuple]) -> None:
+    if op in CHECK_BUILDERS:
+        raise ValueError(f"checks for {op!r} are already registered")
+    CHECK_BUILDERS[op] = builder
+
+
+def build_kernel_checks(model, *, registry: KernelRegistry | None = None, **kwargs) -> tuple:
+    """Run every champion's layer-1 checks against ``model``'s reference operations."""
+    registry = REGISTRY if registry is None else registry
+    checks: list = []
+    for op in registry.champions():
+        builder = CHECK_BUILDERS.get(op)
+        if builder is not None:
+            checks.extend(builder(model, **kwargs))
+    return tuple(checks)
+
+
+# -- registered kernels ------------------------------------------------------------
+#
+# Imported for their registration side effect. A kernel module must import cleanly with
+# no Triton present, so that the CPU test suite and CI can still import the registry.
+
+from . import fused_rmsnorm_residual as _fused_rmsnorm_residual  # noqa: E402
+
+REGISTRY.register(
+    "fused_rmsnorm_residual",
+    impl=_fused_rmsnorm_residual.add_rms_norm,
+    replaces="rms_norm_residual",
+    status=KernelStatus.CHAMPION,
+    hypothesis="001-fused-rmsnorm-residual",
+    notes=(
+        "Fuses the residual add with the RMSNorm that follows it, and replaces the "
+        "layer's other hidden-size norm with a single-pass Triton RMSNorm. Champion of "
+        "an operation with no incumbent: being champion is what puts it in the candidate "
+        "column, which is how it gets measured at all. Retired to the graveyard if the "
+        "measurement does not clear the noise band."
+    ),
+)
+register_checks("rms_norm_residual", _fused_rmsnorm_residual.correctness_checks)

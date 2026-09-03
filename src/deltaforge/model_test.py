@@ -21,9 +21,26 @@ def model():
 
 
 def test_an_empty_registry_installs_nothing(model):
-    """The bootstrap state: the candidate column is the reference until a kernel exists."""
+    """No kernels means the candidate column *is* the reference, unpatched."""
     assert apply_champions(model, KernelRegistry()) == ()
-    assert apply_champions(model, REGISTRY) == ()
+
+
+def test_the_shipped_registry_installs_its_champions(model):
+    """Every champion in the process-wide registry installs without error on a tiny CPU
+    model. Installation is structural — it swaps which forward runs — so it is checked
+    here; whether the installed kernel is numerically right is the GPU gate's job."""
+    installed = apply_champions(model, REGISTRY)
+
+    assert set(installed) == {entry.name for entry in REGISTRY.champions().values()}
+
+
+def test_installing_twice_is_a_no_op_rather_than_a_double_patch(model):
+    apply_champions(model, REGISTRY)
+    before = [type(layer) for layer in model.layers]
+
+    apply_champions(model, REGISTRY)
+
+    assert [type(layer) for layer in model.layers] == before
 
 
 def test_a_champion_without_an_installer_fails_loudly(model):

@@ -494,7 +494,7 @@ def test_teardown_runs_on_the_happy_path(workdir):
     assert not (workdir / "state").exists(), "the state file is cleaned up"
 
 
-@pytest.mark.parametrize("stage", ["sync", "correctness", "bench", "pull"])
+@pytest.mark.parametrize("stage", ["sync", "gputests", "correctness", "bench", "pull"])
 def test_teardown_still_runs_when_the_run_fails_part_way_through(workdir, stage):
     """The trap is the whole point: a crash, a failed benchmark or an interrupt must
     still destroy the instance and reconcile the ledger."""

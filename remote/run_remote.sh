@@ -275,14 +275,32 @@ remote_sh() {
 }
 
 df_log "preparing the remote environment"
-remote_sh "pip install --no-deps -e . && pip install safetensors transformers tokenizers"
+remote_sh "pip install --no-deps -e . && pip install safetensors transformers tokenizers pytest"
 remote_sh "python -m deltaforge.cli fetch-weights --dest '$DF_WEIGHTS_DIR'"
+
+# The GPU-marked tests skip themselves on a CPU machine, so this is the first place they
+# ever run. `oracle_test.py` is the weight-value oracle against HuggingFace: until it has
+# passed, the reference is only proven structurally correct, and every number downstream
+# of it would be measuring an unvalidated model. It runs before the gates, not after.
+if df_stage_should_fail gputests; then
+    df_die "GPU test suite failed (simulated)"
+fi
+df_log "running the GPU test suite: weight-value oracle and kernel numerics"
+remote_sh "DELTAFORGE_WEIGHTS_DIR='$DF_WEIGHTS_DIR' python -m pytest -m gpu -q"
 
 if df_stage_should_fail correctness; then
     df_die "correctness gate failed (simulated)"
 fi
 df_log "running correctness gates"
 remote_sh "python -m deltaforge.cli correctness --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
+
+# Pull what has been recorded so far, before the longest and riskiest step. The
+# correctness record is the expensive part of this run — it needed the checkpoint on a
+# GPU — and a benchmark that fails or is killed by the watchdog must not take it down
+# with it. The trap destroys the instance on failure and cannot rsync from a dead box.
+# shellcheck disable=SC2086
+sh "$DF_REPO_ROOT/remote/sync.sh" down $SYNC_FLAGS \
+    --host "$DF_SSH_HOST" --port "$DF_SSH_PORT" --remote-dir "$DF_REMOTE_DIR"
 
 if df_stage_should_fail bench; then
     df_die "benchmark failed (simulated)"
