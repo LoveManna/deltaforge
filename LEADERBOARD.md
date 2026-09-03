@@ -26,6 +26,13 @@ shapes against the real checkpoint, cache contract, causality, the mRoPE reducti
 not yet proven to interpret the weight *values* correctly. Every subsequent number depends
 on that.
 
+**GPU access.** The blocker that stopped the bootstrap session has cleared: as of
+2026-09-02 the Vast.ai account is email-verified with $8.00 of signup credit, and a live
+offer query returned single RTX 5090s at $0.3215/hr under the provisioning filters — about
+24 GPU-hours of headroom against a session that costs roughly $0.60. Check the balance
+yourself rather than trusting this line; it records the state on one day, and the budget
+gates in `remote/` are the actual enforcement.
+
 ## Baseline
 
 | | |
