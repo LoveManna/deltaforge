@@ -58,7 +58,7 @@ while [ $# -gt 0 ]; do
         --dry-run)           DF_DRY_RUN=1 ;;
         --session-id)        DF_SESSION_ID="$2"; shift ;;
         --hypothesis)        DF_HYPOTHESIS="$2"; shift ;;
-        --ledger)            DF_LEDGER="$2"; shift ;;
+        --ledger)            DF_LEDGER="$2"; DF_LEDGER_EXPLICIT=1; shift ;;
         --session-limit)     DF_SESSION_LIMIT_MINUTES="$2"; shift ;;
         --watchdog-minutes)  DF_WATCHDOG_MINUTES="$2"; shift ;;
         --max-rate)          DF_PROVISION_ARGS="$DF_PROVISION_ARGS --max-rate $2"; shift ;;
@@ -86,6 +86,12 @@ df_absolute() {
 }
 DF_STATE_FILE=$(df_absolute "$DF_STATE_FILE")
 DF_LEDGER=$(df_absolute "$DF_LEDGER")
+
+# A rehearsal reads the real ledger but must not write to it.
+if [ "$DF_DRY_RUN" = "1" ] && [ "${DF_LEDGER_EXPLICIT:-0}" != "1" ]; then
+    DF_LEDGER=$(df_dryrun_ledger "$DF_LEDGER")
+    df_log "(dry-run) ledger seeded from the real record; writes go to $DF_LEDGER"
+fi
 
 DF_INSTANCE_ID=""
 DF_INSTANCE_GPU=""

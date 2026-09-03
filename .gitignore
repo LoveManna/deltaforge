@@ -27,3 +27,6 @@ uv.lock
 .deltaforge-watchdog-cancel
 .pytest_cache/
 .ruff_cache/
+
+# Dry-run rehearsal ledger (never the real spend record)
+.deltaforge-dryrun-spend.jsonl

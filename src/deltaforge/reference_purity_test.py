@@ -45,6 +45,15 @@ FORBIDDEN_CALLS = {
     "fused_recurrent_gated_delta_rule",
 }
 
+#: Dynamic-import machinery. `_imported_roots` walks only `ast.Import`/`ast.ImportFrom`,
+#: so `importlib.import_module("triton")` is an `ast.Call` that every import check above
+#: would wave through. These are checked structurally in the same AST call walk, with a
+#: source-level backstop below for forms an attribute-call check can still miss.
+FORBIDDEN_DYNAMIC_IMPORT_CALLS = {
+    "import_module",
+    "__import__",
+}
+
 
 @pytest.fixture(scope="module")
 def tree() -> ast.Module:
@@ -91,18 +100,38 @@ def test_reference_imports_only_torch_and_local_config(tree):
     assert not roots, f"reference.py gained unexpected imports: {sorted(roots)}"
 
 
-def test_reference_never_calls_a_fused_attention_or_scan_primitive(tree):
-    found = set()
+def _called_names(tree: ast.Module) -> set[str]:
+    """Every callee name in the module, whether called bare or through an attribute."""
+    names: set[str] = set()
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
         func = node.func
         name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
-        if name in FORBIDDEN_CALLS:
-            found.add(name)
+        if name:
+            names.add(name)
+    return names
+
+
+def test_reference_never_calls_a_fused_attention_or_scan_primitive(tree):
+    found = _called_names(tree) & FORBIDDEN_CALLS
     assert not found, (
         f"reference.py calls {sorted(found)}. These are the fused algorithms the project "
         "exists to hand-write; the baseline must spell them out instead."
+    )
+
+
+def test_reference_never_reaches_a_kernel_through_a_dynamic_import(tree):
+    """A statically clean import list proves nothing if the module can import at runtime.
+
+    Enforced structurally on the AST call graph, so it does not depend on how the source
+    happens to be spelled or formatted.
+    """
+    found = _called_names(tree) & FORBIDDEN_DYNAMIC_IMPORT_CALLS
+    assert not found, (
+        f"reference.py calls {sorted(found)}. The baseline's dependencies must be "
+        "statically visible; a runtime import can pull in a hand-written kernel and "
+        "defeat every import check in this file."
     )
 
 
@@ -115,18 +144,33 @@ def test_the_check_would_actually_catch_a_violation(tree):
         "    return F.scaled_dot_product_attention(q, k, v)\n"
     )
     assert _imported_roots(violating) & FORBIDDEN_IMPORT_ROOTS == {"triton"}
-    calls = {
-        n.func.attr
-        for n in ast.walk(violating)
-        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    assert _called_names(violating) & FORBIDDEN_CALLS == {"scaled_dot_product_attention"}
+
+    # The dynamic-import path is the one the import walk cannot see: no ast.Import node
+    # appears anywhere in this snippet, yet it loads Triton.
+    dynamic = ast.parse(
+        "import importlib\n"
+        "def f():\n"
+        "    tl = importlib.import_module('triton.language')\n"
+        "    return __import__('triton')\n"
+    )
+    assert not _imported_roots(dynamic) & FORBIDDEN_IMPORT_ROOTS
+    assert _called_names(dynamic) & FORBIDDEN_DYNAMIC_IMPORT_CALLS == {
+        "import_module",
+        "__import__",
     }
-    assert calls & FORBIDDEN_CALLS == {"scaled_dot_product_attention"}
-    # And the real module is clean by the same detector.
+
+    # And the real module is clean by all three detectors.
     assert not _imported_roots(tree) & FORBIDDEN_IMPORT_ROOTS
+    assert not _called_names(tree) & (FORBIDDEN_CALLS | FORBIDDEN_DYNAMIC_IMPORT_CALLS)
 
 
-def test_reference_does_not_mention_triton_even_in_a_string():
-    """Catches a dynamic import or an importlib call that the AST walk would miss."""
+def test_no_dynamic_import_machinery_appears_in_the_source_either():
+    """Source-level backstop for the check above, not a search for the word "triton".
+
+    The AST call check is the primary enforcement. This keeps a second, dumber reading of
+    the same invariant so that a spelling the attribute-call walk mishandles — an aliased
+    `importlib`, a getattr indirection, a call built up in a string — still trips."""
     source = REFERENCE.read_text()
     code_lines = []
     for line in source.splitlines():
@@ -138,4 +182,5 @@ def test_reference_does_not_mention_triton_even_in_a_string():
     # The module docstring legitimately explains why Triton is excluded, so only
     # executable-looking occurrences matter.
     assert "import_module" not in body
+    assert "importlib" not in body
     assert "__import__" not in body

@@ -275,9 +275,16 @@ def month_to_date_usd(rows: list[LedgerRow], month: str | None = None) -> float:
         del instance_id
         reconciled = [d for d in state.destroys if d.actual_cost_usd is not None]
         if reconciled:
-            for destroy in reconciled:
-                if destroy.month == month:
-                    total += destroy.actual_cost_usd or 0.0
+            # One instance can be reconciled twice: the local watchdog destroys it and
+            # writes its row (spec 8.3), which kills the run and fires the teardown trap,
+            # which writes another (spec 8.5). The ledger is append-only, so neither row
+            # can be retracted and the readers are the only correct place to dedup.
+            # Count the LARGEST reported cost, never the first, last, or mean — this is a
+            # budget gate, and over-counting refuses to spend while under-counting lets
+            # spend escape. Mirrored in df_ledger_month_to_date in remote/lib.sh.
+            destroy = max(reconciled, key=lambda d: d.actual_cost_usd or 0.0)
+            if destroy.month == month:
+                total += destroy.actual_cost_usd or 0.0
         elif state.provision is not None and state.provision.month == month:
             total += state.provision.estimated_ceiling_usd
     return round(total, 6)
@@ -294,7 +301,9 @@ def session_minutes(rows: list[LedgerRow], session_id: str, now_epoch: int | Non
     for state in _by_instance([r for r in rows if r.session_id == session_id]).values():
         reconciled = [d for d in state.destroys if d.actual_minutes is not None]
         if reconciled:
-            total += sum(d.actual_minutes or 0.0 for d in reconciled)
+            # Deduped at read time for the same reason as month_to_date_usd, at the
+            # largest reported duration. Mirrored in df_ledger_session_minutes.
+            total += max(d.actual_minutes or 0.0 for d in reconciled)
         elif state.provision is not None:
             total += max(0.0, (now_epoch - state.provision.ts_epoch) / 60.0)
     return round(total, 6)

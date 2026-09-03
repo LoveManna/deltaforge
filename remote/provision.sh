@@ -75,7 +75,7 @@ while [ $# -gt 0 ]; do
         --fallback-gpu)  DF_FALLBACK_GPU="$2"; shift ;;
         --max-rate)      DF_MAX_RATE="$2"; shift ;;
         --max-minutes)   DF_MAX_MINUTES="$2"; shift ;;
-        --ledger)        DF_LEDGER="$2"; shift ;;
+        --ledger)        DF_LEDGER="$2"; DF_LEDGER_EXPLICIT=1; shift ;;
         --mtd-limit)     DF_MTD_LIMIT="$2"; shift ;;
         --offers-file)   DF_OFFERS_FILE="$2"; shift ;;
         --state-file)    DF_STATE_FILE="$2"; shift ;;
@@ -95,6 +95,10 @@ df_require_cmd awk date
 # ---------------------------------------------------------------------------
 
 MTD=$(df_ledger_month_to_date "$DF_LEDGER")
+if [ "$DF_DRY_RUN" = "1" ] && [ "${DF_LEDGER_EXPLICIT:-0}" != "1" ]; then
+    # Gate read above against the real record; rows below go to a scratch copy.
+    DF_LEDGER=$(df_dryrun_ledger "$DF_LEDGER")
+fi
 df_log "month-to-date spend: \$$MTD (refusal threshold \$$DF_MTD_LIMIT)"
 if df_ge "$MTD" "$DF_MTD_LIMIT"; then
     df_die "REFUSED by month-to-date budget gate: \$$MTD >= \$$DF_MTD_LIMIT. \

@@ -346,3 +346,80 @@ def test_a_realistic_session_stays_well_under_budget(tmp_path):
 
     assert spend == pytest.approx(10 * 0.324 * 55 / 60, rel=1e-3)
     assert spend < 3.0
+
+
+# -- double reconciliation ------------------------------------------------------------
+#
+# The 90-minute watchdog (spec 8.3) destroys the instance and writes its own destroy row;
+# that kills the run, which fires the teardown trap (spec 8.5), which writes a second
+# destroy row for the same instance. The ledger is append-only, so neither row can be
+# retracted and the readers must dedup. Both gates count one reconciled destroy per
+# instance, at the LARGEST reported value — over-counting refuses to spend, which is
+# safe; under-counting lets spend escape, which is not.
+
+
+def test_a_double_reconciled_instance_is_counted_once_at_the_larger_cost():
+    rows = [
+        provision("i1"),
+        destroy("i1", ts="2026-08-30T13:30:00Z", minutes=90.0, cost=0.486),  # watchdog
+        destroy("i1", ts="2026-08-30T13:30:04Z", minutes=89.5, cost=0.4833),  # teardown trap
+    ]
+
+    assert month_to_date_usd(rows, month="2026-08") == pytest.approx(0.486)
+
+
+def test_a_double_reconciled_instance_bills_minutes_once_at_the_larger_duration():
+    rows = [
+        provision("i1"),
+        destroy("i1", ts="2026-08-30T13:30:00Z", minutes=90.0, cost=0.486),
+        destroy("i1", ts="2026-08-30T13:30:04Z", minutes=89.5, cost=0.4833),
+    ]
+
+    assert session_minutes(rows, "s1", now_epoch=EPOCH + 7200) == pytest.approx(90.0)
+
+
+def test_dedup_takes_the_maximum_regardless_of_which_row_came_first():
+    """Not first-wins, not last-wins, not the mean: the largest. Whichever writer got
+    there first, the gate must see the more expensive reading."""
+    ascending = [
+        provision("i1"),
+        destroy("i1", minutes=10.0, cost=0.1),
+        destroy("i1", minutes=40.0, cost=0.4),
+    ]
+    descending = [
+        provision("i1"),
+        destroy("i1", minutes=40.0, cost=0.4),
+        destroy("i1", minutes=10.0, cost=0.1),
+    ]
+
+    for rows in (ascending, descending):
+        assert month_to_date_usd(rows, month="2026-08") == pytest.approx(0.4)
+        assert session_minutes(rows, "s1", now_epoch=EPOCH + 7200) == pytest.approx(40.0)
+
+
+def test_a_single_reconciled_destroy_is_unaffected_by_the_dedup():
+    rows = [provision("i1"), destroy("i1", minutes=30.0, cost=0.162)]
+
+    assert month_to_date_usd(rows, month="2026-08") == pytest.approx(0.162)
+    assert session_minutes(rows, "s1", now_epoch=EPOCH + 7200) == pytest.approx(30.0)
+
+
+def test_a_crash_between_the_two_writes_still_falls_back_to_the_estimate():
+    """Provision row written, instance never reconciled: unchanged fail-closed behaviour
+    — the ceiling for spend, wall-clock elapsed for session minutes."""
+    rows = [provision("i1", ceiling=0.486)]
+
+    assert month_to_date_usd(rows, month="2026-08") == pytest.approx(0.486)
+    assert session_minutes(rows, "s1", now_epoch=EPOCH + 1800) == pytest.approx(30.0)
+
+
+def test_two_different_instances_are_still_summed_separately():
+    rows = [
+        provision("i1"),
+        destroy("i1", minutes=30.0, cost=0.162),
+        provision("i2"),
+        destroy("i2", minutes=20.0, cost=0.108),
+    ]
+
+    assert month_to_date_usd(rows, month="2026-08") == pytest.approx(0.27)
+    assert session_minutes(rows, "s1", now_epoch=EPOCH + 7200) == pytest.approx(50.0)

@@ -21,6 +21,7 @@ diverges from the other fails here.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -698,6 +699,13 @@ AGREEMENT_FIXTURES = {
             actual_cost_usd=0.2376,
         ),
     ],
+    "double_reconciled": [
+        # Watchdog destroy + teardown-trap destroy for one instance. Both readers must
+        # count it once, at the larger value.
+        ledger_line(instance_id="a"),
+        ledger_line(event="destroy", instance_id="a", actual_minutes=90.0, actual_cost_usd=0.486),
+        ledger_line(event="destroy", instance_id="a", actual_minutes=89.5, actual_cost_usd=0.4833),
+    ],
     "spans_months": [
         ledger_line(instance_id="old", ts="2026-07-31T23:00:00Z"),
         ledger_line(
@@ -865,3 +873,74 @@ def test_no_script_enables_shell_tracing(script):
         stripped = line.strip()
         assert not stripped.startswith("set -x")
         assert "set -eux" not in stripped
+
+
+def _shell(expr):
+    return subprocess.run(
+        ["sh", "-c", f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; {expr}'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    ).stdout.strip()
+
+
+def test_the_shell_gate_counts_a_double_reconciled_instance_once(workdir):
+    """The awk readers are what provision.sh and run_remote.sh actually gate on, so a
+    Python-only dedup would leave the real gate double-counting."""
+    ledger = write_ledger(workdir / "ledger" / "spend.jsonl", AGREEMENT_FIXTURES["double_reconciled"])
+
+    spend = float(_shell(f'df_ledger_month_to_date "{ledger}" "2026-08"'))
+    minutes = float(_shell(f'df_ledger_session_minutes "{ledger}" "s1" {EPOCH + 7200}'))
+
+    assert spend == pytest.approx(0.486, abs=1e-6)
+    assert minutes == pytest.approx(90.0, abs=1e-6)
+
+
+def test_a_dry_run_never_writes_to_the_real_spend_ledger(workdir):
+    """A rehearsal must read the real budget record and write to a scratch copy.
+
+    Synthetic provision/destroy rows in the real ledger would inflate month-to-date spend
+    for every later session, so the gate that exists to stop a runaway bill would start
+    refusing runs on money that was never spent.
+    """
+    real = REPO_ROOT / "ledger" / "spend.jsonl"
+    before = real.read_text() if real.exists() else ""
+    scratch = workdir / "dryrun-spend.jsonl"
+
+    run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "dryrun-isolation",
+        env={**os.environ, "DF_DRYRUN_LEDGER": str(scratch)},
+    )
+
+    after = real.read_text() if real.exists() else ""
+    assert after == before, "the rehearsal wrote synthetic rows into the real spend record"
+
+    rows = [line for line in scratch.read_text().splitlines() if line.strip()]
+    assert any('"event":"provision"' in row for row in rows), "no provision row was recorded at all"
+    assert any('"event":"destroy"' in row for row in rows), "teardown did not reconcile"
+    # Seeded from the real record, so the gates still read real spend.
+    assert scratch.read_text().startswith(before)
+
+
+def test_an_explicit_ledger_path_is_honoured_even_in_a_dry_run(workdir):
+    """The scratch redirect must not hijack a ledger the caller named — the fixture-driven
+    gate tests above depend on their rows landing where they said."""
+    ledger = write_ledger(workdir / "ledger" / "spend.jsonl", [])
+
+    run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "explicit-ledger",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    rows = [line for line in ledger.read_text().splitlines() if line.strip()]
+    assert any('"event":"provision"' in row for row in rows)

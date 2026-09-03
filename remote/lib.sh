@@ -131,6 +131,12 @@ function jget(line, key,   pat, start, rest, i, ch, out) {
 # An instance that was provisioned but never reconciled counts at its estimated ceiling.
 # Counting it at zero would make the gate fail open exactly when an instance is still
 # running and still costing money.
+#
+# The watchdog (spec 8.3) and the teardown trap (spec 8.5) can each reconcile the same
+# instance, and the append-only ledger cannot retract either row, so one reconciled
+# destroy is counted per instance, at the LARGEST reported cost. Must agree with
+# month_to_date_usd in src/deltaforge/ledger.py — this awk path is what provision.sh
+# actually gates on.
 df_ledger_month_to_date() {
     _ledger="$1"
     _month="${2:-$(df_this_month)}"
@@ -150,18 +156,21 @@ df_ledger_month_to_date() {
         } else if (ev == "destroy") {
             c = jget($0, "actual_cost_usd")
             if (c != "" && c != "null") {
+                if (!(iid in dcount) || c + 0 > dmax[iid]) {
+                    dmax[iid] = c + 0
+                    dmonth[iid] = substr(jget($0, "ts"), 1, 7)
+                }
                 dcount[iid]++
-                if (substr(jget($0, "ts"), 1, 7) == MONTH) dsum[iid] += c + 0
             }
         }
     }
     END {
         total = 0
         for (i in prov) {
-            if (dcount[i] > 0) total += dsum[i]
+            if (dcount[i] > 0) { if (dmonth[i] == MONTH) total += dmax[i] }
             else if (pmonth[i] == MONTH) total += pest[i]
         }
-        for (i in dcount) if (!(i in prov)) total += dsum[i]
+        for (i in dcount) if (!(i in prov) && dmonth[i] == MONTH) total += dmax[i]
         printf "%.6f\n", total
     }' "$_ledger"
 }
@@ -169,7 +178,8 @@ df_ledger_month_to_date() {
 # df_ledger_session_minutes LEDGER SESSION_ID [NOW_EPOCH] -> minutes on stdout
 #
 # An instance still running counts at its wall-clock elapsed time, so a session cannot
-# dodge the gate by simply not tearing down.
+# dodge the gate by simply not tearing down. Double-reconciled instances are deduped at
+# the largest reported duration, as in df_ledger_month_to_date.
 df_ledger_session_minutes() {
     _ledger="$1"
     _session="$2"
@@ -186,18 +196,40 @@ df_ledger_session_minutes() {
             if (!(iid in prov)) { prov[iid] = 1; pts[iid] = jget($0, "ts_epoch") + 0 }
         } else if (ev == "destroy") {
             m = jget($0, "actual_minutes")
-            if (m != "" && m != "null") { dcount[iid]++; dsum[iid] += m + 0 }
+            if (m != "" && m != "null") {
+                if (!(iid in dcount) || m + 0 > dmax[iid]) dmax[iid] = m + 0
+                dcount[iid]++
+            }
         }
     }
     END {
         total = 0
         for (i in prov) {
-            if (dcount[i] > 0) total += dsum[i]
+            if (dcount[i] > 0) total += dmax[i]
             else { d = (NOW - pts[i]) / 60; if (d < 0) d = 0; total += d }
         }
-        for (i in dcount) if (!(i in prov)) total += dsum[i]
+        for (i in dcount) if (!(i in prov)) total += dmax[i]
         printf "%.6f\n", total
     }' "$_ledger"
+}
+
+# df_dryrun_ledger REAL_LEDGER -> scratch ledger path on stdout
+#
+# A dry run has to exercise the real month-to-date gate, which means READING the real
+# ledger, while its synthetic provision/destroy rows must never reach it: they would
+# inflate the budget reading for every later session and corrupt the spend the project
+# reports. So seed a scratch copy from the real ledger and let the rehearsal read and
+# write that instead. An explicitly supplied --ledger is always honoured as given.
+df_dryrun_ledger() {
+    _real="$1"
+    _scratch="${DF_DRYRUN_LEDGER:-${DF_REPO_ROOT:-.}/.deltaforge-dryrun-spend.jsonl}"
+    mkdir -p "$(dirname "$_scratch")" 2>/dev/null || true
+    if [ -f "$_real" ]; then
+        cp "$_real" "$_scratch"
+    else
+        : > "$_scratch"
+    fi
+    printf '%s\n' "$_scratch"
 }
 
 # Float comparison without bc, which is not universally installed.
