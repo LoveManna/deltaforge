@@ -281,7 +281,10 @@ wait_for_ssh() {
             printf '\n' >&2
             _dumped=1
         fi
-        df_log "waiting for instance to start (status: ${_status:-unknown})"
+        # `status_msg` carries the image-pull progress. Without it, a slow pull and a
+        # dead host look identical from here, and telling them apart cost two rentals.
+        _msg=$(printf '%s' "$_row" | jq -r '.status_msg // empty' 2>/dev/null | tr -d '\n' | cut -c1-70)
+        df_log "waiting for instance to start (status: ${_status:-unknown}${_msg:+ | $_msg})"
         sleep 10
     done
     df_die "instance $DF_INSTANCE_ID did not become reachable within ${DF_SSH_READY_TIMEOUT}s"
@@ -318,6 +321,7 @@ remote_sh() {
 }
 
 df_log "preparing the remote environment"
+remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq g++)"
 remote_sh "pip install --no-deps -e . && pip install safetensors transformers tokenizers pytest"
 remote_sh "python -m deltaforge.cli fetch-weights --dest '$DF_WEIGHTS_DIR'"
 

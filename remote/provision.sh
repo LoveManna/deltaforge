@@ -21,10 +21,15 @@ DF_REPO_ROOT=$(cd -- "$(dirname -- "$DF_SCRIPT_PATH")/.." && pwd)
 export DF_REPO_ROOT
 . "$DF_REPO_ROOT/remote/lib.sh"
 
-# Verified 2026-08-30 on Docker Hub: this tag exists and matches the spec's
-# "PyTorch 2.11 + CUDA 12.8 preinstalled" requirement, which keeps us from paying for a
-# long dependency install on every provision.
-DF_IMAGE="${DF_IMAGE:-pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel}"
+# The spec's "PyTorch 2.11 + CUDA 12.8 preinstalled" requirement, on the *runtime* tag.
+#
+# The `-devel` tag is 14.1 GB and the `-runtime` tag is 4.26 GB for the same torch and
+# CUDA. A rental is billed from creation, so the image pull is paid time before anything
+# computes: one 20-minute rental was spent watching `-devel` fail to land. The toolchain
+# `-devel` adds is not needed — Triton ships its own compiler and ptxas — and the one
+# piece that can be missing, a C++ compiler for inductor, is installed by the prep step
+# only when it is absent.
+DF_IMAGE="${DF_IMAGE:-pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime}"
 
 # Live market check on 2026-08-30 returned 6+ single RTX 5090s at $0.32-$0.35/hr. The
 # ceiling is set from that observation, not from the spec's older $0.45-0.60 estimate.
