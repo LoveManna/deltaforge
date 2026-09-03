@@ -968,9 +968,21 @@ def _row(instance_id: str) -> str:
 def test_the_running_instance_is_found_by_id_in_a_v1_listing():
     row = json.loads(_row("49700454"))
 
-    assert row["actual_status"] == "running"
     assert row["ssh_host"] == "ssh5.vast.ai"
     assert row["ssh_port"] == 41234
+
+
+def test_the_readiness_state_falls_back_to_cur_state():
+    """A live instance comes back with `actual_status: null` and the state in
+    `cur_state`. Reading only the documented field leaves the poller unable to tell
+    "not ready yet" from "asking the wrong question", which cost two rented cards."""
+    listing = INSTANCES_FIXTURE.read_text()
+    state = _shell(
+        "row=$(df_instance_row '" + listing.replace("'", "") + "' 49700454); "
+        "printf '%s' \"$row\" | jq -r '.actual_status // .cur_state // empty'"
+    )
+
+    assert state == "running"
 
 
 def test_another_instance_in_the_same_listing_is_not_confused_for_ours():

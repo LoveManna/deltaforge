@@ -240,7 +240,10 @@ wait_for_ssh() {
     while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
         _listing=$(df_api_v1 GET "/instances/" 2>/dev/null || true)
         _row=$(df_instance_row "$_listing" "$DF_INSTANCE_ID")
-        _status=$(printf '%s' "$_row" | jq -r '.actual_status // empty' 2>/dev/null || true)
+        # `actual_status` is present but null on live instances in the v1 listing;
+        # `cur_state` is the field that actually carries "running". Read the documented
+        # one first and fall back, so this keeps working whichever one the API fills in.
+        _status=$(printf '%s' "$_row" | jq -r '.actual_status // .cur_state // empty' 2>/dev/null || true)
         if [ "$_status" = "running" ]; then
             _host=$(printf '%s' "$_row" | jq -r '.ssh_host // empty')
             _port=$(printf '%s' "$_row" | jq -r '.ssh_port // empty')
@@ -263,6 +266,9 @@ wait_for_ssh() {
                 done
                 df_die "instance $DF_INSTANCE_ID started but ssh never answered within ${DF_SSH_READY_TIMEOUT}s"
             fi
+        fi
+        if [ "${DF_DEBUG_POLL:-0}" = "1" ]; then
+            df_log "raw row: $(printf '%s' "$_row" | head -c 400)"
         fi
         if [ -z "$_row" ] && [ "$_dumped" = "0" ]; then
             # One raw dump the first time the instance is not in its own listing. Ten

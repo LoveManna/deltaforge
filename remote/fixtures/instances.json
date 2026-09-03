@@ -4,7 +4,7 @@
   "instances": [
     {
       "id": 49700454,
-      "actual_status": "running",
+      "actual_status": null,
       "cur_state": "running",
       "gpu_name": "RTX 5090",
       "ssh_host": "ssh5.vast.ai",
@@ -14,7 +14,7 @@
     {
       "id": 49700999,
       "actual_status": "loading",
-      "cur_state": "running",
+      "cur_state": "loading",
       "gpu_name": "RTX 4090",
       "ssh_host": null,
       "ssh_port": null,
