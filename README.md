@@ -148,10 +148,14 @@ Failures are recorded, not discarded. A candidate that was fast but wrong goes i
 Budget is **$50/month**, enforced by code rather than by discipline:
 
 - Month-to-date gate: provisioning refuses at ≥ $45.
-- Session GPU-time soft gate: 60 cumulative billed minutes, checked *before* a run starts
+- Session GPU-time soft gate: 90 cumulative billed minutes, checked *before* a run starts
   and never during one.
-- Hard watchdog: a local-side process destroys the instance at 90 minutes regardless of
+- Hard watchdog: a local-side process destroys the instance at 120 minutes regardless of
   what the remote is doing. A remote that hangs cannot defeat its own kill switch.
+- A batch stops *itself* before a hypothesis it cannot finish before the session deadline,
+  so the watchdog never has to. A watchdog firing is treated as a reportable fault.
+- Teardown pulls results back **before** destroying the instance, so a failure late in a
+  long batch does not take the slots that already succeeded with it.
 - Trap-based teardown: the whole remote run sits inside a shell trap on `EXIT`/`INT`/`TERM`,
   so a crash still destroys the instance.
 - The spend row is written to `ledger/spend.jsonl` *before* the instance is used, then
@@ -160,6 +164,31 @@ Budget is **$50/month**, enforced by code rather than by discipline:
 Every script in `remote/` supports `--dry-run`, which exercises the full logic path —
 including all the gates and the teardown trap — without contacting the create or destroy
 endpoints. That is how the cost machinery is verified with no money at risk.
+
+## One rental, many hypotheses
+
+A rental's fixed cost — container image, torch, a 9.32 GB checkpoint, the GPU test suite,
+and one `max-autotune` compile of the reference — is about fifteen minutes. Each additional
+hypothesis costs two to four. Testing one hypothesis per rental therefore pays fifteen
+minutes of setup to buy three minutes of measurement.
+
+So a rental measures a **batch of 7–12 hypotheses**. The reference is compiled once and
+kept; each candidate is built, gated, benchmarked and freed in turn. Only the *compilation*
+is amortised — the reference column is re-timed inside every hypothesis's own interleaved
+rounds, so per-round drift still divides out exactly as it does for a single measurement.
+
+Every slot runs in its own try/except and writes its record the moment it finishes, so a
+wrong kernel costs a slot rather than the rental. Each batch opens with an **identity
+champion** that installs nothing: it must measure 1.00 ± noise, and if it does not, every
+other number in that batch is void and the writeup says so.
+
+Each hypothesis registers its **predicted outcome and reasoning in the manifest, committed
+before the rental**, and the batch summary scores every prediction against what was
+measured. That scorecard is the point: this project's claim is that a mechanistic account
+stated in advance survives contact with the measurement, and until batches arrived nothing
+here recorded a prediction anywhere it could be checked.
+
+Details in `docs/BATCHES.md`.
 
 ## Reproduction
 
@@ -172,7 +201,7 @@ uv run pytest
 uv run python docs/roofline.py
 
 # Verify the cost machinery without spending anything.
-remote/run_remote.sh --dry-run --session-id smoke
+remote/run_remote.sh --dry-run --session-id smoke --batch 001-calibration
 ```
 
 The full run — provision, sync, correctness gates, benchmark, pull results, destroy —
@@ -180,7 +209,7 @@ is one command, and requires a funded Vast.ai account and `VAST_API_KEY` in a gi
 `.env` at the repo root:
 
 ```sh
-remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)"
+remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)" --batch 001-calibration
 ```
 
 ## Repository map
@@ -195,6 +224,8 @@ remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)"
 | `docs/roofline.py` | Where the bytes go. Run before picking a hypothesis; needs no GPU. |
 | `docs/ARCHITECTURE.md` | The resolved Qwen3.5-4B facts every kernel must honour. |
 | `docs/HYPOTHESES.md` | The idea backlog, and the graveyard of what failed and why. |
+| `docs/BATCHES.md` | How a batch works, and what filling one requires. |
+| `src/deltaforge/batches.py` | The batch manifests, predictions registered in advance. |
 | `AGENT.md` | **Start here.** The single entry point for a working session. |
 | `LEADERBOARD.md` | The current champion, and every hypothesis attempted. |
 

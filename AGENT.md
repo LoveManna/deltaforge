@@ -74,69 +74,90 @@ checks.
 
 ## 4. A session, start to finish
 
+**A rental measures a batch of 7-12 hypotheses, not one.** The fixed cost of a rental —
+container image, torch, a 9.32 GB checkpoint, the GPU suite, and one `max-autotune` compile
+of the reference — is about 15 minutes. Each additional hypothesis costs 2-4. Testing one
+per rental pays that 15 minutes to buy a single measurement, and nine rentals were billed
+that way without producing a number. `docs/BATCHES.md` has the arithmetic and the workflow;
+`docs/superpowers/specs/2026-09-06-batched-hypotheses-design.md` is the design.
+
 1. **Read `LEADERBOARD.md`** — current champion and every attempt so far.
-2. **Read the graveyard in `docs/HYPOTHESES.md`.** Do not re-run a dead end.
-3. **Pick one hypothesis.** State in one sentence: the mechanism, which of the three
-   win-categories it uses (see `docs/HYPOTHESES.md`), and its share of per-token bytes.
-   "Fuse it and see" is not a hypothesis.
-4. **Branch `hyp/NNN-slug`.**
-5. **Write and test the kernel locally.** No GPU needed — GPU time buys validation and
+2. **Read the graveyard in `docs/HYPOTHESES.md`.** Do not re-run a dead end — but note
+   that "unmeasurable, not worth a rental" is *not* a dead end any more (see §4.1).
+3. **Fill a batch.** 7-12 hypotheses in `src/deltaforge/batches.py`, each stating its
+   mechanism, its category, its share of per-token bytes, and — the part that matters —
+   **its predicted outcome and the reasoning behind it, committed before the rental.**
+   Ordering is load-bearing: identity champion first, cheapest and most diagnostic next,
+   riskiest last.
+4. **Branch `batch/NNN-slug`.**
+5. **Write and test the kernels locally.** No GPU needed; GPU time buys validation and
    measurement, not development.
    ```sh
    uv sync --extra dev
-   uv run pytest
+   uv run pytest          # batches_test.py proves every hypothesis installs and changes something
    uv run ruff check . && uv run ruff format --check .
    ```
-   Put it in `src/deltaforge/kernels/`, register it, and add its installer to
-   `deltaforge.model.INSTALLERS` **in the same commit**. A champion with no installer is a
-   hard error, never a fallback: silently benchmarking the baseline while labelling it the
-   candidate is the worst failure this harness could have.
+   Each kernel goes in `src/deltaforge/kernels/`, registers itself, and adds **an installer
+   keyed by its kernel name** to `deltaforge.model.INSTALLERS` and its checks to
+   `CHECK_BUILDERS` in the same commit. Both tables are keyed by kernel, not by the
+   operation replaced, because several kernels routinely attack the same operation.
 6. **Dry-run the money machinery**, which spends nothing:
    ```sh
-   remote/run_remote.sh --dry-run --session-id smoke
+   remote/run_remote.sh --dry-run --session-id smoke --batch NNN-slug
    ```
-7. **Run it.** `remote/run_remote.sh` is the only entry point — it provisions, syncs, runs
-   the GPU tests and both correctness gates, benchmarks, pulls results back and destroys the
-   instance, with the whole body inside a trap on `EXIT`/`INT`/`TERM` so a crash still tears
-   down.
+7. **Run it.**
    ```sh
-   remote/run_remote.sh --session-id "$SESSION" --hypothesis "NNN-slug"
+   remote/run_remote.sh --session-id "$SESSION" --batch "NNN-slug"
    ```
-8. **Record the outcome** (section 6). Win or lose.
+8. **Record the outcome** (§6). Every slot, win, loss or error.
 
-The benchmark runs four columns by default. `compiled` against `candidate_compiled` is the
-score — identical `max-autotune` treatment, the only difference being who wrote the kernel.
-`eager` and `candidate` are free diagnostics. `compiled_nocudagraphs` costs a whole extra
-compilation and is **opt-in** via `--columns all`: run it on a calibration run, or when a
-hypothesis is about launch overhead. Whichever set runs is recorded in the result.
+The benchmark runs four columns. `compiled` against `candidate_compiled` is the score —
+identical `max-autotune` treatment, the only difference being who wrote the kernel.
+`compiled_nocudagraphs` is opt-in via `--columns all`.
+
+### 4.1 What batching changes about which hypotheses are worth trying
+
+The ceiling arithmetic in §2 still decides what can *win*. What it no longer decides is
+what is worth *measuring*.
+
+Five hypotheses sit in the graveyard closed as "unmeasurable": their ceiling is below the
+noise band, so a whole rental to measure one was not worth it. **That was an argument about
+cost, and batching dissolves it.** At three minutes a slot, a measured null carrying a real
+ratio and a real IQR from a real card beats an arithmetic prediction of a null — and the
+two are not the same claim, because a measurement also contains launch overhead, CUDA-graph
+behaviour, and whatever inductor actually emitted.
+
+So: still rank by byte share, still refuse to *promote* on a noise-band margin, but stop
+using "the ceiling is too small to measure" as a reason not to fill a slot. Fill the slot.
+
+### 4.2 The batch's own guarantees
+
+* **A failing slot costs a slot, not the rental.** Every hypothesis runs in its own
+  try/except; an exception is recorded as `error` with its traceback and the batch
+  continues.
+* **Records are written as each slot finishes**, and teardown pulls results *before*
+  destroying the instance, so a late failure cannot take the earlier slots with it.
+* **The batch stops itself** before a slot it cannot finish, so the watchdog never has to.
+* **The identity champion runs first and must return 1.00 ± noise.** If it does not, the
+  harness is measuring something other than the kernel under test and **every other number
+  in that batch is void** — say so in the writeup rather than reporting them as findings.
 
 ### If this is the first session that ever gets a GPU
 
-**No measurement exists yet.** Do not write a kernel. Spend the session on:
-
-1. `pytest -m "gpu and weights"` — the weight-value oracle. Until it passes, the reference
-   is proven structurally correct but not proven to interpret weight *values* correctly, and
-   every number downstream of it is measuring an unvalidated model.
-2. An **identity champion** — an installer that changes nothing. Run the full harness with
-   it. Every column must come back at 1.00 ± noise. That is how you calibrate the harness,
-   with zero kernel-writing risk. (The previous attempt used a real kernel for this and
-   spent its whole budget on the least interesting one in the backlog.)
-3. A `torch.profiler` per-kernel breakdown of batch-1 decode, saved to
-   `results/baseline/`.
-
-That artifact — "here is where decode actually spends its time" — is worth more than any
-kernel, and everything after it is better aimed.
+**No measurement exists yet.** Batch 001 is built for exactly this: it opens with the
+identity champion and the weight-value oracle runs before it. Do not add a kernel to the
+front of a batch to "get a result faster" — an uncalibrated result is not a result.
 
 ## 5. Money and safety
 
-**At 60 cumulative billed minutes, this session may not start another hypothesis.**
+**At 90 cumulative billed minutes, this session may not start another batch.**
 `run_remote.sh` checks before each run and exits 3 when the session is spent. When that
 happens: destroy any live instance, then finish recording and writing up the work you
 already did — none of which needs a GPU — and stop. Do not start "just one more attempt".
 
 The check happens before a run, never during one: a benchmark executing at minute 59
 finishes normally, because killing it would waste the money already spent and leave nothing
-recorded in exchange. The 90-minute watchdog is a backstop for hangs — **if it ever fires,
+recorded in exchange. The 120-minute watchdog is a backstop for hangs — **if it ever fires,
 that is a fault and the writeup must say so.**
 
 `VAST_API_KEY` lives in a gitignored `.env` at the repo root and reaches curl through a
@@ -182,6 +203,10 @@ the record says so.
 |---|---|
 | `docs/roofline.py` | **Run first.** Where the bytes go; the ceiling on any hypothesis. |
 | `docs/HYPOTHESES.md` | The ranked backlog and the graveyard, with mechanisms. |
+| `docs/BATCHES.md` | **How a batch works** and what filling one requires. |
+| `src/deltaforge/batches.py` | The batch manifests, with every prediction registered in advance. |
+| `src/deltaforge/batch.py` | Batch model, outcome arithmetic, deadline policy. No torch. |
+| `src/deltaforge/batch_run.py` | The GPU-side batch loop: compile once, isolate every slot. |
 | `docs/ARCHITECTURE.md` | Resolved model facts. Read before writing any kernel. |
 | `LEADERBOARD.md` | Champion and every attempt. |
 | `src/deltaforge/reference.py` | **The baseline.** Never contains a custom kernel. |

@@ -8,6 +8,14 @@ it wins or loses.
 
 ## Read this before picking anything
 
+> **Batching changed what "worth trying" means.** A rental now measures 7-12 hypotheses,
+> not one, so a slot costs about three minutes instead of a whole rental. The ceiling
+> arithmetic below still decides what can *win*; it no longer decides what is worth
+> *measuring*. Several entries in the graveyard were closed as "unmeasurable — not worth a
+> rental", which was an argument about cost rather than about truth. They are being
+> measured now, and each will be amended from a predicted null to a measured one. See
+> `docs/BATCHES.md`.
+
 At batch 1, decode is a weight-streaming problem. Here is where every byte goes for
 `Qwen/Qwen3.5-4B` at batch 1, context 2048 — reproduce it with `docs/roofline.py`:
 
@@ -168,9 +176,12 @@ Hypotheses that were measured and lost, or that were ruled out before measuremen
 entry records the **mechanism that failed and why**, so a later session does not pay to
 learn it twice.
 
-The four entries below were ruled out by arithmetic, not by measurement. That is a
-legitimate and much cheaper way to close a hypothesis, and stating it explicitly
-demonstrates more understanding of the compiler than measuring them would have.
+The four entries below were ruled out by arithmetic, not by measurement. That was a
+legitimate and much cheaper way to close a hypothesis **under a workflow where measuring
+one cost a whole rental.** It is no longer the cheaper option: batch 001 puts all four back
+on a card as slots 1-5, at about three minutes each, so the repo will hold measured nulls
+instead of predicted ones. Each entry keeps its arithmetic — that arithmetic is the
+prediction being tested — and gains its measurement when the batch reports.
 
 ### Fused RMSNorm + residual add — ruled out 2026-09-04
 
