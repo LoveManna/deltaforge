@@ -212,27 +212,32 @@ class KernelRegistry:
 REGISTRY = KernelRegistry()
 
 
-#: Operation name -> a builder returning that kernel's layer-1 `KernelCheck`s.
+#: **Kernel name** -> a builder returning that kernel's layer-1 `KernelCheck`s.
 #:
-#: Mirrors `model.INSTALLERS`: a kernel declares how it is *installed* there and how it is
-#: *checked* here, both next to the kernel itself. A champion with no checks is allowed —
-#: the end-to-end gate still covers it — but it is reported as unchecked rather than as
-#: passing.
+#: Mirrors `model.INSTALLERS` and is keyed the same way, for the same reason: several
+#: kernels replace the same reference operation — `rmsnorm_hidden` and `rmsnorm_qk` both
+#: replace `rms_norm`, `gqa_decode` and `flash_decode_splitkv` both replace
+#: `gqa_attention` — and an operation-keyed table would silently run one kernel's checks
+#: against another kernel. A gate that checks the wrong thing is worse than no gate,
+#: because it reports `pass`.
+#:
+#: A kernel with no checks is allowed — the end-to-end gate still covers it — but it is
+#: reported as unchecked rather than as passing.
 CHECK_BUILDERS: dict[str, Callable[..., tuple]] = {}
 
 
-def register_checks(op: str, builder: Callable[..., tuple]) -> None:
-    if op in CHECK_BUILDERS:
-        raise ValueError(f"checks for {op!r} are already registered")
-    CHECK_BUILDERS[op] = builder
+def register_checks(kernel_name: str, builder: Callable[..., tuple]) -> None:
+    if kernel_name in CHECK_BUILDERS:
+        raise ValueError(f"checks for kernel {kernel_name!r} are already registered")
+    CHECK_BUILDERS[kernel_name] = builder
 
 
 def build_kernel_checks(model, *, registry: KernelRegistry | None = None, **kwargs) -> tuple:
     """Run every champion's layer-1 checks against ``model``'s reference operations."""
     registry = REGISTRY if registry is None else registry
     checks: list = []
-    for op in registry.champions():
-        builder = CHECK_BUILDERS.get(op)
+    for entry in registry.champions().values():
+        builder = CHECK_BUILDERS.get(entry.name)
         if builder is not None:
             checks.extend(builder(model, **kwargs))
     return tuple(checks)
@@ -261,4 +266,120 @@ REGISTRY.register(
         "than rediscovering it. See docs/HYPOTHESES.md and docs/roofline.py."
     ),
 )
-register_checks("rms_norm_residual", _fused_rmsnorm_residual.correctness_checks)
+register_checks("fused_rmsnorm_residual", _fused_rmsnorm_residual.correctness_checks)
+
+# -- batch 001 kernels --------------------------------------------------------------
+#
+# All RETIRED, like everything else here: status in this registry means "is this the
+# shipped champion", and batch mode does not read it. `batch.scoped_registry` promotes
+# exactly the kernels a hypothesis names into a registry of its own, so the shipped
+# default stays the identity champion and `apply_champions(model, REGISTRY)` still
+# installs nothing.
+
+from . import flash_decode_splitkv as _flash_decode_splitkv  # noqa: E402
+from . import fused_rope as _fused_rope  # noqa: E402
+from . import fused_swiglu as _fused_swiglu  # noqa: E402
+from . import gated_delta_step as _gated_delta_step  # noqa: E402
+from . import gqa_decode as _gqa_decode  # noqa: E402
+from . import rmsnorm_placements as _rmsnorm_placements  # noqa: E402
+
+REGISTRY.register(
+    "rmsnorm_hidden",
+    impl=_fused_rmsnorm_residual.rms_norm,
+    replaces="rms_norm",
+    status=KernelStatus.RETIRED,
+    hypothesis="002-rmsnorm-only",
+    notes=(
+        "The same single-pass Triton RMSNorm as 001, installed on the three "
+        "hidden_size-wide norms *without* fusing the residual add. 001 changes two things "
+        "at once; this changes one, so 001 minus 002 isolates the fusion."
+    ),
+)
+register_checks("rmsnorm_hidden", _rmsnorm_placements.standalone_correctness_checks)
+register_checks("rmsnorm_qk", _rmsnorm_placements.qk_correctness_checks)
+
+REGISTRY.register(
+    "rmsnorm_qk",
+    impl=_fused_rmsnorm_residual.rms_norm,
+    replaces="rms_norm",
+    status=KernelStatus.RETIRED,
+    hypothesis="003-qk-norm-triton",
+    notes=(
+        "The same kernel on q_norm/k_norm: 256-wide rows instead of 2560-wide, ten times "
+        "as many of them, and only in the 8 full-attention layers. A different shape "
+        "regime for both inductor and the kernel, which 001 explicitly declined to enter."
+    ),
+)
+
+REGISTRY.register(
+    "fused_swiglu",
+    impl=_fused_swiglu.silu_mul,
+    replaces="swiglu_mlp",
+    status=KernelStatus.RETIRED,
+    hypothesis="004-fused-swiglu",
+    notes=(
+        "Fuses the SiLU and the gate multiply into one pass over the two 9216-wide "
+        "intermediates. Ceiling 0.026% of per-token bytes; graveyarded on that arithmetic "
+        "before batching made measuring it cheap."
+    ),
+)
+register_checks("fused_swiglu", _fused_swiglu.correctness_checks)
+
+REGISTRY.register(
+    "fused_rope",
+    impl=_fused_rope.apply_partial_rope,
+    replaces="qkv_projection_rope",
+    status=KernelStatus.RETIRED,
+    hypothesis="005-fused-qkv-rope",
+    notes=(
+        "Partial mRoPE in one pass: rotates 64 of 256 head dims in registers and passes "
+        "the other 192 through, replacing a slice/negate/cat/cat chain. Ceiling 0.004%, "
+        "the smallest in the backlog."
+    ),
+)
+register_checks("fused_rope", _fused_rope.correctness_checks)
+
+REGISTRY.register(
+    "gqa_decode",
+    impl=_gqa_decode.gqa_decode_attention,
+    replaces="gqa_attention",
+    status=KernelStatus.RETIRED,
+    hypothesis="006-gqa-no-expand",
+    notes=(
+        "Decode attention that indexes the unexpanded KV cache instead of materialising "
+        "repeat_interleave's 4x copy: 6.23% of per-token bytes at context 2048, growing "
+        "with context. The only slot in batch 001 predicted to win, conditional on "
+        "inductor not already folding the expansion."
+    ),
+)
+register_checks("gqa_decode", _gqa_decode.correctness_checks)
+
+REGISTRY.register(
+    "flash_decode_splitkv",
+    impl=_flash_decode_splitkv.split_kv_decode_attention,
+    replaces="gqa_attention",
+    status=KernelStatus.RETIRED,
+    hypothesis="008-flash-decode-splitkv",
+    notes=(
+        "006's kernel with the KV scan split across 8 programs and merged by the "
+        "online-softmax rescaling identity. At batch 1 with 16 query heads that is 16 "
+        "programs becoming 128. Predicted inconclusive at context 2048 — it needs a "
+        "long-context workload to express itself — and it is here as the control for 006."
+    ),
+)
+
+REGISTRY.register(
+    "gated_delta_step",
+    impl=_gated_delta_step.delta_rule_step,
+    replaces="gated_delta_rule",
+    status=KernelStatus.RETIRED,
+    hypothesis="007-gated-delta-fused-step",
+    notes=(
+        "One pass over the (128, 128) fp32 recurrent state instead of five: decay, "
+        "recall, rank-1 correction and read-out all in registers. 24 of 32 layers. Not "
+        "the chunked scan, which is a different and larger claim that cannot express "
+        "itself at single-token decode."
+    ),
+)
+register_checks("gated_delta_step", _gated_delta_step.correctness_checks)
+register_checks("flash_decode_splitkv", _flash_decode_splitkv.correctness_checks)

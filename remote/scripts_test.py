@@ -216,7 +216,13 @@ def test_an_unreconciled_instance_counts_toward_the_gate(workdir):
 # =====================================================================================
 
 
-def test_run_remote_refuses_a_session_that_has_used_sixty_minutes(workdir):
+def test_run_remote_refuses_a_session_that_has_reached_its_gate(workdir):
+    """The gate mechanism, with the limit passed explicitly.
+
+    The default moved from 60 to 90 when batches arrived; this test is about the gate
+    firing at whatever limit it is given, and
+    `test_the_session_gate_defaults_to_ninety_minutes_for_batches` covers the default.
+    """
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
         [
@@ -236,6 +242,8 @@ def test_run_remote_refuses_a_session_that_has_used_sixty_minutes(workdir):
         "--dry-run",
         "--session-id",
         "spent",
+        "--session-limit",
+        "60",
         "--ledger",
         str(ledger),
         "--state-file",
@@ -1237,3 +1245,178 @@ def test_the_sshd_probe_loop_has_its_own_stall_budget():
 
     assert "DF_PULL_STALL_SECONDS" in probe
     assert "without sshd answering" in probe
+
+
+# ---------------------------------------------------------------------------
+# Batch mode
+# ---------------------------------------------------------------------------
+
+
+def test_run_remote_refuses_batch_and_hypothesis_together(workdir):
+    """Guessing which one the run means would mislabel every record it writes."""
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "ambiguous",
+        "--batch",
+        "001-calibration",
+        "--hypothesis",
+        "006-gqa-no-expand",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        expect=1,
+    )
+
+    assert "mutually exclusive" in result.stderr
+    # It refused before provisioning: an ambiguous run must not cost a rental.
+    assert "provisioning..." not in result.stderr
+
+
+def test_a_batch_run_invokes_the_batch_command_with_a_deadline(workdir):
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "batchrun",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "deltaforge.cli batch" in result.stderr
+    assert "--batch '001-calibration'" in result.stderr
+    assert "--deadline-epoch" in result.stderr
+    # The batch replaces both single-hypothesis steps rather than running alongside them.
+    assert "deltaforge.cli correctness" not in result.stderr
+    assert "deltaforge.cli bench" not in result.stderr
+
+
+def test_a_single_hypothesis_run_still_takes_the_old_path(workdir):
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "solo",
+        "--hypothesis",
+        "001-fused-rmsnorm-residual",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "deltaforge.cli correctness" in result.stderr
+    assert "deltaforge.cli bench" in result.stderr
+    assert "deltaforge.cli batch" not in result.stderr
+
+
+def test_the_batch_deadline_leaves_the_session_gate_room_for_teardown(workdir):
+    """The batch must stop itself before the watchdog does.
+
+    AGENT.md treats a watchdog firing as a reportable fault, so the deadline handed to the
+    batch is the session gate minus what is already spent minus a teardown reserve — never
+    the raw gate.
+    """
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "reserved",
+        "--batch",
+        "001-calibration",
+        "--session-limit",
+        "90",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    line = next(ln for ln in result.stderr.splitlines() if "deadline in" in ln)
+    minutes = float(line.split("deadline in")[1].split("minutes")[0].strip())
+    # 90 minute gate, nothing spent, 12 minute reserve.
+    assert 77.0 <= minutes <= 78.5, line
+
+
+def test_the_session_gate_defaults_to_ninety_minutes_for_batches(workdir):
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="spent", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="spent",
+                instance_id="a",
+                actual_minutes=90.0,
+                actual_cost_usd=0.534,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "spent",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=3,
+    )
+
+    assert "REFUSED by the session GPU-time gate" in result.stderr
+
+
+def test_sixty_billed_minutes_no_longer_refuses_a_run(workdir):
+    """The gate moved from 60 to 90 so a nine-slot batch fits. Pinned so a silent revert
+    to 60 shows up as a failing test rather than as a batch cut short on the box."""
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="sixty", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="sixty",
+                instance_id="a",
+                actual_minutes=60.0,
+                actual_cost_usd=0.324,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "sixty",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "REFUSED" not in result.stderr
+
+
+def test_teardown_pulls_results_before_destroying(workdir):
+    """A failure late in a 90-minute batch must not take the slots that succeeded.
+
+    The trap could only ever destroy, and it cannot rsync from a dead box, so every
+    measurement after the last sync was lost. Dry-run skips the real pull, so what is
+    pinned here is the ordering in the teardown path itself.
+    """
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    teardown = script[script.index("df_teardown() {") : script.index("trap 'df_teardown' EXIT")]
+
+    pull_at = teardown.index("pulling results before destroying")
+    destroy_at = teardown.index("df_vast_destroy")
+    assert pull_at < destroy_at, "teardown must pull results before it destroys the instance"
+    # And the pull must never be able to block the destroy.
+    assert "destroying anyway" in teardown

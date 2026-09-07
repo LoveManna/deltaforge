@@ -1,8 +1,12 @@
 #!/bin/sh
 # The one entry point a session calls.
 #
-#   session gate -> provision -> watchdog -> sync up -> correctness -> bench
+#   session gate -> provision -> watchdog -> sync up
+#                -> batch (or: correctness -> bench)
 #                -> pull results -> destroy
+#
+# Teardown pulls results before it destroys, so a failure late in a long batch does not
+# take the slots that already succeeded with it.
 #
 # The entire body runs inside a trap on EXIT/INT/TERM, so a crash, a failed benchmark, a
 # Ctrl-C, or an unhandled error still destroys the instance and still reconciles the
@@ -23,9 +27,22 @@ export DF_REPO_ROOT
 
 DF_SESSION_ID="${DF_SESSION_ID:-session-$(date -u +%Y%m%dT%H%M%SZ)}"
 DF_HYPOTHESIS="${DF_HYPOTHESIS:-}"
+# The batch of hypotheses to measure on this rental. A rental's fixed cost — image pull,
+# torch, a 9.32 GB checkpoint, the GPU suite, and one max-autotune compile of the
+# reference — is about 15 minutes, and each additional hypothesis costs 2-4. Testing one
+# per rental pays that 15 minutes to buy a single measurement; nine rentals have been
+# billed on this project and none produced a number. Empty means the old
+# single-hypothesis path, which is still supported and is a batch of one.
+DF_BATCH="${DF_BATCH:-}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
-DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-60}"
-DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-90}"
+# 90 rather than 60: a nine-slot batch does not fit an hour. At the $0.356/hr RTX 5090
+# these rentals have been landing on, a full 90 minutes is about $0.53.
+DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-90}"
+DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-120}"
+# How much of the session gate the batch may spend on slots, leaving the rest for setup
+# and teardown. The batch stops itself before a slot it cannot finish, so the watchdog
+# never has to — AGENT.md treats a watchdog firing as a reportable fault.
+DF_BATCH_RESERVE_MINUTES="${DF_BATCH_RESERVE_MINUTES:-12}"
 DF_REMOTE_DIR="${DF_REMOTE_DIR:-/workspace/deltaforge}"
 # The checkpoint under test. Kept small on purpose: the benchmark holds a bf16 baseline
 # and a candidate in one process on one card, so the model must leave room for both plus
@@ -50,6 +67,10 @@ DF_PULL_STALL_SECONDS="${DF_PULL_STALL_SECONDS:-300}"
 # normal ending. Exceeding this fails the step cleanly, with teardown and the results
 # already pulled.
 DF_BENCH_TIMEOUT="${DF_BENCH_TIMEOUT:-2400}"
+# A batch's single remote step is the entire measurement run, not one benchmark, so it
+# gets its own ceiling. The batch stops itself at its deadline long before this; this is
+# the backstop for a step that has stopped making progress at all.
+DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-6000}"
 DF_PROVISION_ARGS=""
 
 usage() {
@@ -59,11 +80,15 @@ Usage: remote/run_remote.sh [options]
   --dry-run                 Run every stage, both budget gates and the teardown trap
                             without contacting the create/destroy endpoints.
   --session-id ID           Session identifier (default: session-<UTC timestamp>).
-  --hypothesis SLUG         Hypothesis being tested. Empty means a baseline run.
+  --hypothesis SLUG         Single hypothesis to test. Empty means a baseline run.
+  --batch ID                Measure a whole batch of hypotheses on this one rental
+                            (e.g. 001-calibration). Amortises the ~15 minute fixed
+                            cost across 7-12 measurements instead of one. Mutually
+                            exclusive with --hypothesis.
   --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
-  --session-limit N         Session GPU-time soft gate, in minutes (default: 60).
-  --watchdog-minutes N      Hard watchdog timeout (default: 90).
+  --session-limit N         Session GPU-time soft gate, in minutes (default: 90).
+  --watchdog-minutes N      Hard watchdog timeout (default: 120).
   --max-rate USD            Hourly rate ceiling, passed to provision.sh.
   --image REF               Container image. Use a non-Docker-Hub registry to test
                             whether a stalled pull is a Docker Hub rate limit.
@@ -74,6 +99,9 @@ Usage: remote/run_remote.sh [options]
   -h, --help                This message.
 
 Exit codes: 0 ok, 1 error (teardown still ran), 3 refused by a budget gate.
+
+An errored hypothesis inside a batch is a recorded result, not a failed run: the batch
+continues and exits 0. Only a failure of the rental itself is exit 1.
 EOF
 }
 
@@ -82,6 +110,7 @@ while [ $# -gt 0 ]; do
         --dry-run)           DF_DRY_RUN=1 ;;
         --session-id)        DF_SESSION_ID="$2"; shift ;;
         --hypothesis)        DF_HYPOTHESIS="$2"; shift ;;
+        --batch)             DF_BATCH="$2"; shift ;;
         --model)             DF_MODEL="$2"
                              DF_WEIGHTS_DIR="/workspace/$(printf '%s' "${DF_MODEL#*/}" | tr 'A-Z' 'a-z')"
                              shift ;;
@@ -99,6 +128,10 @@ while [ $# -gt 0 ]; do
     shift
 done
 export DF_DRY_RUN
+
+if [ -n "$DF_BATCH" ] && [ -n "$DF_HYPOTHESIS" ]; then
+    df_die "--batch and --hypothesis are mutually exclusive: --batch '$DF_BATCH' names a manifest of hypotheses and --hypothesis '$DF_HYPOTHESIS' names one. Pick whichever the run means; guessing would put the wrong label on every record it writes."
+fi
 
 # Make the paths absolute before anything uses them.
 #
@@ -123,6 +156,8 @@ if [ "$DF_DRY_RUN" = "1" ] && [ "${DF_LEDGER_EXPLICIT:-0}" != "1" ]; then
 fi
 
 DF_INSTANCE_ID=""
+DF_SSH_HOST=""
+DF_SSH_PORT="22"
 DF_INSTANCE_GPU=""
 DF_INSTANCE_RATE="0"
 DF_INSTANCE_START_EPOCH=""
@@ -148,6 +183,26 @@ df_teardown() {
         kill "$DF_WATCHDOG_PID" 2>/dev/null
         wait "$DF_WATCHDOG_PID" 2>/dev/null
         df_log "[teardown] watchdog $DF_WATCHDOG_PID stopped"
+    fi
+
+    # Rescue the results before the box goes away.
+    #
+    # The trap could only ever destroy, so a failure after the last successful sync took
+    # every measurement with it — survivable when a run was 10 minutes and one hypothesis,
+    # not when it is 90 minutes and nine. Batch mode writes each slot's record the moment
+    # that slot finishes, which is only worth anything if something fetches them.
+    #
+    # Best-effort and fully guarded: this must never be able to prevent the destroy below.
+    # A leaked instance costs about $13/day; a lost result costs one rental.
+    if [ -n "$DF_INSTANCE_ID" ] && [ -n "${DF_SSH_HOST:-}" ] && [ "$DF_DRY_RUN" != "1" ]; then
+        df_log "[teardown] pulling results before destroying"
+        if sh "$DF_REPO_ROOT/remote/sync.sh" down \
+            --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
+            --remote-dir "$DF_REMOTE_DIR" 2>&1; then
+            df_log "[teardown] results pulled"
+        else
+            df_warn "[teardown] could not pull results (exit $?); destroying anyway"
+        fi
     fi
 
     if [ -n "$DF_INSTANCE_ID" ]; then
@@ -392,25 +447,49 @@ fi
 df_log "running the GPU test suite: weight-value oracle and kernel numerics"
 remote_sh "DELTAFORGE_WEIGHTS_DIR='$DF_WEIGHTS_DIR' python -m pytest -m gpu -q"
 
-if df_stage_should_fail correctness; then
-    df_die "correctness gate failed (simulated)"
-fi
-df_log "running correctness gates"
-remote_sh "python -m deltaforge.cli correctness --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
+if [ -n "$DF_BATCH" ]; then
+    # Batch mode runs the gates and the benchmark per hypothesis inside one process, so
+    # the reference is loaded once and compiled once for the whole batch. Splitting it
+    # into separate correctness and bench steps as the single-hypothesis path does would
+    # pay both of those costs twice.
+    if df_stage_should_fail correctness; then
+        df_die "batch failed (simulated)"
+    fi
 
-# Pull what has been recorded so far, before the longest and riskiest step. The
-# correctness record is the expensive part of this run — it needed the checkpoint on a
-# GPU — and a benchmark that fails or is killed by the watchdog must not take it down
-# with it. The trap destroys the instance on failure and cannot rsync from a dead box.
-# shellcheck disable=SC2086
-sh "$DF_REPO_ROOT/remote/sync.sh" down $SYNC_FLAGS \
-    --host "$DF_SSH_HOST" --port "$DF_SSH_PORT" --remote-dir "$DF_REMOTE_DIR"
+    # The batch must stop itself before the watchdog does. Its deadline is the session
+    # gate minus what is already spent minus a reserve for teardown and the final pull.
+    DF_ELAPSED_MINUTES=$(awk -v s="$(df_now_epoch)" -v t="${DF_INSTANCE_START_EPOCH:-$(df_now_epoch)}" \
+        'BEGIN { printf "%.2f", (s - t) / 60 }')
+    DF_BATCH_DEADLINE=$(awk -v now="$(df_now_epoch)" -v limit="$DF_SESSION_LIMIT_MINUTES" \
+        -v used="$SESSION_MINUTES" -v elapsed="$DF_ELAPSED_MINUTES" -v reserve="$DF_BATCH_RESERVE_MINUTES" \
+        'BEGIN { printf "%d", now + (limit - used - elapsed - reserve) * 60 }')
+    df_log "batch $DF_BATCH: deadline in $(awk -v d="$DF_BATCH_DEADLINE" -v n="$(df_now_epoch)" \
+        'BEGIN { printf "%.1f", (d - n) / 60 }') minutes (session limit ${DF_SESSION_LIMIT_MINUTES}, \
+already used ${SESSION_MINUTES}, this rental ${DF_ELAPSED_MINUTES}, reserve ${DF_BATCH_RESERVE_MINUTES})"
 
-if df_stage_should_fail bench; then
-    df_die "benchmark failed (simulated)"
+    df_log "running batch $DF_BATCH (remote step ceiling ${DF_BATCH_TIMEOUT}s)"
+    remote_sh "timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
+else
+    if df_stage_should_fail correctness; then
+        df_die "correctness gate failed (simulated)"
+    fi
+    df_log "running correctness gates"
+    remote_sh "python -m deltaforge.cli correctness --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
+
+    # Pull what has been recorded so far, before the longest and riskiest step. The
+    # correctness record is the expensive part of this run — it needed the checkpoint on a
+    # GPU — and a benchmark that fails or is killed by the watchdog must not take it down
+    # with it.
+    # shellcheck disable=SC2086
+    sh "$DF_REPO_ROOT/remote/sync.sh" down $SYNC_FLAGS \
+        --host "$DF_SSH_HOST" --port "$DF_SSH_PORT" --remote-dir "$DF_REMOTE_DIR"
+
+    if df_stage_should_fail bench; then
+        df_die "benchmark failed (simulated)"
+    fi
+    df_log "running the benchmark (remote step ceiling ${DF_BENCH_TIMEOUT}s)"
+    remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
 fi
-df_log "running the benchmark (remote step ceiling ${DF_BENCH_TIMEOUT}s)"
-remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
 
 if df_stage_should_fail pull; then
     df_die "pulling results failed (simulated)"

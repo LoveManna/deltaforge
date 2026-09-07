@@ -282,3 +282,112 @@ def test_markdown_reports_cost():
     assert "Instance `9008`" in markdown
     assert "RTX 5090" in markdown
     assert "31.5 minutes" in markdown
+
+
+# --------------------------------------------------------------------------------------
+# Batch records
+# --------------------------------------------------------------------------------------
+
+
+def _slot(slug, outcome, prediction, *, ratio=None, iqr=None, correct=None, error=None):
+    return {
+        "slug": slug,
+        "outcome": outcome,
+        "prediction": prediction,
+        "median_ratio": ratio,
+        "iqr_ratio": iqr,
+        "byte_share": 0.0623,
+        "replaces": ["gqa_attention"],
+        "prediction_correct": correct,
+        "error": error,
+    }
+
+
+def make_batch_record(**overrides):
+    from .report import BatchRecord
+
+    base = {
+        "batch_id": "001-calibration",
+        "session_id": "sess",
+        "config_name": "Qwen/Qwen3.5-4B",
+        "slots": [
+            _slot("000-identity", "inconclusive", "identity", ratio=1.001, iqr=0.01, correct=True),
+            _slot("006-gqa", "win", "win", ratio=1.06, iqr=0.01, correct=True),
+            _slot("008-flash", "error", "inconclusive", error="Triton compile failed"),
+            _slot("009-late", "not_run", "inconclusive"),
+        ],
+        "calibrated": True,
+        "predictions": [
+            {"slug": "000-identity", "predicted": "identity", "outcome": "inconclusive", "correct": True},
+            {"slug": "006-gqa", "predicted": "win", "outcome": "win", "correct": True},
+            {"slug": "008-flash", "predicted": "inconclusive", "outcome": "error", "correct": None},
+            {"slug": "009-late", "predicted": "inconclusive", "outcome": "not_run", "correct": None},
+        ],
+    }
+    base.update(overrides)
+    return BatchRecord(**base)
+
+
+def test_batch_record_counts_outcomes():
+    assert make_batch_record().counts == {
+        "inconclusive": 1,
+        "win": 1,
+        "error": 1,
+        "not_run": 1,
+    }
+
+
+def test_batch_prediction_record_excludes_unscored_slots():
+    # Two of four slots never produced a verdict, so the record is 2/2, not 2/4.
+    assert make_batch_record().prediction_record == (2, 2)
+
+
+def test_batch_record_round_trips_through_json():
+    import json
+
+    record = make_batch_record()
+    data = json.loads(record.to_json())
+    assert data["kind"] == "batch"
+    assert data["batch_id"] == "001-calibration"
+    assert data["prediction_record"] == {"correct": 2, "scored": 2}
+    assert len(data["slots"]) == 4
+
+
+def test_batch_markdown_lists_every_slot_including_the_ones_that_never_ran():
+    from .report import render_batch_markdown
+
+    text = render_batch_markdown(make_batch_record())
+    for slug in ("000-identity", "006-gqa", "008-flash", "009-late"):
+        assert slug in text
+    assert "did not run" in text
+    assert "Triton compile failed" in text
+
+
+def test_failed_calibration_voids_the_batch_loudly():
+    from .report import render_batch_markdown
+
+    text = render_batch_markdown(make_batch_record(calibrated=False))
+    assert "CALIBRATION FAILED" in text
+    assert "void" in text
+
+
+def test_a_batch_with_no_calibration_slot_says_so():
+    from .report import render_batch_markdown
+
+    text = render_batch_markdown(make_batch_record(calibrated=None))
+    assert "No calibration slot" in text
+
+
+def test_write_batch_record_creates_parent_directories(tmp_path):
+    from .report import write_batch_record
+
+    out = tmp_path / "batches" / "001" / "summary.json"
+    assert write_batch_record(make_batch_record(), out) == out
+    assert out.exists()
+
+
+def test_not_run_is_a_valid_outcome_for_a_result_record():
+    from .report import ResultRecord
+
+    record = ResultRecord(kind="hypothesis", outcome="not_run", config_name="m")
+    assert record.outcome == "not_run"

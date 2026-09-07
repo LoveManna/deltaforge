@@ -54,7 +54,7 @@ def test_the_kernel_is_registered_retired_and_still_installable():
     assert entry.replaces == "rms_norm_residual"
     assert entry.status is KernelStatus.RETIRED
     assert entry.hypothesis == "001-fused-rmsnorm-residual"
-    assert "rms_norm_residual" in INSTALLERS
+    assert "fused_rmsnorm_residual" in INSTALLERS
 
 
 def test_no_champion_ships_so_the_candidate_column_is_the_identity():

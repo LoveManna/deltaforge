@@ -88,7 +88,7 @@ def test_installing_a_kernel_into_the_candidate_leaves_the_reference_alone(pair)
         for layer in model.layers:
             layer.__class__ = type("Fused", (type(layer),), {})
 
-    apply_champions(candidate, registry, installers={"rms_norm_residual": installer})
+    apply_champions(candidate, registry, installers={"spy": installer})
 
     assert installed == ["spy"]
     assert [type(layer) for layer in reference.layers] == reference_classes

@@ -365,6 +365,164 @@ def _default_output(args: argparse.Namespace, kind: str) -> Path:
     return root / "baseline" / f"{kind}-{session}.json"
 
 
+# --------------------------------------------------------------------------------------
+# Batch mode
+# --------------------------------------------------------------------------------------
+
+
+def _load_reference_only(args):
+    """The reference model alone. Batch mode builds candidates one at a time instead.
+
+    `_load_models` builds a reference *and* one candidate, which is the right shape for a
+    single-hypothesis run and the wrong one for a batch: there are N candidates and only
+    one of them may be resident at a time.
+    """
+    import torch
+
+    from .config import from_hf_config
+    from .model import build_model
+
+    if not torch.cuda.is_available():
+        raise SystemExit(
+            "no CUDA device available. Every command except fetch-weights is deferred to "
+            "a funded GPU session by design; nothing here fabricates a number without one."
+        )
+    weights = Path(args.weights)
+    config = from_hf_config(weights / "config.json")
+    reference = build_model(config, weights, device="cuda", dtype=torch.bfloat16, registry=None)
+    return config, reference
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    """Measure a whole batch of hypotheses on one rental."""
+    import time
+
+    import torch
+
+    from .batch import SlotBudget
+    from .batch_run import BatchRunner, run_batch, slot_record_path
+    from .batches import get_batch
+    from .harness.bench import BenchConfig
+    from .harness.prompts import CORRECTNESS_PROMPTS
+    from .harness.report import (
+        BatchRecord,
+        ResultRecord,
+        render_batch_markdown,
+        write_batch_record,
+        write_record,
+    )
+
+    batch = get_batch(args.batch)
+    columns = _selected_columns(args)
+    workload = DEFAULT_WORKLOADS[args.workload]
+
+    deadline = args.deadline_epoch if args.deadline_epoch > 0 else time.time() + args.batch_minutes * 60
+    budget = SlotBudget(deadline_epoch=deadline)
+    print(
+        f"[batch] {batch.batch_id}: {len(batch)} hypotheses, "
+        f"{budget.remaining_s() / 60:.1f} minutes until the deadline"
+    )
+
+    config, reference = _load_reference_only(args)
+    prompt_ids = _tokenize_prompts(Path(args.weights), CORRECTNESS_PROMPTS)
+    prompt = torch.randint(
+        0,
+        reference.config.vocab_size,
+        (workload["batch_size"], workload["context_length"]),
+        device="cuda",
+        dtype=torch.long,
+    )
+
+    runner = BatchRunner(
+        config=config,
+        reference=reference,
+        prompt=prompt,
+        prompt_ids=prompt_ids,
+        workload=workload,
+        weights_dtype=torch.bfloat16,
+        bench_config=BenchConfig(rounds=args.rounds, warmup_rounds=args.warmup_rounds),
+        max_new_tokens=args.max_new_tokens,
+        columns=columns,
+    )
+
+    root = Path(args.output or Path(__file__).resolve().parents[2] / "results")
+
+    def write_slot(result) -> None:
+        """One record per slot, written the moment the slot finishes.
+
+        A hard crash at slot 8 must leave slots 0-7 on disk. Writing at the end of the
+        batch would put ninety minutes of paid measurement behind a single point of
+        failure.
+        """
+        record = ResultRecord(
+            kind="hypothesis",
+            outcome=result.outcome,
+            config_name=args.model,
+            hypothesis={
+                "slug": result.hypothesis.slug,
+                "batch": batch.batch_id,
+                "statement": result.hypothesis.mechanism,
+                "prediction": result.hypothesis.prediction,
+                "rationale": result.hypothesis.rationale,
+                "category": result.hypothesis.category,
+                "byte_share": result.hypothesis.byte_share,
+                "kernels": list(result.hypothesis.kernels),
+            },
+            workload=workload,
+            bench=result.bench,
+            correctness=result.correctness,
+            notes=result.error or "",
+        )
+        path = slot_record_path(root, batch.batch_id, result.hypothesis.slug)
+        write_record(record, path)
+        print(f"[batch] wrote {path}")
+
+    results, calibrated, scores = run_batch(runner, batch, budget=budget, on_slot=write_slot)
+
+    score_by_slug = {s.slug: s.correct for s in scores}
+    slots = []
+    for result in results:
+        slot = result.to_slot_dict()
+        slot["prediction_correct"] = score_by_slug.get(result.hypothesis.slug)
+        slots.append(slot)
+
+    cost = None
+    if args.instance_id:
+        cost = {
+            "instance_id": args.instance_id,
+            "hourly_rate_usd": args.hourly_rate,
+            "gpu_model": None,
+            "actual_minutes": None,
+            "actual_cost_usd": None,
+        }
+
+    record = BatchRecord(
+        batch_id=batch.batch_id,
+        session_id=args.session_id,
+        config_name=args.model,
+        description=batch.description,
+        slots=slots,
+        calibrated=calibrated,
+        predictions=[s.to_dict() for s in scores],
+        workload=workload,
+        cost=cost,
+    )
+    summary = root / "batches" / batch.batch_id / "summary.json"
+    write_batch_record(record, summary)
+    print(render_batch_markdown(record))
+    print(f"[batch] wrote {summary}")
+
+    # Exit 0 whenever the batch ran to its own conclusion. An errored slot is a recorded
+    # result, not a failed run, and failing the process here would make `run_remote.sh`
+    # tear down as if the rental had gone wrong — losing the slots that did succeed.
+    if calibrated is False:
+        print(
+            "[batch] CALIBRATION FAILED: the identity champion did not measure 1.00. "
+            "Every other number in this batch is void; see the summary."
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="deltaforge", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -414,6 +572,58 @@ def build_parser() -> argparse.ArgumentParser:
     bench.add_argument("--instance-id", default="")
     bench.add_argument("--hourly-rate", type=float, default=0.0)
     bench.set_defaults(func=cmd_bench)
+
+    batch = sub.add_parser(
+        "batch",
+        parents=[common],
+        help="measure a whole batch of hypotheses on one rental (needs CUDA)",
+    )
+    batch.add_argument(
+        "--batch",
+        default="001-calibration",
+        help="batch id from deltaforge.batches (default: 001-calibration)",
+    )
+    batch.add_argument("--workload", choices=sorted(DEFAULT_WORKLOADS), default="headline")
+    batch.add_argument(
+        "--columns",
+        default="",
+        help=(
+            "comma-separated benchmark columns, or 'all'. Default: "
+            f"{','.join(DEFAULT_COLUMNS)}. The reference columns are compiled once for the "
+            "whole batch; each candidate column costs one compilation per hypothesis."
+        ),
+    )
+    batch.add_argument("--rounds", type=int, default=7)
+    batch.add_argument("--warmup-rounds", type=int, default=2)
+    batch.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=32,
+        help=(
+            "tokens for the layer-2 exact-match gate (default: 32). The single-hypothesis "
+            "path uses 128; batch mode trades that for slots and records the number it used "
+            "in every result. Re-check anything being promoted at 128."
+        ),
+    )
+    batch.add_argument(
+        "--deadline-epoch",
+        type=float,
+        default=0.0,
+        help=(
+            "absolute unix time the batch must stop by, passed down by run_remote.sh from "
+            "the session gate. The batch stops itself before a slot it cannot finish, so "
+            "the watchdog never has to — a watchdog firing is a reportable fault."
+        ),
+    )
+    batch.add_argument(
+        "--batch-minutes",
+        type=float,
+        default=60.0,
+        help="fallback deadline, in minutes from now, when --deadline-epoch is not given",
+    )
+    batch.add_argument("--instance-id", default="")
+    batch.add_argument("--hourly-rate", type=float, default=0.0)
+    batch.set_defaults(func=cmd_batch)
 
     return parser
 

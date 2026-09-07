@@ -61,13 +61,13 @@ single process can express exactly one candidate. Batch mode needs N.
 ```python
 @dataclass(frozen=True)
 class Hypothesis:
-    slug: str                      # "006-gqa-no-expand"
-    kernels: tuple[str, ...]       # registry names to install; () is the identity champion
-    category: str                  # "A" | "B" | "C" | "calibration"
-    byte_share: float              # share of per-token bytes, from docs/roofline.py
-    mechanism: str                 # one sentence: how it wins
-    prediction: str                # "win" | "loss" | "inconclusive" | "identity"
-    rationale: str                 # why that prediction, recorded BEFORE the run
+    slug: str  # "006-gqa-no-expand"
+    kernels: tuple[str, ...]  # registry names to install; () is the identity champion
+    category: str  # "A" | "B" | "C" | "calibration"
+    byte_share: float  # share of per-token bytes, from docs/roofline.py
+    mechanism: str  # one sentence: how it wins
+    prediction: str  # "win" | "loss" | "inconclusive" | "identity"
+    rationale: str  # why that prediction, recorded BEFORE the run
 ```
 
 `scoped_registry(hypothesis)` returns a fresh `KernelRegistry` holding exactly those

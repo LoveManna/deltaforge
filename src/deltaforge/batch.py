@@ -1,0 +1,349 @@
+"""Batches: many hypotheses measured on one rental.
+
+A rental's cost is roughly 15 minutes of fixed setup — container image, torch, a 9.32 GB
+checkpoint, the GPU test suite — plus 2-4 minutes per hypothesis. Testing one hypothesis
+per rental pays the fixed cost to buy a single measurement. Batching amortises it across
+7-12, and `docs/superpowers/specs/2026-09-06-batched-hypotheses-design.md` has the
+arithmetic.
+
+**Nothing here imports torch.** The batch model, the outcome arithmetic and the deadline
+policy are the parts most worth testing exhaustively, and they are all decidable on a
+CPU with no checkpoint. `cli.cmd_batch` holds the part that needs a GPU.
+
+The three ideas in this module:
+
+* A **hypothesis is data**, not global registry state. `kernels.REGISTRY` is a
+  process-wide singleton with a "one champion per operation" invariant, so it can express
+  exactly one candidate per process. A batch needs N, so `scoped_registry` builds a fresh
+  registry per hypothesis and the global one goes back to being a catalogue of what
+  exists rather than a statement about what is under test.
+
+* A hypothesis carries its **prediction, registered before the run**. `AGENT.md` §1 says
+  the finding is a mechanistic account stated in advance and then confirmed — that being
+  right in advance *is* the result. Until now nothing in the repo recorded a prediction
+  anywhere it could be scored. `score_predictions` scores them.
+
+* The batch **ends itself** rather than being killed. A watchdog firing is a reportable
+  fault; `SlotBudget` stops the batch while its results are written and the instance is
+  still healthy.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
+
+from .kernels import REGISTRY, KernelRegistry, KernelStatus, RegistryError
+
+__all__ = [
+    "BATCH_OUTCOMES",
+    "PREDICTIONS",
+    "Batch",
+    "Hypothesis",
+    "PredictionScore",
+    "SlotBudget",
+    "calibration_holds",
+    "classify_outcome",
+    "score_predictions",
+    "scoped_registry",
+]
+
+
+#: What a hypothesis may predict, recorded in the manifest before the rental.
+#:
+#: `identity` is not a hedge — it is the strongest claim in the set. It says the candidate
+#: is bit-identical to the reference and must therefore measure 1.00 within the noise
+#: band. A miss there means the harness is measuring something other than what it says,
+#: which invalidates every other slot in the batch.
+PREDICTIONS = ("win", "loss", "inconclusive", "identity")
+
+#: Outcomes a slot may reach. Extends `report.OUTCOMES` with the two states that only
+#: exist once hypotheses share a rental.
+#:
+#: `error` — the kernel raised. Under one-hypothesis-per-rental this ended the session;
+#:           here it costs a slot, and the traceback is itself worth reading.
+#: `not_run` — the deadline arrived first. Explicitly recorded, never silently omitted:
+#:           a hypothesis missing from a batch record must be distinguishable from one
+#:           that ran and produced nothing.
+BATCH_OUTCOMES = ("win", "loss", "inconclusive", "incorrect", "error", "not_run")
+
+
+@dataclass(frozen=True)
+class Hypothesis:
+    """One hypothesis: what to install, what it attacks, and what we predict.
+
+    ``kernels`` names entries in the kernel registry. An empty tuple is the *identity
+    champion* — a candidate that installs nothing and is therefore bit-identical to the
+    reference. That is the harness's calibration instrument, and it must come first in
+    any batch that means to be believed.
+    """
+
+    slug: str
+    kernels: tuple[str, ...]
+    category: str  # "A" | "B" | "C" | "calibration" — see docs/HYPOTHESES.md
+    byte_share: float  # share of per-token bytes attacked, from docs/roofline.py
+    mechanism: str  # one sentence: how it wins
+    prediction: str
+    rationale: str  # why we predict that, written before the measurement
+    replaces: tuple[str, ...] = ()
+    notes: str = ""
+
+    def __post_init__(self) -> None:
+        if self.prediction not in PREDICTIONS:
+            raise ValueError(f"prediction must be one of {PREDICTIONS}, got {self.prediction!r}")
+        if not 0.0 <= self.byte_share <= 1.0:
+            raise ValueError(f"byte_share is a fraction in [0, 1], got {self.byte_share!r}")
+        if self.is_identity and self.prediction != "identity":
+            raise ValueError(
+                f"{self.slug!r} installs no kernels, so it is the identity champion and must "
+                f"predict 'identity', not {self.prediction!r}"
+            )
+        if self.prediction == "identity" and not self.is_identity:
+            raise ValueError(
+                f"{self.slug!r} predicts 'identity' but installs {self.kernels}. Only a "
+                "candidate that installs nothing is bit-identical to the reference."
+            )
+        if not self.mechanism.strip():
+            raise ValueError(f"{self.slug!r} has no mechanism. 'Fuse it and see' is not a hypothesis.")
+        if not self.rationale.strip():
+            raise ValueError(
+                f"{self.slug!r} predicts {self.prediction!r} with no rationale. The prediction is "
+                "the result; an unexplained one is worth nothing."
+            )
+
+    @property
+    def is_identity(self) -> bool:
+        return not self.kernels
+
+
+@dataclass(frozen=True)
+class Batch:
+    """An ordered run of hypotheses on one rental.
+
+    Order is load-bearing and is not sorted here. A manifest puts the calibration slot
+    first so a broken harness is discovered in three minutes rather than ninety, and puts
+    the riskiest kernels last so everything cheap is already on disk when one of them
+    fails.
+    """
+
+    batch_id: str
+    hypotheses: tuple[Hypothesis, ...]
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.hypotheses:
+            raise ValueError(f"batch {self.batch_id!r} is empty")
+        seen: set[str] = set()
+        for hyp in self.hypotheses:
+            if hyp.slug in seen:
+                raise ValueError(f"batch {self.batch_id!r} lists {hyp.slug!r} twice")
+            seen.add(hyp.slug)
+
+    def __len__(self) -> int:
+        return len(self.hypotheses)
+
+    def __iter__(self) -> Iterator[Hypothesis]:
+        return iter(self.hypotheses)
+
+    def get(self, slug: str) -> Hypothesis:
+        for hyp in self.hypotheses:
+            if hyp.slug == slug:
+                return hyp
+        raise KeyError(f"batch {self.batch_id!r} has no hypothesis {slug!r}")
+
+    @property
+    def calibration_slug(self) -> str | None:
+        """The identity hypothesis, if the batch has one."""
+        for hyp in self.hypotheses:
+            if hyp.is_identity:
+                return hyp.slug
+        return None
+
+
+def scoped_registry(hypothesis: Hypothesis, source: KernelRegistry | None = None) -> KernelRegistry:
+    """A registry holding exactly this hypothesis's kernels, each as champion.
+
+    Built fresh per hypothesis rather than by mutating the global registry. Mutating the
+    global one would work for a single measurement and then leak into the next slot — and
+    a slot that quietly inherited the previous slot's kernels would produce a plausible
+    number for the wrong candidate, which is the one failure this harness must not have.
+
+    The "one champion per operation" invariant is enforced by `KernelRegistry.register`,
+    so two kernels in the same hypothesis that replace the same operation raise here
+    rather than at benchmark time.
+    """
+    source = REGISTRY if source is None else source
+    scoped = KernelRegistry()
+    for name in hypothesis.kernels:
+        entry = source.get(name)  # raises RegistryError on an unknown name
+        try:
+            scoped.register(
+                entry.name,
+                impl=entry.impl,
+                replaces=entry.replaces,
+                status=KernelStatus.CHAMPION,
+                hypothesis=hypothesis.slug,
+                notes=entry.notes,
+            )
+        except RegistryError as exc:
+            raise RegistryError(f"hypothesis {hypothesis.slug!r} cannot install {name!r}: {exc}") from exc
+    scoped.check_invariants()
+    return scoped
+
+
+def _exceeds(margin: float, band: float) -> bool:
+    """``margin > band``, with floating-point dust treated as a tie.
+
+    A promotion must not turn on representation error. ``1.02 - 1.0`` is
+    ``0.020000000000000018`` in binary floating point, so a margin sitting exactly on the
+    noise band would otherwise be promoted by 1.8e-17 of nothing. A tie goes to
+    ``inconclusive``, which is the conservative direction: the bar is *beating* the noise
+    band, not equalling it.
+    """
+    return margin > band and not math.isclose(margin, band, rel_tol=1e-9, abs_tol=1e-12)
+
+
+def classify_outcome(
+    median_ratio: float | None,
+    iqr: float,
+    *,
+    correctness_passed: bool,
+) -> str:
+    """Turn one measurement into an outcome.
+
+    A candidate that is wrong is `incorrect` whatever it measured — a fast wrong kernel
+    is a useful record but never a win, and checking correctness first makes that
+    ordering explicit rather than incidental.
+
+    Otherwise the margin is compared against the run's **own** noise band. `AGENT.md` §6:
+    a margin inside the interquartile spread of the scoring rounds is `inconclusive`, not
+    a win. Recording a noise-band result as a win is how a leaderboard becomes fiction.
+    """
+    if not correctness_passed:
+        return "incorrect"
+    if median_ratio is None:
+        return "error"
+    margin = median_ratio - 1.0
+    if _exceeds(margin, iqr):
+        return "win"
+    if _exceeds(-margin, iqr):
+        return "loss"
+    return "inconclusive"
+
+
+def calibration_holds(median_ratio: float | None, iqr: float, *, floor: float = 0.02) -> bool:
+    """Whether the identity champion measured 1.00 within the noise band.
+
+    ``floor`` keeps an implausibly tight IQR from making this unfalsifiable: a run whose
+    rounds happened to agree to four decimal places would otherwise reject a 0.5%
+    deviation that is plainly just noise. The band is the wider of the measured IQR and
+    ``floor``.
+
+    When this is False every other slot in the batch is void. The candidate installed
+    nothing, so it *is* the reference — a ratio away from 1.00 means the harness is
+    measuring something other than the kernel under test, and no number it produced that
+    day means what it says.
+    """
+    if median_ratio is None:
+        return False
+    return abs(median_ratio - 1.0) <= max(iqr, floor)
+
+
+@dataclass(frozen=True)
+class PredictionScore:
+    slug: str
+    predicted: str
+    outcome: str
+    correct: bool | None  # None when the slot produced no verdict to score against
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "slug": self.slug,
+            "predicted": self.predicted,
+            "outcome": self.outcome,
+            "correct": self.correct,
+        }
+
+
+def score_predictions(
+    batch: Batch,
+    outcomes: dict[str, str],
+    *,
+    calibrated: bool | None = None,
+) -> tuple[PredictionScore, ...]:
+    """Score each registered prediction against what was measured.
+
+    A slot that errored or never ran scores ``None``, not ``False``: the prediction was
+    never tested, and counting an untested prediction as wrong would understate the
+    record exactly as counting it right would flatter it.
+
+    The identity slot is scored against ``calibrated`` rather than against its outcome,
+    because "the candidate is the reference" is a claim about the harness, not about a
+    ratio being inside a band.
+    """
+    scores = []
+    for hyp in batch:
+        outcome = outcomes.get(hyp.slug, "not_run")
+        if outcome in ("error", "not_run"):
+            correct: bool | None = None
+        elif hyp.prediction == "identity":
+            correct = calibrated
+        else:
+            correct = outcome == hyp.prediction
+        scores.append(
+            PredictionScore(slug=hyp.slug, predicted=hyp.prediction, outcome=outcome, correct=correct)
+        )
+    return tuple(scores)
+
+
+@dataclass
+class SlotBudget:
+    """Decides whether the next hypothesis fits before the deadline.
+
+    The batch must end *itself*, with its results written and the instance healthy.
+    `AGENT.md` §5 treats a watchdog firing as a reportable fault, and a hypothesis killed
+    mid-benchmark wastes the money already spent on it and records nothing in exchange.
+
+    The estimate is the median of the slots already completed, which adapts to the card
+    and the model actually in front of it rather than to a number someone guessed. Until
+    a slot has finished there is nothing to take a median of, so it is seeded — generously,
+    because the first slot is the one that pays for any lazily-initialised CUDA state.
+    """
+
+    deadline_epoch: float
+    clock: Callable[[], float] = time.time
+    seed_estimate_s: float = 240.0
+    #: Slots overrun; a batch that stops one slot early has lost 3 minutes, and one that
+    #: stops one slot late has lost the whole slot plus a fault in the writeup.
+    safety_factor: float = 1.2
+    durations_s: list[float] = field(default_factory=list)
+
+    def record(self, duration_s: float) -> None:
+        if duration_s < 0:
+            raise ValueError(f"a slot cannot take {duration_s} seconds")
+        self.durations_s.append(duration_s)
+
+    def estimate_s(self) -> float:
+        if not self.durations_s:
+            return self.seed_estimate_s
+        ordered = sorted(self.durations_s)
+        mid = len(ordered) // 2
+        if len(ordered) % 2:
+            return ordered[mid]
+        return (ordered[mid - 1] + ordered[mid]) / 2.0
+
+    def remaining_s(self) -> float:
+        return self.deadline_epoch - self.clock()
+
+    def can_start(self) -> bool:
+        return self.remaining_s() >= self.estimate_s() * self.safety_factor
+
+    def why_not(self) -> str:
+        return (
+            f"{self.remaining_s():.0f}s left before the session deadline; a slot is taking "
+            f"~{self.estimate_s():.0f}s and the budget needs "
+            f"{self.estimate_s() * self.safety_factor:.0f}s to start another. Stopping here "
+            "with results written rather than being cut off mid-benchmark."
+        )

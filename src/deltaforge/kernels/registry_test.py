@@ -40,7 +40,7 @@ def test_every_shipped_champion_has_an_installer():
     from ..model import INSTALLERS
 
     for op, entry in REGISTRY.champions().items():
-        assert op in INSTALLERS, f"{entry.name!r} is champion of {op!r} with no installer"
+        assert entry.name in INSTALLERS, f"{entry.name!r} is champion of {op!r} with no installer"
 
 
 def test_every_shipped_kernel_names_the_hypothesis_that_produced_it():
@@ -199,3 +199,12 @@ def test_registries_are_isolated_from_each_other():
 
     assert "k" not in two
     assert "k" not in REGISTRY
+
+
+def test_every_registered_kernel_has_an_installer_not_only_the_champions():
+    """Batch mode promotes retired entries into scoped registries, so a retired kernel
+    with no installer is a slot that errors on the rented box rather than on a laptop."""
+    from ..model import INSTALLERS
+
+    for entry in REGISTRY:
+        assert entry.name in INSTALLERS, f"{entry.name!r} is registered with no installer"

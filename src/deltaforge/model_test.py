@@ -58,7 +58,7 @@ def test_a_registered_installer_is_called_with_its_entry(model):
     entry = registry.register("fused", noop, replaces="rms_norm", status=KernelStatus.CHAMPION)
     seen = []
 
-    applied = apply_champions(model, registry, installers={"rms_norm": lambda m, e: seen.append((m, e))})
+    applied = apply_champions(model, registry, installers={"fused": lambda m, e: seen.append((m, e))})
 
     assert applied == ("fused",)
     assert seen == [(model, entry)]

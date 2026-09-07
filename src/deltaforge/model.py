@@ -30,21 +30,25 @@ class InstallerMissing(RuntimeError):
     """A champion kernel exists for an operation, but nothing knows how to install it."""
 
 
-#: Operation name -> a function that splices a kernel implementation into a built model.
+#: **Kernel name** -> a function that splices that kernel into a built model.
 #:
-#: An installer describes precisely how one reference operation is swapped out, and it is
-#: added in the same commit as the kernel it installs. Installers stay registered when
-#: their kernel is retired, so a retired entry can still be promoted for a one-off
-#: comparison. `apply_champions` fails loudly rather than silently running the reference
-#: if a champion has no installer — silently benchmarking the baseline as if it were the
-#: candidate is the worst failure this harness could have.
+#: Keyed by kernel rather than by the operation it replaces. Batch mode routinely runs
+#: several kernels against the same reference operation — two different attacks on
+#: `gqa_attention`, say — and an operation-keyed table can only name one of them. Keying
+#: by kernel gives "which code installs this candidate?" exactly one answer.
+#:
+#: An installer is added in the same commit as the kernel it installs, and stays
+#: registered when that kernel is retired so a retired entry can still be promoted for a
+#: one-off comparison. `apply_champions` fails loudly rather than silently running the
+#: reference if a champion has no installer — silently benchmarking the baseline as if it
+#: were the candidate is the worst failure this harness could have.
 INSTALLERS: dict[str, Callable[[ReferenceModel, KernelEntry], None]] = {}
 
 
-def register_installer(op: str, installer: Callable[[ReferenceModel, KernelEntry], None]) -> None:
-    if op in INSTALLERS:
-        raise ValueError(f"installer for {op!r} is already registered")
-    INSTALLERS[op] = installer
+def register_installer(kernel_name: str, installer: Callable[[ReferenceModel, KernelEntry], None]) -> None:
+    if kernel_name in INSTALLERS:
+        raise ValueError(f"installer for kernel {kernel_name!r} is already registered")
+    INSTALLERS[kernel_name] = installer
 
 
 def apply_champions(
@@ -62,11 +66,11 @@ def apply_champions(
     table = INSTALLERS if installers is None else installers
     applied: list[str] = []
     for op, entry in registry.champions().items():
-        installer = table.get(op)
+        installer = table.get(entry.name)
         if installer is None:
             raise InstallerMissing(
                 f"{entry.name!r} is champion of {op!r} but no installer is registered for "
-                f"{op!r}. Add one to deltaforge.model.INSTALLERS alongside the kernel; "
+                f"it. Add one to deltaforge.model.INSTALLERS alongside the kernel; "
                 "refusing to run, because falling back to the reference here would "
                 "benchmark the baseline while labelling it the candidate."
             )
@@ -139,4 +143,55 @@ def _install_fused_rmsnorm_residual(model: ReferenceModel, entry: KernelEntry) -
     install(model, entry)
 
 
-register_installer("rms_norm_residual", _install_fused_rmsnorm_residual)
+register_installer("fused_rmsnorm_residual", _install_fused_rmsnorm_residual)
+
+
+def _install_rmsnorm_hidden(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.rmsnorm_placements import install_hidden_norms  # noqa: PLC0415
+
+    install_hidden_norms(model, entry)
+
+
+def _install_rmsnorm_qk(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.rmsnorm_placements import install_qk_norms  # noqa: PLC0415
+
+    install_qk_norms(model, entry)
+
+
+def _install_fused_swiglu(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.fused_swiglu import install  # noqa: PLC0415
+
+    install(model, entry)
+
+
+def _install_fused_rope(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.fused_rope import install  # noqa: PLC0415
+
+    install(model, entry)
+
+
+def _install_gqa_decode(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.gqa_decode import install  # noqa: PLC0415
+
+    install(model, entry)
+
+
+def _install_flash_decode_splitkv(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.flash_decode_splitkv import install  # noqa: PLC0415
+
+    install(model, entry)
+
+
+def _install_gated_delta_step(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.gated_delta_step import install  # noqa: PLC0415
+
+    install(model, entry)
+
+
+register_installer("rmsnorm_hidden", _install_rmsnorm_hidden)
+register_installer("rmsnorm_qk", _install_rmsnorm_qk)
+register_installer("fused_swiglu", _install_fused_swiglu)
+register_installer("fused_rope", _install_fused_rope)
+register_installer("gqa_decode", _install_gqa_decode)
+register_installer("flash_decode_splitkv", _install_flash_decode_splitkv)
+register_installer("gated_delta_step", _install_gated_delta_step)

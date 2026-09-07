@@ -21,10 +21,13 @@ from typing import Any
 
 __all__ = [
     "SCHEMA_VERSION",
+    "BatchRecord",
     "ResultRecord",
     "capture_environment",
     "git_info",
+    "render_batch_markdown",
     "render_markdown",
+    "write_batch_record",
     "write_record",
 ]
 
@@ -33,7 +36,10 @@ SCHEMA_VERSION = 1
 #: Outcomes a run may record. `inconclusive` exists because a margin inside the noise
 #: band is not a win: it neither promotes nor enters the graveyard, and the hypothesis
 #: stays open for a cleaner measurement.
-OUTCOMES = ("baseline", "win", "loss", "inconclusive", "incorrect", "error")
+#: `not_run` only exists in batch mode: the deadline arrived before the slot did. It is
+#: recorded explicitly rather than omitted, because a hypothesis missing from a batch
+#: record must be distinguishable from one that ran and produced nothing.
+OUTCOMES = ("baseline", "win", "loss", "inconclusive", "incorrect", "error", "not_run")
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -312,6 +318,198 @@ def render_markdown(record: ResultRecord) -> str:
             "",
             f"- Instance `{_fmt(cost.get('instance_id'))}` "
             f"({_fmt(cost.get('gpu_model'))}) at ${_fmt(cost.get('hourly_rate_usd'), '.4f')}/hr",
+            f"- {_fmt(cost.get('actual_minutes'), '.1f')} minutes, "
+            f"${_fmt(cost.get('actual_cost_usd'), '.4f')}",
+            "",
+        ]
+
+    if record.notes:
+        lines += ["### Notes", "", record.notes, ""]
+
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------------------
+# Batches
+# --------------------------------------------------------------------------------------
+
+
+@dataclass
+class BatchRecord:
+    """One rental's worth of hypotheses, plus the scorecard for their predictions.
+
+    A `ResultRecord` per slot is still written — those are the primary evidence and each
+    one stands on its own. This is the index over them, and it carries the two things
+    that only exist once hypotheses share a rental: whether the harness calibrated, and
+    how the predictions registered in advance actually did.
+    """
+
+    batch_id: str
+    session_id: str
+    config_name: str
+    description: str = ""
+    #: One entry per hypothesis, in manifest order. Each carries at least `slug`,
+    #: `outcome`, `prediction`, and — when it ran — `median_ratio` and `iqr_ratio`.
+    slots: list[dict[str, Any]] = field(default_factory=list)
+    #: Whether the identity champion measured 1.00 within the noise band. `None` when
+    #: the batch had no calibration slot, which is itself worth seeing in the record.
+    calibrated: bool | None = None
+    predictions: list[dict[str, Any]] = field(default_factory=list)
+    workload: dict[str, Any] = field(default_factory=dict)
+    cost: dict[str, Any] | None = None
+    environment: dict[str, Any] = field(default_factory=dict)
+    git: dict[str, Any] = field(default_factory=dict)
+    notes: str = ""
+    timestamp: str = ""
+    schema_version: int = SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        if not self.timestamp:
+            self.timestamp = datetime.now(timezone.utc).isoformat()
+        if not self.environment:
+            self.environment = capture_environment()
+        if not self.git:
+            self.git = git_info()
+
+    @property
+    def counts(self) -> dict[str, int]:
+        tally: dict[str, int] = {}
+        for slot in self.slots:
+            outcome = str(slot.get("outcome", "not_run"))
+            tally[outcome] = tally.get(outcome, 0) + 1
+        return tally
+
+    @property
+    def prediction_record(self) -> tuple[int, int]:
+        """``(correct, scored)``. Slots that errored or never ran are not scored."""
+        scored = [p for p in self.predictions if p.get("correct") is not None]
+        return sum(1 for p in scored if p["correct"]), len(scored)
+
+    def to_dict(self) -> dict[str, Any]:
+        correct, scored = self.prediction_record
+        return {
+            "schema_version": self.schema_version,
+            "kind": "batch",
+            "batch_id": self.batch_id,
+            "session_id": self.session_id,
+            "description": self.description,
+            "timestamp": self.timestamp,
+            "config_name": self.config_name,
+            "workload": self.workload,
+            "calibrated": self.calibrated,
+            "counts": self.counts,
+            "predictions": self.predictions,
+            "prediction_record": {"correct": correct, "scored": scored},
+            "slots": self.slots,
+            "git": self.git,
+            "environment": self.environment,
+            "cost": self.cost,
+            "notes": self.notes,
+        }
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, sort_keys=False)
+
+
+def write_batch_record(record: BatchRecord, path: Path | str) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(record.to_json() + "\n")
+    return path
+
+
+def render_batch_markdown(record: BatchRecord) -> str:
+    """The batch scorecard: one row per hypothesis, predicted against measured."""
+    data = record.to_dict()
+    env = data["environment"]
+    lines = [
+        f"## Batch {record.batch_id}",
+        "",
+        f"**Session:** `{record.session_id}`  ",
+        f"**When:** {data['timestamp']}  ",
+        f"**Commit:** `{_fmt(data['git'].get('sha'))}`"
+        + (" *(working tree dirty)*" if data["git"].get("dirty") else ""),
+        f"**GPU:** {_fmt(env.get('gpu_name'))}, torch {_fmt(env.get('torch_version'))}, "
+        f"triton {_fmt(env.get('triton_version'))}",
+        "",
+    ]
+
+    if record.description:
+        lines += [record.description, ""]
+
+    # Calibration first, because it decides whether anything below it means anything.
+    if record.calibrated is None:
+        lines += [
+            "> **No calibration slot.** This batch contains no identity champion, so "
+            "nothing here establishes that the harness measures what it claims to. Every "
+            "ratio below is uncalibrated.",
+            "",
+        ]
+    elif record.calibrated:
+        lines += ["**Calibration: PASS** — the identity champion measured 1.00 within the noise band.", ""]
+    else:
+        lines += [
+            "> **CALIBRATION FAILED.** The identity champion installs no kernels and *is* the "
+            "reference, so it must measure 1.00. It did not. The harness is measuring "
+            "something other than the kernel under test, and **every other number in this "
+            "batch is void** — they are recorded for diagnosis, not as findings.",
+            "",
+        ]
+
+    correct, scored = record.prediction_record
+    if scored:
+        lines += [
+            f"**Predictions: {correct}/{scored} correct.** Each was registered in the batch "
+            "manifest and committed before the rental. Slots that errored or never ran are "
+            "not scored.",
+            "",
+        ]
+
+    lines += [
+        "| # | Hypothesis | Replaces | Byte share | Predicted | Outcome | Ratio | IQR | Right? |",
+        "|---|---|---|---:|---|---|---:|---:|---|",
+    ]
+    for index, slot in enumerate(record.slots):
+        ratio = slot.get("median_ratio")
+        iqr = slot.get("iqr_ratio")
+        share = slot.get("byte_share")
+        correct_flag = slot.get("prediction_correct")
+        mark = {True: "yes", False: "**no**", None: "—"}[correct_flag]
+        lines.append(
+            f"| {index} | `{slot.get('slug', '?')}` "
+            f"| {', '.join(slot.get('replaces') or []) or '—'} "
+            f"| {(f'{share * 100:.3f}%') if share is not None else '—'} "
+            f"| {slot.get('prediction', '—')} "
+            f"| `{slot.get('outcome', 'not_run')}` "
+            f"| {_fmt(ratio, '.4f')} | {_fmt(iqr, '.4f')} | {mark} |"
+        )
+    lines.append("")
+
+    errored = [s for s in record.slots if s.get("outcome") == "error"]
+    if errored:
+        lines += ["### Slots that errored", ""]
+        for slot in errored:
+            lines.append(f"- `{slot['slug']}` — {slot.get('error', 'no detail recorded')}")
+        lines.append("")
+
+    not_run = [s for s in record.slots if s.get("outcome") == "not_run"]
+    if not_run:
+        lines += [
+            "### Slots that did not run",
+            "",
+            "The session deadline arrived first. These are open, not closed.",
+            "",
+        ]
+        for slot in not_run:
+            lines.append(f"- `{slot['slug']}`")
+        lines.append("")
+
+    if record.cost:
+        cost = record.cost
+        lines += [
+            "### Cost",
+            "",
+            f"- Instance `{_fmt(cost.get('instance_id'))}` at ${_fmt(cost.get('hourly_rate_usd'), '.4f')}/hr",
             f"- {_fmt(cost.get('actual_minutes'), '.1f')} minutes, "
             f"${_fmt(cost.get('actual_cost_usd'), '.4f')}",
             "",
