@@ -62,11 +62,16 @@ def _snapshot_download(repo_id: str, dest: Path) -> bool:
     connections at once — typically several times faster on the 300-1200 Mbit links the
     offer filter selects for.
 
-    ``HF_HUB_ENABLE_HF_TRANSFER`` is set before the import because the library reads it at
-    import time. If the accelerator is not installed, ``huggingface_hub`` warns and uses
-    its own (still parallel, still resumable) downloader, which is why this is not fatal.
+    Two environment variables, one deprecated, because which one is honoured depends on the
+    installed version and the box gets to decide: ``HF_HUB_ENABLE_HF_TRANSFER`` was the knob
+    until huggingface_hub moved to Xet, which ignores it and reads
+    ``HF_XET_HIGH_PERFORMANCE`` instead. Both are set before the import, because the library
+    reads them at import time. If neither accelerator is present, ``huggingface_hub`` warns
+    and uses its own (still parallel, still resumable) downloader, which is why this is not
+    fatal.
     """
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
     try:
         from huggingface_hub import snapshot_download  # noqa: PLC0415 - optional dependency
     except ImportError:

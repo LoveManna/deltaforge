@@ -1456,17 +1456,26 @@ def test_pip_runs_through_the_same_interpreter_everything_else_uses():
             assert "python -m pip install" in line, f"bare pip invocation: {line.strip()}"
 
 
-def test_hf_transfer_is_installed_as_a_package_not_as_a_dropped_extra():
-    """huggingface-hub 1.30 dropped the `hf_transfer` extra, so
-    `huggingface_hub[hf_transfer]` warns and installs nothing — silently leaving a 9.32 GB
-    checkpoint on the single-connection downloader, on billed wall-clock time. A warning is
-    not a failure, so nothing would have reported it except the clock."""
-    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+def test_the_fast_checkpoint_download_is_not_requested_through_a_dropped_extra():
+    """Two deprecations deep, so both ends are pinned.
 
-    assert "huggingface_hub[hf_transfer]" not in script
-    assert "hf_transfer" in script
-    # And the run says out loud whether it actually got it.
-    assert "hf_transfer present" in script
+    huggingface-hub 1.30 dropped the `hf_transfer` extra, so `huggingface_hub[hf_transfer]`
+    warns and installs nothing — silently leaving a 9.32 GB download on the
+    single-connection path, on billed wall-clock time. Then the box told us the rest:
+    hf_transfer is itself superseded by Xet, which ignores `HF_HUB_ENABLE_HF_TRANSFER` and
+    reads `HF_XET_HIGH_PERFORMANCE`. Both variables are set, so whichever the installed
+    version honours, one of them wins."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    cli = (REPO_ROOT / "src" / "deltaforge" / "cli.py").read_text()
+
+    # Scoped to the install commands: the comment above them names the dropped extra on
+    # purpose, to explain why it is not used.
+    install_lines = [ln for ln in script.splitlines() if "pip install" in ln and "remote_sh" in ln]
+    assert install_lines
+    for line in install_lines:
+        assert "huggingface_hub[hf_transfer]" not in line, f"the dropped extra is back: {line.strip()}"
+    assert "HF_HUB_ENABLE_HF_TRANSFER" in cli
+    assert "HF_XET_HIGH_PERFORMANCE" in cli
 
 
 def test_the_teardown_pull_is_skipped_when_ssh_never_answered():
@@ -1511,3 +1520,19 @@ def test_the_selected_offer_records_its_machine_in_the_ledger(workdir):
     assert "--exclude-machines" in result.stderr
     row = json.loads((workdir / "ledger" / "spend.jsonl").read_text().strip().splitlines()[-1])
     assert "machine" in row["note"]
+
+
+def test_accelerate_is_installed_because_the_oracle_cannot_load_without_it():
+    """Cost rental 50121911: 10.70 minutes and a full 9.32 GB checkpoint download to reach
+    `ValueError: Using a device_map ... requires accelerate`.
+
+    Without it `transformers.from_pretrained` refuses any `device_map`, so the weight-value
+    oracle cannot be constructed at all -- and until that oracle passes, the reference is
+    proven structurally correct but not proven to read weight *values* correctly, which
+    makes every number downstream of it a measurement of an unvalidated model."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+
+    install_lines = [ln for ln in script.splitlines() if "pip install" in ln and "remote_sh" in ln]
+    assert any("accelerate" in ln for ln in install_lines), "accelerate is not installed"
+    # And verified out loud, so a resolver that drops it is visible in the log.
+    assert "import accelerate" in script

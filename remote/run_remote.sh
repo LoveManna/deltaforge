@@ -445,20 +445,27 @@ remote_sh "python --version"
 # torch from PyTorch's own CDN rather than baked into the image: see the note on DF_IMAGE
 # in provision.sh. The cu128 wheel brings its matching Triton with it.
 remote_sh "python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128"
-# `hf_transfer` is what makes the 9.32 GB checkpoint arrive in minutes rather than tens of
-# minutes: the fallback downloader is one HTTP connection with no resume, and this is
-# billed wall-clock time.
+# Getting the 9.32 GB checkpoint down fast, on billed wall-clock time.
 #
-# It is installed as its own package rather than as a huggingface_hub extra. The extra was
-# dropped in huggingface-hub 1.30, which warns and installs nothing -- silently leaving the
-# slow downloader in place. A warning is not a failure, so nothing would have reported it
-# except the clock; the import is therefore checked out loud on the next line.
+# The history here is two deprecations deep, so it is written out rather than rediscovered.
+# `huggingface_hub[hf_transfer]` was the fast path; the extra was dropped in
+# huggingface-hub 1.30, which *warns and installs nothing* -- a warning is not a failure,
+# so nothing reported it except the clock. Installing `hf_transfer` as its own package
+# fixed that, and then the box told us the rest: hf_transfer itself is now superseded by
+# Xet, and `HF_HUB_ENABLE_HF_TRANSFER` is ignored. `HF_XET_HIGH_PERFORMANCE` is the current
+# knob. Both are set in `cli.py`; whichever the installed version honours, one of them wins.
 #
-# `transformers` is pinned because the GPU test suite runs the weight-value oracle through
-# it, and an unpinned version that drops the Qwen3.5 architecture would kill the run after
-# every gigabyte had been paid for.
-remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest huggingface_hub hf_transfer"
-remote_sh "python -c 'import hf_transfer' && echo 'hf_transfer present' || echo 'WARNING: hf_transfer missing; the 9.32 GB checkpoint will use the slow single-connection downloader'"
+# `accelerate` is REQUIRED, not optional. Without it `transformers.from_pretrained` refuses
+# any `device_map` outright, so the weight-value oracle -- the test that decides whether the
+# reference interprets the checkpoint correctly, and therefore whether any number
+# downstream of it means anything -- cannot even be constructed. Cost rental 50121911:
+# 10.70 min and a full checkpoint download to reach an error that says "pip install
+# accelerate".
+#
+# `transformers` is pinned because the oracle runs through it, and an unpinned version that
+# drops the Qwen3.5 architecture would kill a run after every gigabyte had been paid for.
+remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest huggingface_hub hf_transfer accelerate"
+remote_sh "python -c 'import accelerate, transformers; print(\"accelerate\", accelerate.__version__, \"transformers\", transformers.__version__)'"
 remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
 remote_sh "python -m deltaforge.cli fetch-weights --model '$DF_MODEL' --dest '$DF_WEIGHTS_DIR'"
 
