@@ -1,16 +1,24 @@
-# GPU access: the container-image blocker
+# GPU access: three blockers, each hiding behind the last
 
-Nine rentals have been billed on this project and **none has ever produced a benchmark
-number.** The first eight failed the same way — the instance was created and billed, and the
-container image never finished pulling.
+Ten rentals have been billed on this project. **None has yet produced a benchmark number**,
+and each one that got further than its predecessor did so by exposing the next problem in
+the chain:
 
-**That is now diagnosed and fixed.** The ninth rental pulled a container image successfully
-for the first time, which confirmed the cause and exposed a second, separate blocker behind
-it. This file records both, so the next session spends its money on kernels instead of
-rediscovering them.
+| | Blocker | Found by | Fixed by |
+|---|---|---|---|
+| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials, or a non-Docker-Hub image |
+| 2 | The image refuses the account's ssh key | rental 9 | injecting the key via `PUBLIC_KEY` **and** `onstart` |
+| 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` |
+
+All three are fixed. This file records each one so a future session spends its money on
+kernels rather than rediscovering them.
 
 Read it if `run_remote.sh` hangs at `waiting for instance to start` or
-`instance is running; waiting for sshd`.
+`instance is running; waiting for sshd`, or dies with `command not found`.
+
+**The pattern worth internalising:** every one of these was cheap to fix and expensive to
+*notice*. Two of the three announced themselves only as a stall or a warning. Anything on a
+rented box that can fail quietly needs something that says so out loud.
 
 ---
 
@@ -222,12 +230,67 @@ through it, and an unpinned version that dropped the Qwen3.5 architecture would 
 after every gigabyte above had already been paid for. Confirmed on 2026-09-05 that
 `qwen3_5` is a supported architecture.
 
+## The third blocker, found behind the second
+
+Rental 50119910, 2026-09-07 — the first rental in this project's history to get **past
+sshd**. The injected key was accepted, the repo synced, `apt` and all three pip installs
+succeeded, and then:
+
+```
+bash: line 1: python: command not found
+```
+
+The vast and ai-dock images ship **`python3` and `pip`, but no `python`.** Every remote
+step after the installs used a bare `python`, so the run died there — having already paid
+for the container pull, the 3 GB torch download and every pip install. Billed 9.38 minutes,
+$0.0557, destroyed cleanly.
+
+**Fixed** by establishing the interpreter as the *first* thing in the environment step
+rather than discovering it as the twentieth:
+
+```sh
+command -v python >/dev/null 2>&1 || ln -sf "$(command -v python3)" /usr/local/bin/python
+python --version
+```
+
+and by running every install as `python -m pip` so pip cannot belong to a different
+interpreter than the benchmark does. `remote/scripts_test.py` asserts both orderings.
+
+### And a silent one in the same log
+
+```
+WARNING: huggingface-hub 1.30.0 does not provide the extra 'hf-transfer'
+```
+
+The `hf_transfer` extra was dropped in huggingface-hub 1.30, so
+`pip install 'huggingface_hub[hf_transfer]'` **warns and installs nothing** — leaving the
+9.32 GB checkpoint on the single-connection, no-resume downloader, on billed wall-clock
+time. A warning is not a failure, so nothing would ever have reported this except the
+clock. `hf_transfer` is now its own package and the import is checked out loud.
+
+**The lesson, which is the same one as the stall guard's:** every step that can fail
+quietly on a rented box needs something that says so. The expensive failures on this
+project have not been the loud ones.
+
+## What each rental has cost so far
+
+| # | Date | Got as far as | Billed | Cost |
+|---|---|---|---|---:|
+| 1-8 | 2026-09-03 | container pull (Docker Hub) | 94.2 min | $0.4783 |
+| 9 | 2026-09-05 | container started, sshd refused the key | 4.57 min | $0.0271 |
+| 10 | 2026-09-07 | **past sshd**, installs done, no `python` | 9.38 min | $0.0557 |
+
+Ten rentals, $0.561, **zero leaked instances** — every one destroyed cleanly by the trap.
+
 ## Current status
 
-`ghcr.io/ai-dock/base-image:v2-cuda-12.4.1-base-22.04` is **proven to pull**. Whether it
-accepts the injected key is **not yet proven** — the injection was written after the rental
-that revealed the need for it, and has only been tested against the create-request JSON. The
-next run is the one that finds out, and it now costs ~$0.03 to find out rather than $0.12.
+The default `vastai/base-image` on Docker Hub **pulls, starts, and accepts the injected
+key** — rental 50119910 on 2026-09-07 got through all three and on to the pip installs. The
+key injection through `PUBLIC_KEY` plus the `onstart` append is therefore **proven**, not
+merely written; that was the open question this file previously flagged.
+
+What is still unproven is everything past the checkpoint download: no rental has yet
+reached the GPU test suite, the correctness gates or a benchmark.
 
 The default image is still `vastai/base-image` on Docker Hub, because with credentials in
 `.env` that is the better choice: it is purpose-built for Vast and its key handling already
