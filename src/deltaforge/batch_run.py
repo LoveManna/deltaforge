@@ -178,7 +178,9 @@ class BatchRunner:
         for name, buffer in list(candidate.named_buffers()):
             if buffer.is_meta:
                 parent, _, leaf = name.rpartition(".")
-                setattr(candidate.get_submodule(parent) if parent else candidate, leaf, reference_buffers[name])
+                setattr(
+                    candidate.get_submodule(parent) if parent else candidate, leaf, reference_buffers[name]
+                )
         candidate = candidate.eval()
 
         before = {name: type(module) for name, module in candidate.named_modules()}

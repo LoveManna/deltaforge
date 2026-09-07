@@ -16,37 +16,48 @@
 **No benchmark has ever run.** Nothing here is estimated, projected, or placeheld. The
 first session to get a working GPU records the baseline; until then this table stays empty.
 
-**What the first working session should do** is in `AGENT.md` §4 — the weight-value oracle,
-then an *identity champion* to calibrate the harness, then a profile. Not a kernel. The
-reference is currently proven structurally correct — shapes against the real checkpoint,
-cache contract, causality, the mRoPE reduction — but not yet proven to interpret the weight
-*values* correctly, and every number depends on that.
+**The reference is now proven to interpret the weight *values* correctly** — see below —
+which was the outstanding precondition. What is still missing is a *calibrated harness*: an
+identity champion that measures 1.00 ± noise. Until that exists there is no baseline, and
+`AGENT.md` §4 still governs what to do about it.
 
-### GPU access: cause found and fixed, not yet through to a benchmark
+### The reference is validated. The harness is not.
 
-Provisioning works. Nine instances have been created, billed and destroyed (98.8 min,
-$0.5054, **zero leaked**). None produced a number.
+**2026-09-07 — the weight-value oracle passed for the first time.**
 
-**Rentals 1–8 (2026-09-03) all died on a Docker Hub image pull.** Four machines, three
-images, 2.5–14.1 GB — not one layer ever reached "Pull complete".
+```
+test_reference_greedy_decode_matches_the_oracle_token_for_token  PASSED
+```
 
-**Rental 9 (2026-09-05) identified the cause.** Same filters, same account, one variable
-changed: a `ghcr.io` image instead of Docker Hub. It **pulled in about three minutes and the
-container started** — the first time that has ever happened. Anonymous Docker Hub pull limits
-are the cause; the never-paid-account theory is ruled out, since the account state was
-unchanged.
+Our from-scratch `reference.py` greedy-decodes 32 tokens **identically to HuggingFace's own
+Qwen3.5-4B**, on the real checkpoint, on an RTX 5090. `AGENT.md` §4 calls this the
+precondition for every number downstream of it, and it had never run in nine previous
+rentals. It means `head_dim` 256 (not 160), the `1 + weight` RMSNorm convention, the
+sigmoid output gate, partial mRoPE, the fp32 recurrent state and the GatedDeltaNet
+projection layout are all correct.
 
-That rental then hit a **second blocker behind the first**: the container ran sshd and
-refused our key (`Permission denied (publickey)`), because a non-Vast image provisions
-`authorized_keys` by its own convention. Fixed by injecting the key through both
-`PUBLIC_KEY` and `onstart`. Billed 4.57 min, $0.0271.
+**No benchmark ratio exists yet.** Batch 001 ran all nine of its slots and all nine errored
+with the same CUDA OOM, the identity champion among them, so the batch is void by its own
+rule and reports itself that way. Full account: `results/batches/001-calibration/README.md`.
 
-Three fixes are in and tested: registry credentials via `image_login`, explicit key
-injection, and a stall budget on **both** readiness loops so a stuck run costs ~$0.03
-instead of $0.12. Full account and what to do next: **`docs/GPU-ACCESS.md`**.
+Seventeen rentals have now been billed across the project, $0.561 lifetime, **zero leaked**.
 
-**Still unproven:** that the injected key is accepted, and therefore that any run gets past
-sshd to the gates. That is what the next rental tests.
+### The chain of blockers, and where it stands
+
+Each rental that got further than its predecessor did so by exposing the next problem:
+
+| | Blocker | Status |
+|---|---|---|
+| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | fixed |
+| 2 | The image refuses the account's ssh key | fixed, **proven** on a live box |
+| 3 | The image has `python3` but no `python` | fixed, proven |
+| 4 | `accelerate` absent, so the oracle cannot even be constructed | fixed, proven |
+| 5 | Four `oracle_test.py` bounds were fp32-era absolutes applied to bf16 | fixed, proven |
+| 6 | Candidate construction double-allocates the 8.4 GB of weights | fixed, **unverified on a GPU** |
+
+Blocker 6 is where the next session starts, and testing it is cheap: if the identity slot
+returns 1.00 ± noise, the harness is calibrated and the remaining eight slots are a ~25
+minute run. See `docs/GPU-ACCESS.md`.
 
 ## Baseline
 
@@ -62,17 +73,30 @@ sshd to the gates. That is what the next rental tests.
 
 ## Hypotheses
 
-One attempted, none measured.
+Nine written and shipped. **None measured.**
 
 | ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
 |---|---|---|---:|---:|---|---|---|---|
-| 001 | Fused residual add + RMSNorm | `rms_norm_residual` | — | — | — | CPU gates pass; GPU gates never ran | **graveyarded on mechanism** | [dir](results/hypotheses/001-fused-rmsnorm-residual/) |
+| 001 | Fused residual add + RMSNorm | `rms_norm_residual` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 002 | Standalone Triton RMSNorm, hidden-size sites | `rms_norm` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 003 | The same kernel on `q_norm`/`k_norm` | `rms_norm` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 004 | Fused SwiGLU activation | `swiglu_mlp` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 005 | Fused partial mRoPE | `qkv_projection_rope` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 006 | GQA decode without the head expansion | `gqa_attention` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 007 | Fused gated delta-rule step | `gated_delta_rule` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 008 | Split-KV flash decode | `gqa_attention` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
 
-**001 carries no ratio and never will.** It was graveyarded by arithmetic rather than by
-measurement: the operations it fuses move 0.018% of per-token bytes, so its ceiling is
-below the harness's own noise band. The eight failed rentals are incidental — even a clean
-measurement could not have shown a win. See `docs/HYPOTHESES.md` for the full reasoning and
-the lesson that reordered the backlog.
+**All nine slots carry no ratio, and every prediction is unscored.** They are written,
+gated on CPU, and shipped; they simply have not been measured. A slot that errored never
+tested its prediction, so `summary.json` records `0 correct of 0 scored` rather than 0 of 9
+— counting an untested prediction as wrong would understate the record exactly as counting
+it right would flatter it.
+
+**001 is no longer graveyarded on mechanism.** It was closed on the argument that a 0.018%
+ceiling is not worth a rental — an argument about *cost*, which batching dissolves. At
+roughly three minutes a slot it is worth measuring, and it is now slot 1 of batch 001
+awaiting a working harness. Its arithmetic still stands as the *prediction*; what changed is
+that the prediction is now falsifiable in practice. Same for 004 and 005.
 
 ### Column definitions
 

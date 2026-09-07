@@ -224,6 +224,40 @@ the record says so.
 
 Tests are colocated as `<module>_test.py`; `testpaths` is `src` and `remote`.
 
+## 7a. What the first working session actually learned (2026-09-07)
+
+Two lessons that cost rentals to learn and will cost them again if forgotten.
+
+### A correctness bound written for fp32 is not a bound in bf16
+
+Four separate tolerances in `oracle_test.py` were absolute fp32-era numbers — `5e-2` on
+logits, `1e-3` on RoPE cos/sin — applied to **bf16** tensors. bf16 carries 8 mantissa bits,
+so at the |logit| ≈ 30 this model produces, **one ULP is already 0.25**. Those bounds sat
+below the representable granularity of the dtype: no correct implementation could ever meet
+them, and each one looked exactly like a model bug.
+
+The tell was that two independent tests reported *precisely* `0.28125` = 9/32. A real cache
+bug does not reproduce a full-forward-vs-HuggingFace difference to the bit.
+
+**So: score against the tensor's own scale, not an absolute epsilon**, and where a token
+sequence is the thing that actually matters, assert the tokens. `reference.py` was right
+every time; the tests were wrong four times.
+
+### Batch mode is memory-bound before it is time-bound
+
+`ReferenceModel(config).to("cuda")` allocates a full fresh 8.4 GB of parameters *before*
+`load_state_dict(assign=True)` rebinds them to the reference's and frees the duplicates.
+Peak is 16.8 GB of weights for a model needing 8.4.
+
+Harmless once, before anything is compiled. **Fatal in a batch**, where the reference's
+compiled state is already resident — every slot of batch 001 died there on a 32 GB card,
+tens of MB short. Candidates are now built under `torch.device("meta")`; note that
+non-persistent buffers (`rotary_emb.inv_freq`) are absent from a `state_dict` and must be
+rebound explicitly or the first forward dies on a meta tensor.
+
+**The general point: adding a hypothesis to a batch adds resident state, not just time.**
+Before widening a batch, check the memory headroom, not only the clock.
+
 ## 8. Things that will bite you
 
 **Never modify `reference.py` to accommodate a kernel.** It is the definition of the

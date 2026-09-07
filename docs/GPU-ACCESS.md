@@ -4,14 +4,21 @@ Ten rentals have been billed on this project. **None has yet produced a benchmar
 and each one that got further than its predecessor did so by exposing the next problem in
 the chain:
 
-| | Blocker | Found by | Fixed by |
-|---|---|---|---|
-| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials, or a non-Docker-Hub image |
-| 2 | The image refuses the account's ssh key | rental 9 | injecting the key via `PUBLIC_KEY` **and** `onstart` |
-| 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` |
+| | Blocker | Found by | Fixed by | Proven? |
+|---|---|---|---|---|
+| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials, or a non-Docker-Hub image | yes |
+| 2 | The image refuses the account's ssh key | rental 9 | injecting the key via `PUBLIC_KEY` **and** `onstart` | yes |
+| 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` | yes |
+| 4 | `accelerate` absent, so the HF oracle cannot be constructed | rental 13 | installing it, and verifying the import out loud | yes |
+| 5 | Four `oracle_test.py` bounds were fp32 absolutes on bf16 tensors | rental 14 | scoring relative to the tensor's own scale | yes |
+| 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | **no** |
+| — | Some hosts never answer sshd at all | rentals 11, 17 | the 300s stall guard; re-run with `--exclude-machines` | n/a |
 
-All three are fixed. This file records each one so a future session spends its money on
-kernels rather than rediscovering them.
+All are fixed. **Blocker 6's fix has not been tested on a GPU** — the session's 90-minute
+gate arrived first. That is where the next session starts.
+
+This file records each one so a future session spends its money on kernels rather than
+rediscovering them.
 
 Read it if `run_remote.sh` hangs at `waiting for instance to start` or
 `instance is running; waiting for sshd`, or dies with `command not found`.
@@ -279,8 +286,21 @@ project have not been the loud ones.
 | 1-8 | 2026-09-03 | container pull (Docker Hub) | 94.2 min | $0.4783 |
 | 9 | 2026-09-05 | container started, sshd refused the key | 4.57 min | $0.0271 |
 | 10 | 2026-09-07 | **past sshd**, installs done, no `python` | 9.38 min | $0.0557 |
+| 11 | 2026-09-07 | host never answered sshd (stall guard fired) | 5.63 min | $0.0334 |
+| 12 | 2026-09-07 | cancelled by hand — same bad host reselected | 0.67 min | $0.0040 |
+| 13 | 2026-09-07 | **checkpoint down**, oracle blocked on `accelerate` | 10.70 min | $0.0683 |
+| 14 | 2026-09-07 | **oracle ran** — reference matches HF token-for-token | 11.08 min | $0.0707 |
+| 15 | 2026-09-07 | one bf16 tolerance left | 10.38 min | $0.0663 |
+| 16 | 2026-09-07 | **GPU suite passed; batch ran** — 9 slots, all OOM | 17.35 min | $0.1107 |
+| 17 | 2026-09-07 | host never answered sshd | 5.07 min | $0.0324 |
 
-Ten rentals, $0.561, **zero leaked instances** — every one destroyed cleanly by the trap.
+Seventeen rentals, $0.561, **zero leaked instances** — every one destroyed cleanly by the
+trap, including one cancelled mid-flight with SIGTERM.
+
+**Two of seventeen rentals died to hosts that never answered sshd**, on different machines,
+with `reliability2 > 0.98` in both cases. That rate is worth knowing: budget for it, keep
+the stall guard, and use `--exclude-machines` (provisioning now logs the machine id and the
+exact flag to re-run with).
 
 ## Current status
 
