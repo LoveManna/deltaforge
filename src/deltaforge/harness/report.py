@@ -448,11 +448,24 @@ def render_batch_markdown(record: BatchRecord) -> str:
     elif record.calibrated:
         lines += ["**Calibration: PASS** — the identity champion measured 1.00 within the noise band.", ""]
     else:
+        # Two different failures hide behind `calibrated is False`, and saying the wrong one
+        # would misdescribe the evidence: the slot may have measured a ratio away from 1.00,
+        # or it may have produced no ratio at all.
+        slot = next((s for s in record.slots if s.get("prediction") == "identity"), None)
+        if slot is not None and slot.get("outcome") in ("error", "not_run"):
+            reason = (
+                f"it did not produce a measurement at all (`{slot.get('outcome')}`"
+                + (f": {slot.get('error', '').splitlines()[0]}" if slot.get("error") else "")
+                + ")"
+            )
+        else:
+            measured = slot.get("median_ratio") if slot else None
+            reason = f"it measured {measured:.4f}" if measured is not None else "it did not"
         lines += [
             "> **CALIBRATION FAILED.** The identity champion installs no kernels and *is* the "
-            "reference, so it must measure 1.00. It did not. The harness is measuring "
-            "something other than the kernel under test, and **every other number in this "
-            "batch is void** — they are recorded for diagnosis, not as findings.",
+            f"reference, so it must measure 1.00 — {reason}. Nothing here establishes that "
+            "the harness measures what it claims to, so **every other number in this batch "
+            "is void**: they are recorded for diagnosis, not as findings.",
             "",
         ]
 

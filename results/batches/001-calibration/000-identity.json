@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "error",
+  "timestamp": "2026-09-07T05:03:34.698663+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "000-identity",
+    "batch": "001-calibration",
+    "statement": "Install nothing. The candidate is then bit-identical to the reference, so every column must measure the same thing.",
+    "prediction": "identity",
+    "rationale": "Not a hedge but the strongest claim in the batch: the candidate IS the reference, so a ratio away from 1.00 means the harness is measuring something other than the kernel under test. If this misses, every other number below is void and the writeup says so rather than reporting them.",
+    "category": "calibration",
+    "byte_share": 0.0,
+    "kernels": []
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-181-generic-x86_64-with-glibc2.39",
+    "hostname": "ba3e33aa7fe4",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2632,
+      "memory": 13801,
+      "observed_at": "2026-09-07T05:03:34.883163+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": null,
+  "correctness": null,
+  "cost": null,
+  "notes": "OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 11.88 MiB is free. Including non-PyTorch memory, this process has 31.34 GiB memory in use. Of the allocated memory 30.71 GiB is allocated by PyTorch, and 43.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 254, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 257, in run_interleaved\n    _setup(label)\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 246, in _setup\n    setup()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 133, in setup\n    runnable(prompt, cache, num_logits_to_keep=1)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 715, in forward\n    hidden_states = layer(hidden_states, cos, sin, cache, cache_offset)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward\n    hidden_states = self.linear_attn(hidden_states, layer_cache)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 462, in forward\n    core_out, final_state = recurrent_gated_delta_rule(\n                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 379, in recurrent_gated_delta_rule\n    state = state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)\n            ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 11.88 MiB is free. Including non-PyTorch memory, this process has 31.34 GiB memory in use. Of the allocated memory 30.71 GiB is allocated by PyTorch, and 43.97 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)\n"
+}

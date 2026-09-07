@@ -159,8 +159,27 @@ class BatchRunner:
         from .model import apply_champions
         from .reference import ReferenceModel
 
-        candidate = ReferenceModel(self.config).to(device="cuda", dtype=self.weights_dtype).eval()
+        # Built on the **meta** device, then bound to the reference's tensors.
+        #
+        # `ReferenceModel(config).to("cuda")` allocates a full fresh 8.4 GB of parameters
+        # and only then does `load_state_dict(assign=True)` rebind them to the reference's
+        # and free the duplicates. Peak is therefore 16.8 GB of weights for a model that
+        # needs 8.4 -- survivable in the single-hypothesis path, where it happens once
+        # before anything is compiled, and fatal in a batch, where the reference's compiled
+        # state is already resident. Every slot of batch 001 OOMed here on a 32 GB card,
+        # at exactly the line below. A meta-device model allocates nothing.
+        with torch.device("meta"):
+            candidate = ReferenceModel(self.config)
         candidate.load_state_dict(self.reference.state_dict(), assign=True)
+        # Non-persistent buffers -- `rotary_emb.inv_freq` is one -- never appear in a
+        # state_dict, so `assign=True` leaves them on meta and the first forward dies with
+        # "Cannot copy out of meta tensor". They are shared from the reference explicitly.
+        reference_buffers = dict(self.reference.named_buffers())
+        for name, buffer in list(candidate.named_buffers()):
+            if buffer.is_meta:
+                parent, _, leaf = name.rpartition(".")
+                setattr(candidate.get_submodule(parent) if parent else candidate, leaf, reference_buffers[name])
+        candidate = candidate.eval()
 
         before = {name: type(module) for name, module in candidate.named_modules()}
         applied = apply_champions(candidate, scoped_registry(hypothesis, REGISTRY))
