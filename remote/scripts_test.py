@@ -1420,3 +1420,50 @@ def test_teardown_pulls_results_before_destroying(workdir):
     assert pull_at < destroy_at, "teardown must pull results before it destroys the instance"
     # And the pull must never be able to block the destroy.
     assert "destroying anyway" in teardown
+
+
+def test_a_python_interpreter_is_established_before_anything_uses_one():
+    """Cost one rental (50119910, 2026-09-07, $0.0557).
+
+    The image ships `python3` and `pip` but no `python`, so every remote step after the
+    installs died with `command not found` — after the container pull, the torch download
+    and the pip installs had all been paid for. The interpreter has to be the first thing
+    established, not the twentieth thing discovered.
+    """
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    body = script[script.index("preparing the remote environment") :]
+
+    link_at = body.index("/usr/local/bin/python")
+    version_at = body.index("python --version")
+    first_use = min(
+        body.index("python -m pip install"),
+        body.index("python -m deltaforge.cli"),
+    )
+    assert link_at < version_at < first_use, (
+        "the python symlink and its verification must come before the first use of python"
+    )
+
+
+def test_pip_runs_through_the_same_interpreter_everything_else_uses():
+    """A bare `pip` can belong to a different interpreter than `python`, which installs
+    torch somewhere the benchmark cannot import it — a failure that appears only after the
+    3 GB download has been paid for."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    body = script[script.index("preparing the remote environment") :]
+
+    for line in body.splitlines():
+        if "remote_sh" in line and "pip install" in line:
+            assert "python -m pip install" in line, f"bare pip invocation: {line.strip()}"
+
+
+def test_hf_transfer_is_installed_as_a_package_not_as_a_dropped_extra():
+    """huggingface-hub 1.30 dropped the `hf_transfer` extra, so
+    `huggingface_hub[hf_transfer]` warns and installs nothing — silently leaving a 9.32 GB
+    checkpoint on the single-connection downloader, on billed wall-clock time. A warning is
+    not a failure, so nothing would have reported it except the clock."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+
+    assert "huggingface_hub[hf_transfer]" not in script
+    assert "hf_transfer" in script
+    # And the run says out loud whether it actually got it.
+    assert "hf_transfer present" in script

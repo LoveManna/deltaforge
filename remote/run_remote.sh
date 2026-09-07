@@ -425,15 +425,32 @@ remote_sh() {
 
 df_log "preparing the remote environment"
 remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq g++)"
+# Guarantee a `python` on PATH before anything tries to use one.
+#
+# Cost one rental (50119910, 9.38 min, $0.0557, 2026-09-07): the ai-dock/vast images ship
+# `python3` and `pip` but no `python`, so every remote step after the installs died with
+# `bash: python: command not found` — after the container pull, the torch download and the
+# pip installs had all been paid for. The interpreter is the first thing to establish,
+# before it is the twentieth thing to discover.
+remote_sh "command -v python >/dev/null 2>&1 || ln -sf \"\$(command -v python3)\" /usr/local/bin/python"
+remote_sh "python --version"
 # torch from PyTorch's own CDN rather than baked into the image: see the note on DF_IMAGE
 # in provision.sh. The cu128 wheel brings its matching Triton with it.
-remote_sh "pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128"
-# `huggingface_hub[hf_transfer]` is what makes the 9.3 GB checkpoint arrive in minutes
-# rather than tens of minutes: the fallback downloader is one HTTP connection with no
-# resume, and this is billed wall-clock time. `transformers` is pinned because the GPU
-# test suite runs the weight-value oracle through it, and an unpinned version that drops
-# the Qwen3.5 architecture would kill the run after every gigabyte had been paid for.
-remote_sh "pip install --quiet --no-deps -e . && pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest 'huggingface_hub[hf_transfer]'"
+remote_sh "python -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128"
+# `hf_transfer` is what makes the 9.32 GB checkpoint arrive in minutes rather than tens of
+# minutes: the fallback downloader is one HTTP connection with no resume, and this is
+# billed wall-clock time.
+#
+# It is installed as its own package rather than as a huggingface_hub extra. The extra was
+# dropped in huggingface-hub 1.30, which warns and installs nothing -- silently leaving the
+# slow downloader in place. A warning is not a failure, so nothing would have reported it
+# except the clock; the import is therefore checked out loud on the next line.
+#
+# `transformers` is pinned because the GPU test suite runs the weight-value oracle through
+# it, and an unpinned version that drops the Qwen3.5 architecture would kill the run after
+# every gigabyte had been paid for.
+remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest huggingface_hub hf_transfer"
+remote_sh "python -c 'import hf_transfer' && echo 'hf_transfer present' || echo 'WARNING: hf_transfer missing; the 9.32 GB checkpoint will use the slow single-connection downloader'"
 remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
 remote_sh "python -m deltaforge.cli fetch-weights --model '$DF_MODEL' --dest '$DF_WEIGHTS_DIR'"
 
