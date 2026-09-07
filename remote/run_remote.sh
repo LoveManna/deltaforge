@@ -27,12 +27,23 @@ DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
 DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-60}"
 DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-90}"
 DF_REMOTE_DIR="${DF_REMOTE_DIR:-/workspace/deltaforge}"
-DF_WEIGHTS_DIR="${DF_WEIGHTS_DIR:-/workspace/qwen3.5-4b}"
+# The checkpoint under test. Kept small on purpose: the benchmark holds a bf16 baseline
+# and a candidate in one process on one card, so the model must leave room for both plus
+# three max-autotune compilations. See docs/ARCHITECTURE.md on why not a newer Qwen.
+DF_MODEL="${DF_MODEL:-Qwen/Qwen3.5-4B}"
+DF_WEIGHTS_DIR="${DF_WEIGHTS_DIR:-/workspace/$(printf '%s' "${DF_MODEL#*/}" | tr 'A-Z' 'a-z')}"
 DF_STATE_FILE="${DF_STATE_FILE:-$DF_REPO_ROOT/.deltaforge-instance}"
 DF_SIMULATE_FAILURE="${DF_SIMULATE_FAILURE:-}"
 # A fresh instance pulls a ~9 GB container image before sshd exists. 600s was not enough
 # headroom for that on a well-connected host and turned a slow pull into a lost rental.
 DF_SSH_READY_TIMEOUT="${DF_SSH_READY_TIMEOUT:-1200}"
+# Abort a rental whose container image is not making progress. Eight rentals were spent
+# discovering that a stalled pull is indistinguishable from a slow one if you only wait:
+# every one of them ran the full readiness timeout and was billed for it. `status_msg`
+# carries pull progress, so a message that has not changed in this many seconds while the
+# instance is still not running means the pull is stuck, not slow. Failing here turns a
+# 20-minute loss into a 5-minute one and makes testing another image cheap.
+DF_PULL_STALL_SECONDS="${DF_PULL_STALL_SECONDS:-300}"
 # Ceiling on the single longest remote step. `max-autotune` compiles three columns and
 # can run away on a large graph; without a bound the run would sit there until the
 # 90-minute watchdog fired, and a watchdog firing is a reportable fault rather than a
@@ -49,10 +60,15 @@ Usage: remote/run_remote.sh [options]
                             without contacting the create/destroy endpoints.
   --session-id ID           Session identifier (default: session-<UTC timestamp>).
   --hypothesis SLUG         Hypothesis being tested. Empty means a baseline run.
+  --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --session-limit N         Session GPU-time soft gate, in minutes (default: 60).
   --watchdog-minutes N      Hard watchdog timeout (default: 90).
   --max-rate USD            Hourly rate ceiling, passed to provision.sh.
+  --image REF               Container image. Use a non-Docker-Hub registry to test
+                            whether a stalled pull is a Docker Hub rate limit.
+  --exclude-machines IDS    Comma-separated machine ids to skip (ones that already
+                            cost a rental without producing a result).
   --simulate-failure STAGE  Force a failure at: provision, sync, correctness, bench, pull.
                             For testing the teardown path.
   -h, --help                This message.
@@ -66,10 +82,15 @@ while [ $# -gt 0 ]; do
         --dry-run)           DF_DRY_RUN=1 ;;
         --session-id)        DF_SESSION_ID="$2"; shift ;;
         --hypothesis)        DF_HYPOTHESIS="$2"; shift ;;
+        --model)             DF_MODEL="$2"
+                             DF_WEIGHTS_DIR="/workspace/$(printf '%s' "${DF_MODEL#*/}" | tr 'A-Z' 'a-z')"
+                             shift ;;
         --ledger)            DF_LEDGER="$2"; DF_LEDGER_EXPLICIT=1; shift ;;
         --session-limit)     DF_SESSION_LIMIT_MINUTES="$2"; shift ;;
         --watchdog-minutes)  DF_WATCHDOG_MINUTES="$2"; shift ;;
         --max-rate)          DF_PROVISION_ARGS="$DF_PROVISION_ARGS --max-rate $2"; shift ;;
+        --image)             DF_PROVISION_ARGS="$DF_PROVISION_ARGS --image $2"; shift ;;
+        --exclude-machines)  DF_PROVISION_ARGS="$DF_PROVISION_ARGS --exclude-machines $2"; shift ;;
         --simulate-failure)  DF_SIMULATE_FAILURE="$2"; shift ;;
         --state-file)        DF_STATE_FILE="$2"; shift ;;
         -h|--help)           usage; exit 0 ;;
@@ -239,6 +260,8 @@ wait_for_ssh() {
     fi
     _deadline=$(( $(df_now_epoch) + DF_SSH_READY_TIMEOUT ))
     _dumped=0
+    _last_msg=""
+    _msg_changed_at=$(df_now_epoch)
     while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
         _listing=$(df_api_v1 GET "/instances/" 2>/dev/null || true)
         _row=$(df_instance_row "$_listing" "$DF_INSTANCE_ID")
@@ -256,12 +279,26 @@ wait_for_ssh() {
                 # "running" means the container started, not that sshd is accepting yet.
                 # Probe until it answers, so the first real command is not the thing that
                 # discovers the connection is not up.
+                _ssh_started=$(df_now_epoch)
                 while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
                     # shellcheck disable=SC2086
-                    if ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new \
-                        -o ConnectTimeout=15 -o BatchMode=yes "$DF_SSH_HOST" true 2>/dev/null; then
+                    _probe=$(ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new \
+                        -o ConnectTimeout=15 -o BatchMode=yes "$DF_SSH_HOST" true 2>&1) && {
                         df_log "ssh is answering"
                         return 0
+                    }
+                    # A rejected key is a permanent failure, not a slow boot: the image is
+                    # answering on the port and refusing us. Waiting cannot fix it, so do
+                    # not pay out the readiness timeout discovering that. Cost one rental.
+                    case "$_probe" in
+                        *"Permission denied"*|*"publickey"*)
+                            df_die "instance $DF_INSTANCE_ID refused the ssh key: ${_probe##*$(printf '\n')}. The image does not honour the Vast account key. See docs/GPU-ACCESS.md; provision.sh injects the key through PUBLIC_KEY and authorized_keys, so an image ignoring both needs its own handling."
+                            ;;
+                    esac
+                    # Same stall budget as the pull: sshd that has not come up in this long
+                    # is not coming up.
+                    if [ $(( $(df_now_epoch) - _ssh_started )) -ge "$DF_PULL_STALL_SECONDS" ]; then
+                        df_die "instance $DF_INSTANCE_ID has been running for ${DF_PULL_STALL_SECONDS}s without sshd answering. Destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Last probe: ${_probe:-no output}"
                     fi
                     df_log "instance is running; waiting for sshd"
                     sleep 10
@@ -285,6 +322,17 @@ wait_for_ssh() {
         # dead host look identical from here, and telling them apart cost two rentals.
         _msg=$(printf '%s' "$_row" | jq -r '.status_msg // empty' 2>/dev/null | tr -d '\n' | cut -c1-70)
         df_log "waiting for instance to start (status: ${_status:-unknown}${_msg:+ | $_msg})"
+
+        # Stall detection. A pull that is merely slow keeps rewriting status_msg with new
+        # byte counts; a pull that is stuck repeats the same line forever. Distinguishing
+        # them is what the eight lost rentals paid for, so it is checked rather than
+        # waited out.
+        if [ "$_msg" != "$_last_msg" ]; then
+            _last_msg="$_msg"
+            _msg_changed_at=$(df_now_epoch)
+        elif [ $(( $(df_now_epoch) - _msg_changed_at )) -ge "$DF_PULL_STALL_SECONDS" ]; then
+            df_die "instance $DF_INSTANCE_ID has not progressed in ${DF_PULL_STALL_SECONDS}s (status: ${_status:-unknown} | ${_msg:-no status_msg}). Image pull is stuck, not slow: destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Try --image on another registry, or add DOCKER_LOGIN_USER/DOCKER_LOGIN_TOKEN to .env."
+        fi
         sleep 10
     done
     df_die "instance $DF_INSTANCE_ID did not become reachable within ${DF_SSH_READY_TIMEOUT}s"
@@ -325,9 +373,14 @@ remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get inst
 # torch from PyTorch's own CDN rather than baked into the image: see the note on DF_IMAGE
 # in provision.sh. The cu128 wheel brings its matching Triton with it.
 remote_sh "pip install --quiet torch --index-url https://download.pytorch.org/whl/cu128"
-remote_sh "pip install --quiet --no-deps -e . && pip install --quiet safetensors transformers tokenizers pytest"
+# `huggingface_hub[hf_transfer]` is what makes the 9.3 GB checkpoint arrive in minutes
+# rather than tens of minutes: the fallback downloader is one HTTP connection with no
+# resume, and this is billed wall-clock time. `transformers` is pinned because the GPU
+# test suite runs the weight-value oracle through it, and an unpinned version that drops
+# the Qwen3.5 architecture would kill the run after every gigabyte had been paid for.
+remote_sh "pip install --quiet --no-deps -e . && pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest 'huggingface_hub[hf_transfer]'"
 remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
-remote_sh "python -m deltaforge.cli fetch-weights --dest '$DF_WEIGHTS_DIR'"
+remote_sh "python -m deltaforge.cli fetch-weights --model '$DF_MODEL' --dest '$DF_WEIGHTS_DIR'"
 
 # The GPU-marked tests skip themselves on a CPU machine, so this is the first place they
 # ever run. `oracle_test.py` is the weight-value oracle against HuggingFace: until it has
@@ -343,7 +396,7 @@ if df_stage_should_fail correctness; then
     df_die "correctness gate failed (simulated)"
 fi
 df_log "running correctness gates"
-remote_sh "python -m deltaforge.cli correctness --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
+remote_sh "python -m deltaforge.cli correctness --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
 
 # Pull what has been recorded so far, before the longest and riskiest step. The
 # correctness record is the expensive part of this run — it needed the checkpoint on a
@@ -357,7 +410,7 @@ if df_stage_should_fail bench; then
     df_die "benchmark failed (simulated)"
 fi
 df_log "running the benchmark (remote step ceiling ${DF_BENCH_TIMEOUT}s)"
-remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
+remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
 
 if df_stage_should_fail pull; then
     df_die "pulling results failed (simulated)"

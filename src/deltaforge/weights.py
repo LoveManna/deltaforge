@@ -23,6 +23,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .config import DEFAULT_REPO_ID
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import torch
 
@@ -33,6 +35,7 @@ __all__ = [
     "LoadReport",
     "WeightMappingError",
     "load_manifest",
+    "manifest_path",
     "load_weights",
     "map_checkpoint_name",
 ]
@@ -41,7 +44,14 @@ TEXT_PREFIX = "model.language_model."
 VISION_PREFIX = "model.visual."
 MTP_PREFIX = "mtp."
 
-MANIFEST_PATH = Path(__file__).parent / "data" / "qwen3_5_4b_manifest.json"
+DATA_DIR = Path(__file__).parent / "data"
+
+
+def manifest_path(repo_id: str) -> Path:
+    """Where the tensor manifest for a published checkpoint lives."""
+    slug = repo_id.split("/")[-1].replace(".", "_").replace("-", "_").lower()
+    return DATA_DIR / f"{slug}_manifest.json"
+
 
 # Checkpoint suffix (below `model.language_model.layers.<i>.`) -> reference suffix
 # (below `layers.<i>.`). Identity for most of them; kept explicit so that a rename on
@@ -140,24 +150,24 @@ def map_checkpoint_name(name: str) -> str | None:
     return f"layers.{layer_idx}.{mapped}"
 
 
-@lru_cache(maxsize=1)
-def load_manifest() -> dict:
-    """The published checkpoint's tensor names, dtypes and shapes.
+@lru_cache(maxsize=4)
+def load_manifest(repo_id: str = DEFAULT_REPO_ID) -> dict:
+    """A published checkpoint's tensor names, dtypes and shapes — headers, no weights.
 
-    Read from the safetensors headers of ``Qwen/Qwen3.5-4B`` on 2026-08-30; no weight
-    data. It exists so the CPU test suite can prove the name map and every reference
-    parameter shape against the real checkpoint without a 9 GB download.
+    It exists so the CPU test suite can prove the name map and every reference
+    parameter shape against the real checkpoint without a 54 GB download. Regenerate
+    with ``python -m deltaforge.data.make_manifest Qwen/<model>``.
     """
-    return json.loads(MANIFEST_PATH.read_text())
+    path = manifest_path(repo_id)
+    if not path.exists():
+        raise WeightMappingError(f"no tensor manifest for {repo_id!r} at {path}")
+    return json.loads(path.read_text())
 
 
-def expected_parameter_shapes(config: ModelConfig) -> dict[str, list[int]]:
-    """Reference parameter name -> shape, derived from the checkpoint manifest.
-
-    Only meaningful for the real model; the manifest describes Qwen3.5-4B.
-    """
+def expected_parameter_shapes(config: ModelConfig, repo_id: str = DEFAULT_REPO_ID) -> dict[str, list[int]]:
+    """Reference parameter name -> shape, derived from the checkpoint manifest."""
     shapes: dict[str, list[int]] = {}
-    for name, meta in load_manifest()["tensors"].items():
+    for name, meta in load_manifest(repo_id)["tensors"].items():
         mapped = map_checkpoint_name(name)
         if mapped is not None:
             shapes[mapped] = meta["shape"]

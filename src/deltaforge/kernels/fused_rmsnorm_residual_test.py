@@ -41,13 +41,31 @@ def model():
 # -- registration ---------------------------------------------------------------------
 
 
-def test_the_kernel_is_the_champion_of_the_operation_it_replaces():
+def test_the_kernel_is_registered_retired_and_still_installable():
+    """Retired, not unregistered — and its installer stays wired.
+
+    The kernel was graveyarded on its mechanism (0.018% of per-token bytes, below the
+    harness's noise band) without ever being measured. Keeping it registered with a
+    working installer is what stops a later session rediscovering the dead end, and it
+    means the entry can be promoted for a one-off comparison without rebuilding anything.
+    """
     entry = REGISTRY.get("fused_rmsnorm_residual")
 
     assert entry.replaces == "rms_norm_residual"
-    assert entry.status is KernelStatus.CHAMPION
+    assert entry.status is KernelStatus.RETIRED
     assert entry.hypothesis == "001-fused-rmsnorm-residual"
     assert "rms_norm_residual" in INSTALLERS
+
+
+def test_no_champion_ships_so_the_candidate_column_is_the_identity():
+    """The shipped registry installs nothing, on purpose.
+
+    With every entry retired, ``apply_champions`` is a no-op and the ``candidate`` column
+    is bit-identical to ``eager``. That is the *identity champion* a first GPU session uses
+    to calibrate the harness: every column must return 1.00 +/- noise, at zero
+    kernel-writing risk. See AGENT.md, "If this is the first session that ever gets a GPU".
+    """
+    assert REGISTRY.champions() == {}
 
 
 # -- installation ---------------------------------------------------------------------

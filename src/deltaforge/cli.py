@@ -1,21 +1,26 @@
 """Command line entry points, invoked by ``remote/run_remote.sh`` on the rented box.
 
 Everything here except ``fetch-weights`` needs a CUDA device and the full checkpoint, so
-none of it ran during the bootstrap session. The code paths are wired and the shapes are
-fixed; the numbers arrive in the first funded session.
+none of it has ever run. The code paths are wired and the shapes are fixed; the numbers
+arrive in the first session that gets a working GPU.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 
-REPO_ID = "Qwen/Qwen3.5-4B"
-HF_BASE = f"https://huggingface.co/{REPO_ID}/resolve/main"
+from .config import DEFAULT_REPO_ID, MODELS
+
+
+def _hf_base(repo_id: str) -> str:
+    return f"https://huggingface.co/{repo_id}/resolve/main"
+
 
 #: Fetched to the instance. Ungated, so no HuggingFace token is required.
 AUXILIARY_FILES = (
@@ -48,14 +53,58 @@ def _download(url: str, dest: Path) -> None:
     tmp.replace(dest)
 
 
+def _snapshot_download(repo_id: str, dest: Path) -> bool:
+    """Fetch the checkpoint with ``huggingface_hub``. Returns False if it is unavailable.
+
+    Worth the dependency: the fallback below is a single HTTP connection, sequential, with
+    no resume, so an interruption 8 GB into a 9.3 GB shard starts that shard again. On a
+    rented box the download is billed wall-clock time, and ``hf_transfer`` opens many
+    connections at once — typically several times faster on the 300-1200 Mbit links the
+    offer filter selects for.
+
+    ``HF_HUB_ENABLE_HF_TRANSFER`` is set before the import because the library reads it at
+    import time. If the accelerator is not installed, ``huggingface_hub`` warns and uses
+    its own (still parallel, still resumable) downloader, which is why this is not fatal.
+    """
+    os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+    try:
+        from huggingface_hub import snapshot_download  # noqa: PLC0415 - optional dependency
+    except ImportError:
+        return False
+
+    # Only the decode path. The vision tower and MTP head are excluded from the benchmark
+    # (see the README), and on Qwen3.5-4B they are ~0.9 GB of the checkpoint.
+    snapshot_download(
+        repo_id=repo_id,
+        local_dir=str(dest),
+        allow_patterns=[*AUXILIARY_FILES, "*.safetensors"],
+        max_workers=8,
+    )
+    return True
+
+
 def cmd_fetch_weights(args: argparse.Namespace) -> int:
     """Download the checkpoint. The only command here that does not need a GPU."""
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
-    print(f"fetching {REPO_ID} into {dest}")
+    repo_id = args.model
+    print(f"fetching {repo_id} into {dest}")
+
+    if not args.no_hf_transfer:
+        try:
+            if _snapshot_download(repo_id, dest):
+                shards = sorted(dest.glob("*.safetensors"))
+                total = sum(f.stat().st_size for f in shards)
+                print(f"done: {len(shards)} shards, {total / 1e9:.2f} GB in {dest}")
+                return 0
+            print("  huggingface_hub not installed; falling back to urllib")
+        except Exception as exc:  # noqa: BLE001 - any failure here is recoverable
+            print(f"  huggingface_hub download failed ({exc}); falling back to urllib")
+
+    base = _hf_base(repo_id)
     for name in AUXILIARY_FILES:
         try:
-            _download(f"{HF_BASE}/{name}", dest / name)
+            _download(f"{base}/{name}", dest / name)
         except OSError as exc:
             print(f"  skipping {name}: {exc}")
 
@@ -65,18 +114,35 @@ def cmd_fetch_weights(args: argparse.Namespace) -> int:
         return 1
     shards = sorted(set(json.loads(index_path.read_text())["weight_map"].values()))
     for shard in shards:
-        _download(f"{HF_BASE}/{shard}", dest / shard)
+        _download(f"{base}/{shard}", dest / shard)
     print(f"done: {len(shards)} shards in {dest}")
     return 0
 
 
 def _load_models(args: argparse.Namespace) -> tuple[object, object, object]:
-    """Build (config, eager reference, candidate). Requires CUDA and the checkpoint."""
+    """Build (config, eager reference, candidate). Requires CUDA and the checkpoint.
+
+    The two models are **separate module trees that share one set of parameter tensors.**
+
+    Separate trees are required: installing a kernel swaps ``__class__`` on the candidate's
+    modules, and a shared tree would silently alter the reference — benchmarking the
+    candidate against itself.
+
+    Shared parameters are safe and worth a lot. Nothing writes to a parameter here: every
+    forward runs under ``no_grad`` and the harness only ever reads them. Loading twice
+    instead cost a second 9.3 GB read from disk in each of the three commands that build
+    models, and held 16.8 GB on a 32 GB card where 8.4 GB does. ``assign=True`` is what
+    makes ``load_state_dict`` rebind the tensors rather than copy into new storage.
+
+    A kernel that genuinely needs different weights — a quantised candidate, say — should
+    replace them explicitly after this returns, and say so in its writeup.
+    """
     import torch
 
     from .config import from_hf_config
     from .kernels import REGISTRY
-    from .model import build_model
+    from .model import apply_champions, build_model
+    from .reference import ReferenceModel
 
     if not torch.cuda.is_available():
         raise SystemExit(
@@ -87,8 +153,30 @@ def _load_models(args: argparse.Namespace) -> tuple[object, object, object]:
     weights = Path(args.weights)
     config = from_hf_config(weights / "config.json")
     reference = build_model(config, weights, device="cuda", dtype=torch.bfloat16, registry=None)
-    candidate = build_model(config, weights, device="cuda", dtype=torch.bfloat16, registry=REGISTRY)
+
+    candidate = ReferenceModel(config).to(device="cuda", dtype=torch.bfloat16).eval()
+    candidate.load_state_dict(reference.state_dict(), assign=True)
+    apply_champions(candidate, REGISTRY)
+    _assert_parameters_are_shared(reference, candidate)
     return config, reference, candidate
+
+
+def _assert_parameters_are_shared(reference, candidate) -> None:
+    """Fail loudly if the candidate quietly stopped sharing the reference's weights.
+
+    Checked rather than assumed, because the failure is invisible: the run would still
+    produce a plausible number, on twice the memory, having silently loaded a second copy.
+    """
+    ref = dict(reference.named_parameters())
+    for name, param in candidate.named_parameters():
+        target = ref.get(name)
+        if target is None:
+            raise SystemExit(f"candidate parameter {name!r} has no counterpart in the reference")
+        if param.data_ptr() != target.data_ptr():
+            raise SystemExit(
+                f"candidate parameter {name!r} does not share storage with the reference. "
+                "The two models must differ only in which kernels they call."
+            )
 
 
 def _tokenize_prompts(weights: Path, prompts: tuple[str, ...]) -> list[list[int]]:
@@ -123,7 +211,7 @@ def cmd_correctness(args: argparse.Namespace) -> int:
     record = ResultRecord(
         kind="hypothesis" if args.hypothesis else "baseline",
         outcome="baseline" if report.passed else "incorrect",
-        config_name=REPO_ID,
+        config_name=args.model,
         hypothesis={"slug": args.hypothesis} if args.hypothesis else None,
         correctness=report.to_dict(),
     )
@@ -132,6 +220,58 @@ def cmd_correctness(args: argparse.Namespace) -> int:
     print(render_markdown(record))
     print(f"wrote {out}")
     return 0 if report.passed else 1
+
+
+#: label -> (which model, torch.compile mode or None).
+#:
+#: `compiled` vs `candidate_compiled` is the claim: identical treatment, the only
+#: difference being who wrote the kernel. The two eager columns are nearly free — they add
+#: timing runs, not compilations — and each earns its place. `eager` is the sanity check
+#: that the compiler did anything at all; the gap between `candidate` and
+#: `candidate_compiled` attributes a win between the compiler and the kernel.
+BENCH_COLUMNS: dict[str, tuple[str, str | None]] = {
+    "eager": ("reference", None),
+    "compiled": ("reference", "max-autotune"),
+    "compiled_nocudagraphs": ("reference", "max-autotune-no-cudagraphs"),
+    "candidate": ("candidate", None),
+    "candidate_compiled": ("candidate", "max-autotune"),
+}
+
+#: Without both of these there is no result, so they cannot be dropped.
+SCORING_COLUMNS = ("compiled", "candidate_compiled")
+
+#: What runs unless `--columns` says otherwise.
+#:
+#: `compiled_nocudagraphs` is omitted on purpose. It costs a full `max-autotune`
+#: compilation — a third of the benchmark's fixed cost — and it existed to show that a win
+#: was not merely CUDA-graph launch-overhead removal. That confound disappeared when the
+#: scoring column became `candidate_compiled`, since both sides of the comparison now have
+#: CUDA graphs. It remains a useful debugging column: run `--columns all` on a calibration
+#: run, or whenever a hypothesis is itself about launch overhead.
+DEFAULT_COLUMNS = ("eager", "compiled", "candidate", "candidate_compiled")
+
+
+def _selected_columns(args: argparse.Namespace) -> tuple[str, ...]:
+    """Which benchmark columns this run measures. Recorded alongside the numbers."""
+    requested = getattr(args, "columns", "") or ""
+    if requested == "all":
+        labels = tuple(BENCH_COLUMNS)
+    elif requested:
+        labels = tuple(label.strip() for label in requested.split(",") if label.strip())
+    else:
+        labels = DEFAULT_COLUMNS
+
+    unknown = [label for label in labels if label not in BENCH_COLUMNS]
+    if unknown:
+        raise SystemExit(f"unknown benchmark column(s): {unknown}; known: {sorted(BENCH_COLUMNS)}")
+    missing = [label for label in SCORING_COLUMNS if label not in labels]
+    if missing:
+        raise SystemExit(
+            f"refusing to run without the scoring column(s) {missing}. "
+            f"{SCORING_COLUMNS[0]!r} against {SCORING_COLUMNS[1]!r} is the measurement; "
+            "a run without both produces no result."
+        )
+    return labels
 
 
 def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[str, Callable], dict]:
@@ -169,24 +309,10 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
 
     columns: dict[str, Callable] = {}
     setups: dict[str, Callable] = {}
-    for label, model, mode in (
-        ("eager", reference, None),
-        ("compiled", reference, "max-autotune"),
-        ("compiled_nocudagraphs", reference, "max-autotune-no-cudagraphs"),
-        ("candidate", candidate, None),
-        # The scoring column. `candidate` alone is eager, so measuring it against a
-        # CUDA-graphed `compiled` compares Python dispatch overhead across 32 layers
-        # rather than kernels, and no memory-bound hypothesis can win it however good
-        # the Triton is. Giving the candidate the *same* max-autotune treatment leaves
-        # exactly one difference between the two columns — who wrote the kernel — which
-        # is what "beat what the compiler generates" has to mean. The kernels are
-        # registered as custom ops so inductor may schedule and CUDA-graph around them
-        # but may not decompose them back into the ops they replace. `candidate` stays
-        # as a diagnostic: the gap between it and this column is the compiler's
-        # contribution, and the gap between this column and `compiled` is the kernel's.
-        ("candidate_compiled", candidate, "max-autotune"),
-    ):
-        setups[label], columns[label] = make(model, mode)
+    models = {"reference": reference, "candidate": candidate}
+    for label in _selected_columns(args):
+        which, mode = BENCH_COLUMNS[label]
+        setups[label], columns[label] = make(models[which], mode)
     return columns, setups, workload
 
 
@@ -200,7 +326,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         BenchConfig(rounds=args.rounds, warmup_rounds=args.warmup_rounds),
         timer=CudaEventTimer(),
         setups=setups,
-        metadata={"workload": args.workload},
+        metadata={"workload": args.workload, "columns": list(_selected_columns(args))},
     )
 
     cost = None
@@ -218,7 +344,7 @@ def cmd_bench(args: argparse.Namespace) -> int:
         # A bootstrap run records the baseline; a hypothesis run's outcome is decided by
         # the session against the incumbent and the noise band, not asserted here.
         outcome="baseline" if not args.hypothesis else "inconclusive",
-        config_name=REPO_ID,
+        config_name=args.model,
         hypothesis={"slug": args.hypothesis} if args.hypothesis else None,
         workload=workload,
         bench=result.to_dict(),
@@ -243,11 +369,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="deltaforge", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    fetch = sub.add_parser("fetch-weights", help="download the Qwen3.5-4B checkpoint")
+    model_arg = argparse.ArgumentParser(add_help=False)
+    model_arg.add_argument(
+        "--model",
+        default=DEFAULT_REPO_ID,
+        choices=sorted(MODELS),
+        help=f"published checkpoint to benchmark (default: {DEFAULT_REPO_ID})",
+    )
+
+    fetch = sub.add_parser("fetch-weights", parents=[model_arg], help="download a published checkpoint")
     fetch.add_argument("--dest", required=True)
+    fetch.add_argument(
+        "--no-hf-transfer",
+        action="store_true",
+        help="skip huggingface_hub and use the single-connection urllib fallback",
+    )
     fetch.set_defaults(func=cmd_fetch_weights)
 
-    common = argparse.ArgumentParser(add_help=False)
+    common = argparse.ArgumentParser(add_help=False, parents=[model_arg])
     common.add_argument("--weights", required=True, help="checkpoint directory")
     common.add_argument("--session-id", default="")
     common.add_argument("--hypothesis", default="")
@@ -261,6 +400,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     bench = sub.add_parser("bench", parents=[common], help="run the interleaved benchmark (needs CUDA)")
     bench.add_argument("--workload", choices=sorted(DEFAULT_WORKLOADS), default="headline")
+    bench.add_argument(
+        "--columns",
+        default="",
+        help=(
+            "comma-separated benchmark columns, or 'all'. Default: "
+            f"{','.join(DEFAULT_COLUMNS)}. Each max-autotune column costs a full "
+            "compilation, so 'all' is for calibration runs."
+        ),
+    )
     bench.add_argument("--rounds", type=int, default=7)
     bench.add_argument("--warmup-rounds", type=int, default=2)
     bench.add_argument("--instance-id", default="")

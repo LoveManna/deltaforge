@@ -10,43 +10,79 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**None yet.**
+**None yet — no kernel has ever executed on a GPU.**
 
-This repository is at the end of its bootstrap session. The harness, the reference
-implementation, the correctness gates, the provisioning machinery and the cost controls
-are built and tested. **No baseline has been recorded and no kernel has been written.**
-
-The bootstrap session had no GPU available, so every number-producing step is wired,
-marked deferred, and skipped rather than faked. `LEADERBOARD.md` and `results/` say the
-same thing. There are no estimated, placeholder, or illustrative numbers anywhere in
-this repo; when a number appears here it will have come off a real card.
+The harness, the reference implementation, the correctness gates, the provisioning
+machinery and the cost controls are built and tested. One kernel has been written and then
+graveyarded on its mechanism — see the fused-RMSNorm entry in `docs/HYPOTHESES.md` and the
+full account in `results/hypotheses/001-fused-rmsnorm-residual/`. Every number-producing
+step is wired, marked deferred, and
+**skipped rather than faked**: there are no estimated, placeholder or illustrative numbers
+anywhere in this repo, and when a number appears it will have come off a real card.
+`LEADERBOARD.md` and `results/` say the same thing.
 
 ## What is being claimed
 
-That a human writing Triton by hand can beat what an optimising compiler generates,
-on the operations where fusion and memory movement dominate — measured end to end on
-a decode workload, not on a microbenchmark chosen to flatter the result.
+That a hand-written Triton kernel can beat what `torch.compile(mode="max-autotune")`
+generates on an LLM decode path — and, more importantly, that we can say **where**, **by
+how much**, and **why**, *in advance*.
 
-The win condition is a **median ratio** `t_compiled / t_candidate` over interleaved
-rounds, not an absolute millisecond count. Every session rents a different physical
-GPU, so absolute times are provenance, never the score.
+The second half is the actual contribution. "Hand-written beats the compiler" is the
+premise the entire inference-serving industry is built on; re-proving it is not a finding.
+A correct, mechanistic account of where the compiler wins and where it structurally cannot
+— registered as a prediction before the measurement, then confirmed by it — is.
 
-Four columns are reported on every run:
+That account starts from arithmetic, not intuition. `docs/roofline.py` prints where every
+byte goes in one decode step:
+
+| What moves | share of per-token bytes |
+|---|---:|
+| Weights, streamed once | **91.85%** |
+| GQA `repeat_interleave` materialisation | **6.23%** |
+| Recurrent state | 1.10% |
+| KV cache read | 0.78% |
+| SwiGLU intermediates | 0.026% |
+| Norm + residual | 0.018% |
+
+**A hypothesis cannot beat the share of bytes it touches.** Batch-1 decode is a
+weight-streaming problem, and inductor already reaches the roofline on simple memory-bound
+work — it emits Triton, so hand-writing a fused RMSNorm means hand-writing the kernel it
+already generates, for a ceiling of 0.018%. Five hypotheses are in the graveyard because of
+this table, closed by arithmetic rather than by renting a GPU. `docs/HYPOTHESES.md` ranks
+what is left.
+
+The win condition is a **median ratio** `t_compiled / t_candidate` over interleaved rounds,
+not an absolute millisecond count. Every session rents a different physical GPU, so absolute
+times are provenance, never the score.
+
+Interleaving reference and candidate *within* each round is what cancels thermal drift and
+clock changes, so both models must be resident at once. They are separate module trees —
+installing a kernel swaps a class on the candidate's modules, and a shared tree would alter
+the reference — but they **share one set of parameter tensors**, since nothing writes to a
+weight under `no_grad`. That is 8.4 GB on the card rather than 16.8, and one read of the
+checkpoint rather than two. `cli._assert_parameters_are_shared` fails the run if that ever
+silently stops being true.
+
+Four columns are reported by default; `--columns all` adds a fifth:
 
 | Column | What it is | Role |
 |---|---|---|
 | `eager` | `reference.py` in eager PyTorch | Context: shows how much is Python overhead |
 | `compiled` | `reference.py` under `torch.compile(mode="max-autotune")` | **The win condition** |
-| `compiled_nocudagraphs` | the same, `mode="max-autotune-no-cudagraphs"` | Shows the win is not just launch overhead |
-| `candidate` | `reference.py` with Triton kernels substituted | The submission |
+| `compiled_nocudagraphs` | the same, `mode="max-autotune-no-cudagraphs"` | **Opt-in.** A debugging column: both scored columns already have CUDA graphs, so this only earns its compile when a result is confusing or the hypothesis is about launch overhead |
+| `candidate` | `reference.py` with Triton kernels substituted, eager | Diagnostic: the gap to `candidate_compiled` is the compiler's contribution |
+| `candidate_compiled` | the candidate under `max-autotune` | **The scoring column.** Same treatment as `compiled`, so the only difference is who wrote the kernel |
 
 ## What is *not* being claimed
 
 These are non-goals, stated up front because a knowledgeable reader will ask:
 
-- **Beating cuBLAS on dense GEMM.** We will not win there and this README says so.
-  Wins are expected in memory-bound operations, in fusion across operation boundaries,
-  and in the chunked recurrent scan — not in matrix multiply.
+- **Beating cuBLAS on dense bf16 GEMM.** We will not win there and this README says so.
+  At batch 1 the linear layers are already at the bandwidth roofline; you cannot beat a
+  roofline with a better kernel, only by moving fewer bytes (quantisation) or running a
+  different algorithm (a chunked recurrent scan). That is what the backlog targets.
+- **Beating a compiler at elementwise fusion.** Inductor's home turf, and it emits Triton.
+  Those hypotheses are in the graveyard with the arithmetic that closed them.
 - **Beating vLLM or SGLang.** Those are already hand-tuned Triton and CUDA. They are
   out of scope as a win condition and may later appear only as an unscored reference point.
 - **Training kernels.** Inference decode path only.
@@ -129,13 +165,14 @@ endpoints. That is how the cost machinery is verified with no money at risk.
 
 ```sh
 # CPU-only checkout: everything except the GPU steps.
-uv venv
-uv pip install --index-url https://download.pytorch.org/whl/cpu torch
-uv pip install -e ".[dev]"
+uv sync --extra dev
 uv run pytest
 
+# Where the bytes go, and therefore what is worth optimising. No GPU, no checkpoint.
+uv run python docs/roofline.py
+
 # Verify the cost machinery without spending anything.
-remote/run_remote.sh --dry-run
+remote/run_remote.sh --dry-run --session-id smoke
 ```
 
 The full run — provision, sync, correctness gates, benchmark, pull results, destroy —
@@ -152,12 +189,13 @@ remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)"
 |---|---|
 | `src/deltaforge/reference.py` | The baseline. Pure PyTorch, no custom kernels, ever. |
 | `src/deltaforge/weights.py` | Safetensors → reference model, with an explicit name map. |
-| `src/deltaforge/kernels/` | The Triton kernels and the champion registry. Currently empty of kernels. |
+| `src/deltaforge/kernels/` | The Triton kernels and the champion registry. |
 | `src/deltaforge/harness/` | Interleaved timing, correctness gates, results records. |
 | `remote/` | Instance lifecycle, in POSIX shell so it works before the env exists. |
+| `docs/roofline.py` | Where the bytes go. Run before picking a hypothesis; needs no GPU. |
 | `docs/ARCHITECTURE.md` | The resolved Qwen3.5-4B facts every kernel must honour. |
 | `docs/HYPOTHESES.md` | The idea backlog, and the graveyard of what failed and why. |
-| `AGENT.md` | What each new working session reads first. |
+| `AGENT.md` | **Start here.** The single entry point for a working session. |
 | `LEADERBOARD.md` | The current champion, and every hypothesis attempted. |
 
 Licensed Apache-2.0, matching the target model.

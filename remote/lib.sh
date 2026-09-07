@@ -71,26 +71,62 @@ df_this_month(){ date -u +%Y-%m; }
 # Credentials
 # ---------------------------------------------------------------------------
 
+# df_env_value NAME [FILE]
+# One value out of the gitignored .env, on stdout. Never logged by this function; every
+# caller is responsible for logging only the length or a boolean, never the value.
+df_env_value() {
+    set +x
+    _name="$1"
+    _file="${2:-$DF_REPO_ROOT/.env}"
+    [ -f "$_file" ] || return 0
+    awk -v name="$_name" '
+        index($0, name "=") == 1 || $0 ~ "^[[:space:]]*" name "[[:space:]]*=" {
+            sub(/^[^=]*=[[:space:]]*/, "", $0)
+            gsub(/^"|"$/, "", $0)
+            gsub(/^'"'"'|'"'"'$/, "", $0)
+            sub(/[[:space:]]+$/, "", $0)
+            print $0
+            exit
+        }' "$_file"
+}
+
 # Loads the API key into DF_API_KEY. Never printed, never written anywhere.
 df_load_api_key() {
     set +x
     _env_file="${1:-$DF_REPO_ROOT/.env}"
     DF_API_KEY="${VAST_API_KEY:-}"
-    if [ -z "$DF_API_KEY" ] && [ -f "$_env_file" ]; then
-        DF_API_KEY=$(awk '
-            /^[[:space:]]*VAST_API_KEY[[:space:]]*=/ {
-                sub(/^[^=]*=[[:space:]]*/, "", $0)
-                gsub(/^"|"$/, "", $0)
-                gsub(/^'"'"'|'"'"'$/, "", $0)
-                sub(/[[:space:]]+$/, "", $0)
-                print $0
-                exit
-            }' "$_env_file")
+    if [ -z "$DF_API_KEY" ]; then
+        DF_API_KEY=$(df_env_value VAST_API_KEY "$_env_file")
     fi
     if [ -n "$DF_API_KEY" ]; then
         df_log "API key loaded (${#DF_API_KEY} characters, value never logged)"
         return 0
     fi
+    return 1
+}
+
+# Loads Docker registry credentials into DF_REGISTRY_LOGIN, in the `docker login`
+# argument form Vast expects for a create request's `image_login` field.
+#
+# Why this exists: every container image this project failed to pull came from Docker
+# Hub, and Vast hosts pull anonymously by default. Docker Hub's unauthenticated pull
+# limits are applied per source IP and are aggressive against datacenter ranges, which is
+# consistent with layers stalling at "Pulling fs layer" on four different machines. A
+# free Docker Hub account raises the limit by an order of magnitude.
+#
+# Optional: with no credentials set, this is inert and the create request is unchanged.
+df_load_registry_login() {
+    set +x
+    _env_file="${1:-$DF_REPO_ROOT/.env}"
+    DF_REGISTRY_LOGIN=""
+    _user="${DOCKER_LOGIN_USER:-$(df_env_value DOCKER_LOGIN_USER "$_env_file")}"
+    _token="${DOCKER_LOGIN_TOKEN:-$(df_env_value DOCKER_LOGIN_TOKEN "$_env_file")}"
+    if [ -n "$_user" ] && [ -n "$_token" ]; then
+        DF_REGISTRY_LOGIN="-u $_user -p $_token"
+        df_log "registry credentials loaded for user $_user (token never logged)"
+        return 0
+    fi
+    df_log "no registry credentials; images will be pulled anonymously"
     return 1
 }
 
@@ -105,10 +141,17 @@ _df_api_call() {
     [ -n "$DF_API_KEY" ] || df_die "no API key: set VAST_API_KEY or put it in $DF_REPO_ROOT/.env"
 
     if [ -n "$_body" ]; then
+        # The body goes through a 0600 temp file, not `--data "$_body"`: a create request
+        # can carry a registry token, and argv is world-readable through `ps`.
+        _body_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/df-body.XXXXXX") || df_die "mktemp failed"
+        printf '%s' "$_body" > "$_body_file"
         printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' \
             "$DF_API_KEY" \
         | curl --silent --show-error --fail-with-body --max-time 60 \
-               --config - --request "$_method" --data "$_body" "$_df_api_base$_path"
+               --config - --request "$_method" --data "@$_body_file" "$_df_api_base$_path"
+        _rc=$?
+        rm -f "$_body_file"
+        return $_rc
     else
         printf 'header = "Authorization: Bearer %s"\n' "$DF_API_KEY" \
         | curl --silent --show-error --fail-with-body --max-time 60 \

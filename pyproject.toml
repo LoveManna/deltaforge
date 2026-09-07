@@ -60,7 +60,7 @@ testpaths = ["src", "remote"]
 python_files = ["*_test.py"]
 markers = [
     "gpu: requires a CUDA device; skipped automatically when none is present",
-    "weights: requires the full ~9 GB Qwen3.5-4B checkpoint on disk",
+    "weights: requires the full checkpoint on disk (~9 GB for Qwen3.5-4B)",
 ]
 addopts = "-q --strict-markers"
 

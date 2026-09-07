@@ -1,15 +1,27 @@
 # Hypothesis 001 — fused residual-add + RMSNorm
 
-**Status: written and gated, NOT MEASURED.** No benchmark number exists for this kernel.
-It has never executed on a GPU. Nothing in this folder is a result, an estimate, or a
-projection, and the leaderboard records no ratio for it.
+**Status: GRAVEYARDED ON MECHANISM — written, gated, never measured, and now closed.**
+
+No benchmark number exists for this kernel and none ever will. It has never executed on a
+GPU. Nothing in this folder is a result, an estimate, or a projection.
+
+> **Closed 2026-09-04, by arithmetic rather than by measurement.** The residual add and the
+> two hidden-size norms per layer move **1.64 MB/token against 9158 MB total — 0.018%** of
+> per-token bytes at batch-1 decode. An infinitely fast kernel here buys 0.018%, which is
+> far below the harness's own noise band, so **no measurement could have shown a win.** The
+> eight failed rentals below are incidental to the outcome. Reproduce the arithmetic with
+> `uv run python docs/roofline.py`; the full reasoning is in `docs/HYPOTHESES.md`.
+>
+> The kernel and its tests stay in the tree, registered as `RETIRED`, so a later session
+> finds the dead end already explored. The registry now has **no champion**, which is the
+> identity-champion state a first GPU session should use to calibrate the harness.
 
 | | |
 |---|---|
 | Hypothesis id | `001-fused-rmsnorm-residual` |
 | Branch | `hyp/001-fused-rmsnorm-residual` |
 | Replaces | `rms_norm`, `rms_norm_residual` |
-| Outcome | **not measured** — blocked on GPU access, see "What happened" |
+| Outcome | **graveyarded on mechanism** — ceiling 0.018%, below the noise band |
 | GPU time bought | 94.2 billed minutes across 8 rentals |
 | Spend | $0.4783 |
 | Numbers produced | none |
@@ -108,8 +120,14 @@ are now fixes with tests rather than folklore.
 
 ## Why it is blocked, and the cheapest way to find out
 
-Four machines, three images, two registries, and every instance created, billed, and never
-finished pulling. That pattern is not a bad host and not a bad image.
+Four machines, three images, and every instance created, billed, and never finished
+pulling.
+
+> **Corrected 2026-09-05.** This paragraph used to say "two registries". That was wrong:
+> `pytorch/pytorch` and `vastai/base-image` are *both* Docker Hub, so all eight failures
+> were anonymous Docker Hub pulls and no other registry had ever been tried. Rental 9 tried
+> `ghcr.io` and the image pulled in three minutes. See `docs/GPU-ACCESS.md`; the
+> account-restriction theory below is ruled out.
 
 The account state is the strongest candidate:
 
@@ -142,9 +160,20 @@ region with the `--image` flag pointing at a tag that host already caches.
 ## What a future session must not do
 
 Do not record a ratio for this hypothesis from anything in this folder. There is no
-measurement. The hypothesis stays **open** in `docs/HYPOTHESES.md` — it is not in the
-graveyard, because a graveyard entry means a mechanism was tried and failed, and this
-mechanism has not been tried.
+measurement, and re-running it would not produce a useful one.
+
+**Do not resurrect this mechanism without new arithmetic.** If a future workload changes
+the byte shares enough to lift the ceiling above the noise band — a much smaller model, or
+a regime where the hidden state stops being rounding error next to the weights — say so
+with numbers from `docs/roofline.py` first.
+
+**The lesson that matters more than the kernel.** This hypothesis was ranked first because
+it was the cheapest to *write*, and "calibrate the harness on a cheap kernel" was used to
+justify that order. Both were wrong, and the whole GPU budget went to the least promising
+entry in the backlog. A harness is calibrated with an **identity champion** — an installer
+that changes nothing, whose columns must return 1.00 ± noise — at zero kernel-writing risk.
+`docs/HYPOTHESES.md` now leads with the byte table so the ordering mistake is hard to
+repeat.
 
 ## Files here
 

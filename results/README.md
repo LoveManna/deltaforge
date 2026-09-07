@@ -1,10 +1,14 @@
 # Results
 
-**Empty. No benchmark has been run and no baseline has been recorded.**
+**No benchmark has been run and no baseline has been recorded.**
 
-The bootstrap session had no GPU, so every number-producing step is wired and deferred
-rather than faked. Nothing in this directory is estimated or placeheld; when a file
-appears here it came off a real card.
+Every number-producing step is wired and deferred rather than faked. Nothing here is
+estimated or placeheld; when a `.json` record appears it came off a real card.
+
+The one populated directory, `hypotheses/001-fused-rmsnorm-residual/`, holds a kernel that
+was written, gated on CPU, and then **graveyarded on its mechanism without ever being
+measured** — its ceiling is 0.018% of per-token bytes. It is kept as a worked example of
+the reasoning, not as a result.
 
 ## Layout
 
@@ -12,6 +16,7 @@ appears here it came off a real card.
 |---|---|
 | `baseline/<gpu>-<date>.json` | The reference under `torch.compile(max-autotune)`, re-recorded each session. |
 | `hypotheses/NNN-slug.json` | One record per hypothesis run, **win or lose**. |
+| `hypotheses/NNN-slug/` | Longhand writeups: the kernel as written, its tests, a review. |
 
 ## Record format
 
@@ -28,7 +33,7 @@ so a reader can argue with the result rather than take it on trust.
 | `workload` | Batch size, context length, decoded tokens. |
 | `git` | `{sha, branch, dirty}`. A dirty tree is recorded, not hidden. |
 | `environment` | GPU model, driver, observed clocks, torch/Triton/CUDA versions, compute capability. |
-| `bench` | Per-round raw timings for all four columns, median ms, per-round ratios, median ratio, IQR, and the actual call order. |
+| `bench` | Per-round raw timings for all five columns, median ms, per-round ratios, median ratio, IQR, and the actual call order. |
 | `correctness` | Layer-1 per-kernel magnitudes and layer-2 token sequences. |
 | `cost` | Instance id, GPU, hourly rate, minutes, dollars. |
 | `notes` | Anything a reader needs that the fields do not cover. |
@@ -44,7 +49,7 @@ A median ratio you cannot recompute is a number someone typed.
 
 Clock locking (`nvidia-smi -lgc`) needs privileged container access we will not reliably
 have, so the methodology never depends on it. Observed clocks are captured as provenance;
-interleaving the four columns within each round is what absorbs thermal drift and
+interleaving the five columns within each round is what absorbs thermal drift and
 noisy-neighbour effects.
 
 ### Why absolute milliseconds are not the score

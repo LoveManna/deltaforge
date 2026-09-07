@@ -14,6 +14,7 @@ oracle, and is deferred to the first funded session (see ``oracle_test.py``).
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import pytest
 import torch
@@ -24,6 +25,7 @@ from .reference import (
     ReferenceModel,
     RMSNorm,
     RotaryEmbedding,
+    apply_output_gate,
     apply_partial_rope,
     recurrent_gated_delta_rule,
     rotate_half,
@@ -475,3 +477,43 @@ def test_conv_history_is_carried_across_calls(model, config):
 def test_scaling_uses_head_dim_not_hidden_over_heads(config):
     model = ReferenceModel(config)
     assert model.layers[1].self_attn.scaling == pytest.approx(1.0 / math.sqrt(config.head_dim))
+
+
+def test_the_output_gate_nonlinearity_follows_the_config():
+    """A kernel or a reference that hardcodes one gate is wrong on the other checkpoint.
+
+    Both gates are monotonic and near 1 for large positive inputs, so a wrong choice looks
+    almost right on real activations. Pinning both here means the difference is a test
+    failure rather than a plausible-looking logit.
+    """
+    gate = torch.tensor([-2.0, 0.0, 3.0])
+
+    sigmoid = apply_output_gate(gate, "sigmoid")
+    swish = apply_output_gate(gate, "swish")
+
+    torch.testing.assert_close(sigmoid, torch.sigmoid(gate))
+    torch.testing.assert_close(swish, torch.nn.functional.silu(gate))
+    # They disagree everywhere that matters, including in sign below zero.
+    assert not torch.allclose(sigmoid, swish)
+    assert sigmoid[0] > 0 and swish[0] < 0
+
+    with pytest.raises(ValueError, match="output_gate_type"):
+        apply_output_gate(gate, "gelu")
+
+
+def test_attention_uses_the_gate_the_config_names():
+    """Swapping only `output_gate_type` must change the model's output."""
+    base = tiny_config()
+    swish_config = replace(base, output_gate_type="swish", name="tiny-swish")
+
+    torch.manual_seed(0)
+    sigmoid_model = ReferenceModel(base).eval()
+    swish_model = ReferenceModel(swish_config).eval()
+    swish_model.load_state_dict(sigmoid_model.state_dict())
+
+    ids = torch.randint(0, base.vocab_size, (1, 6))
+    with torch.no_grad():
+        a, _ = sigmoid_model(ids)
+        b, _ = swish_model(ids)
+
+    assert not torch.allclose(a, b), "the gate type made no difference; it is being ignored"

@@ -1,16 +1,18 @@
 """The kernel registry: ``name -> (impl, replaces, status)``.
 
-**This package ships with no kernels.** The bootstrap session builds the harness that
-measures kernels; writing one in the same session as the harness that measures it
-produces a broken harness and a meaningless number. The registry contract, its
-invariants and its tests are here so the first hypothesis session has somewhere to
-land.
+**This package currently ships no champion.** Every registered kernel is ``RETIRED``, so
+``apply_champions`` installs nothing and the ``candidate`` column is bit-identical to
+``eager``. That is deliberate: it is the *identity champion* a first GPU session uses to
+calibrate the harness, at zero kernel-writing risk. See ``AGENT.md``.
 
 Each kernel module exports a callable with the *exact signature* of the reference
 operation it replaces, and registers itself here. The registry's single hard invariant:
 **at most one champion per replaceable reference operation.** Two champions for the same
 operation would make "what does `model.py` assemble?" ambiguous, and an ambiguous
 champion makes the leaderboard a lie.
+
+Retired kernels stay registered on purpose. A retired entry plus its graveyard entry in
+``docs/HYPOTHESES.md`` is what stops a later session paying to rediscover a dead end.
 """
 
 from __future__ import annotations
@@ -247,14 +249,16 @@ REGISTRY.register(
     "fused_rmsnorm_residual",
     impl=_fused_rmsnorm_residual.add_rms_norm,
     replaces="rms_norm_residual",
-    status=KernelStatus.CHAMPION,
+    status=KernelStatus.RETIRED,
     hypothesis="001-fused-rmsnorm-residual",
     notes=(
         "Fuses the residual add with the RMSNorm that follows it, and replaces the "
-        "layer's other hidden-size norm with a single-pass Triton RMSNorm. Champion of "
-        "an operation with no incumbent: being champion is what puts it in the candidate "
-        "column, which is how it gets measured at all. Retired to the graveyard if the "
-        "measurement does not clear the noise band."
+        "layer's other hidden-size norm with a single-pass Triton RMSNorm. "
+        "RETIRED, never measured: the operations it fuses move 0.018% of per-token "
+        "bytes at batch-1 decode, so its ceiling is below the harness's own noise band "
+        "and no measurement could have shown a win. Kept registered, with its installer "
+        "and its tests, so a later session finds the dead end already explored rather "
+        "than rediscovering it. See docs/HYPOTHESES.md and docs/roofline.py."
     ),
 )
 register_checks("rms_norm_residual", _fused_rmsnorm_residual.correctness_checks)

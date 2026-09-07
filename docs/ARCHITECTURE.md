@@ -5,6 +5,15 @@ Every fact here was read from the published checkpoint on **2026-08-30** — fro
 sibling model, or inference from the model card. The design spec left two items open
 (section 16); both are closed below.
 
+> **Why this model and not a newer one.** Qwen3.8 ships no small checkpoint: the family is
+> 27B (55.6 GB), a 2.4T MoE, and a 360 GB Flash-Next. Qwen3.6 is 27B/35B-A3B only. The
+> newest *small* Qwen is therefore 3.5, and 4B is the largest of them that leaves room for
+> a bf16 baseline and a candidate in one process on one rented card — which the interleaved
+> A/B/A protocol requires. `Qwen/Qwen3.8-27B` is the same architecture (`model_type:
+> qwen3_5`); its config is transcribed and verified in `config.py` and selectable with
+> `--model`, for a future session with an 80 GB card. All 851 of its decode parameters were
+> checked against the published safetensors headers on 2026-09-04 and match.
+
 The tensor names, dtypes and shapes are checked into the repo at
 `src/deltaforge/data/qwen3_5_4b_manifest.json` (metadata only, ~80 KB, no weight data).
 `weights_test.py` uses it to prove on CPU, with no download, that every one of the 738
@@ -16,8 +25,8 @@ exactly the right shape.
 **The FFN is dense, not sparse-MoE.** `intermediate_size` is 9216, `mlp_only_layers` is
 empty, and there is no expert, router or MoE key anywhere in `text_config`. The checkpoint
 agrees: every layer carries exactly three dense SwiGLU projections
-(`mlp.{gate,up,down}_proj`) and there are no expert tensors. **Hypothesis 7 (fused MoE
-routing) is therefore retired before it started** — see `docs/HYPOTHESES.md`.
+(`mlp.{gate,up,down}_proj`) and there are no expert tensors. **A fused-MoE-routing
+hypothesis is therefore retired before it started**, and never entered the backlog.
 
 **The vision tower is cleanly separable.** The checkpoint is
 `Qwen3_5ForConditionalGeneration` with a top-level `vision_config` (depth 24, hidden 1024,
@@ -51,12 +60,18 @@ none of the projections are square. This is the single most likely early bug.
 
 **The output is gated.** `q_proj` emits `16 × 256 × 2 = 8192` rows: viewed as
 `(…, 16 heads, 512)` and split in half per head into query and gate. The attention output
-is multiplied by `sigmoid(gate)` before `o_proj`. Splitting the flat 8192 in half instead
-of per-head is wrong and will look almost right.
+is multiplied by the gate before `o_proj`. Splitting the flat 8192 in half instead of
+per-head is wrong and will look almost right.
+
+**The gate's nonlinearity is config-driven, not fixed.** Qwen3.5 omits `output_gate_type`
+and means `sigmoid`; Qwen3.8 declares `swish` (SiLU). It is therefore a `ModelConfig` field
+read by `reference.apply_output_gate`, not a constant. Hardcoding either one produces a
+model that runs and emits plausible logits on the other checkpoint — the failure mode this
+project is least able to detect.
 
 **RoPE is partial.** Only the first 64 dimensions of each 256-wide head are rotated; the
-remaining 192 pass through untouched. This changes the shape of any fused QKV+RoPE kernel
-(hypothesis 3).
+remaining 192 pass through untouched. This changes the shape of any kernel that fuses the
+projection with the rotation.
 
 **`q_norm` and `k_norm` are applied over the head dimension, before RoPE.**
 
@@ -113,8 +128,8 @@ toward `v` at rate β, then read out with `q`. Where
 `g = -exp(A_log) · softplus(a + dt_bias)` and `β = sigmoid(b)`, both computed in fp32.
 Queries and keys are L2-normalised before use, and queries are scaled by `1/√d`.
 
-**Any future scan kernel must keep the state in fp32.** This is hypothesis 4's binding
-constraint.
+**Any future scan kernel must keep the state in fp32.** This is the binding constraint on
+the chunked delta-rule scan in `docs/HYPOTHESES.md`.
 
 ### The two RMSNorm conventions
 
@@ -166,8 +181,8 @@ because `F.linear` also lands in hand-written cuBLAS. The rule:
   explicit non-goal, so using it costs nothing we were going to claim.
 - **Excluded** — anything that *is itself the fused algorithm we intend to hand-write*.
   That means `F.scaled_dot_product_attention` (it dispatches to FlashAttention, which is
-  hypothesis 5's target) and `flash-linear-attention` (whose chunked delta-rule scan is
-  hypothesis 4). Attention is therefore written out as matmul + softmax.
+  itself a hypothesis) and `flash-linear-attention` (whose chunked delta-rule scan is
+  another). Attention is therefore written out as matmul + softmax.
 
 `reference_purity_test.py` enforces this by inspecting the module's AST, and includes a
 test proving the detector actually detects.

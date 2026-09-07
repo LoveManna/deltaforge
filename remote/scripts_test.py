@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -1065,3 +1066,174 @@ def test_a_machine_that_already_cost_a_rental_can_be_excluded(workdir):
 
     assert "selected offer 9008" not in excluded.stderr
     assert "selected offer" in excluded.stderr, "excluding one machine must not empty the market"
+
+
+# ---------------------------------------------------------------------------
+# Registry credentials and stalled image pulls
+#
+# Every container image this project has failed to pull came from Docker Hub, pulled
+# anonymously. These cover the two changes made in response: authenticate when we can,
+# and stop paying for a pull that is stuck rather than slow.
+# ---------------------------------------------------------------------------
+
+
+def _env_file(workdir, **values):
+    path = workdir / ".env"
+    path.write_text("".join(f"{k}={v}\n" for k, v in values.items()))
+    path.chmod(0o600)
+    return path
+
+
+def test_registry_login_is_absent_from_the_create_body_when_no_credentials_exist(workdir):
+    """The change must be inert for anyone without a Docker Hub account."""
+    env = _env_file(workdir, VAST_API_KEY="not-a-real-key")
+
+    body = _shell(
+        f'df_load_registry_login "{env}" >/dev/null 2>&1 || true; '
+        "DF_IMAGE=img DF_DISK_GB=40 DF_MAX_MINUTES=90; "
+        'if [ -n "${DF_REGISTRY_LOGIN:-}" ]; then echo HAS_LOGIN; else echo NO_LOGIN; fi'
+    )
+
+    assert body == "NO_LOGIN"
+
+
+def test_registry_login_is_read_from_env_and_formatted_for_vast(workdir):
+    env = _env_file(
+        workdir,
+        VAST_API_KEY="not-a-real-key",
+        DOCKER_LOGIN_USER="someuser",
+        DOCKER_LOGIN_TOKEN="dckr_pat_TOPSECRET",
+    )
+
+    login = _shell(f'df_load_registry_login "{env}" >/dev/null 2>&1; printf "%s" "$DF_REGISTRY_LOGIN"')
+
+    assert login == "-u someuser -p dckr_pat_TOPSECRET"
+
+
+def test_loading_registry_credentials_never_prints_the_token(workdir):
+    """The whole secret discipline of this repo is that a token reaches curl and nothing
+    else. A log line with the token in it would be committed by whoever pastes a session
+    transcript into a PR."""
+    env = _env_file(
+        workdir,
+        VAST_API_KEY="not-a-real-key",
+        DOCKER_LOGIN_USER="someuser",
+        DOCKER_LOGIN_TOKEN="dckr_pat_TOPSECRET",
+    )
+
+    proc = subprocess.run(
+        ["sh", "-c", f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; df_load_registry_login "{env}"'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert "dckr_pat_TOPSECRET" not in proc.stdout + proc.stderr
+    assert "someuser" in proc.stdout + proc.stderr  # the username is fine, and useful
+
+
+def test_a_request_body_never_reaches_argv(workdir):
+    """`--data "$body"` would put a registry token in argv, which `ps` exposes to every
+    user on the box. The body must travel through a 0600 file instead."""
+    source = (REMOTE / "lib.sh").read_text()
+    # Comments are allowed to quote the bad form; only real invocations matter.
+    invocations = [
+        line for line in source.splitlines() if "--data" in line and not line.lstrip().startswith("#")
+    ]
+
+    assert invocations, "no --data invocation found; has the API helper been rewritten?"
+    for line in invocations:
+        assert '--data "@' in line, f"request body passed through argv: {line.strip()}"
+    assert "umask 077; mktemp" in source
+
+
+def test_the_create_body_carries_image_login_only_when_credentials_are_present(workdir):
+    """provision.sh builds the body; both branches must be well-formed JSON."""
+    script = (REMOTE / "provision.sh").read_text()
+    start = script.index("create_body() {")
+    end = script.index("\n}", start) + 2
+    create_body = script[start:end]
+
+    with_creds = _shell(
+        f"{create_body}\nDF_IMAGE=img DF_DISK_GB=40 DF_MAX_MINUTES=90 "
+        'DF_REGISTRY_LOGIN="-u u -p t"; create_body'
+    )
+    without = _shell(f"{create_body}\nDF_IMAGE=img DF_DISK_GB=40 DF_MAX_MINUTES=90; create_body")
+
+    assert json.loads(with_creds)["image_login"] == "-u u -p t"
+    assert "image_login" not in json.loads(without)
+    assert json.loads(without)["image"] == "img"
+
+
+def test_a_stalled_image_pull_aborts_long_before_the_readiness_timeout():
+    """A pull that is slow rewrites status_msg with new byte counts; a stuck one repeats
+    the same line. Eight rentals were billed for the full readiness timeout because
+    nothing told them apart. The stall budget must be well under that timeout, or the
+    check cannot fire before the money is already spent."""
+    source = (REMOTE / "run_remote.sh").read_text()
+
+    stall = int(re.search(r"DF_PULL_STALL_SECONDS:-(\d+)", source).group(1))
+    ready = int(re.search(r"DF_SSH_READY_TIMEOUT:-(\d+)", source).group(1))
+
+    assert stall < ready / 2, "stall detection must fire well before the readiness timeout"
+    assert "_msg_changed_at" in source
+    assert "Image pull is stuck, not slow" in source
+
+
+def _create_body(**env):
+    """Run provision.sh's create_body in isolation, with lib.sh loaded."""
+    script = (REMOTE / "provision.sh").read_text()
+    funcs = ""
+    for name in ("df_public_key", "create_body"):
+        start = script.index(f"{name}() {{")
+        funcs += script[start : script.index("\n}", start) + 2] + "\n"
+    assignments = " ".join(f'{k}="{v}"' for k, v in env.items())
+    return json.loads(_shell(f"{funcs}\n{assignments}; create_body"))
+
+
+def test_the_create_body_injects_the_public_key_two_ways(workdir):
+    """Vast associates the account key with the instance, but that only reaches images
+    built to its conventions. A ghcr.io/ai-dock image pulled, ran, and then answered ssh
+    with "Permission denied (publickey)" -- one rental to learn that the key must be
+    injected explicitly. `PUBLIC_KEY` covers the ai-dock and RunPod families;
+    authorized_keys covers everything else."""
+    key = workdir / "id.pub"
+    key.write_text("ssh-ed25519 AAAATESTKEY someone@example\n")
+
+    body = _create_body(DF_IMAGE="img", DF_DISK_GB="40", DF_MAX_MINUTES="90", DF_SSH_KEY=str(workdir / "id"))
+
+    assert "ssh-ed25519 AAAATESTKEY" in body["env"]
+    assert "authorized_keys" in body["onstart"]
+    assert "ssh-ed25519 AAAATESTKEY" in body["onstart"]
+    # Still shuts itself down: the remote-side backstop must survive the new prefix.
+    assert body["onstart"].rstrip().endswith("shutdown -h +90")
+
+
+def test_the_create_body_is_valid_json_without_a_public_key(workdir):
+    """A checkout with no generated key must still produce a well-formed request."""
+    body = _create_body(
+        DF_IMAGE="img", DF_DISK_GB="40", DF_MAX_MINUTES="90", DF_SSH_KEY=str(workdir / "absent")
+    )
+
+    assert "env" not in body
+    assert "authorized_keys" not in body["onstart"]
+    assert body["onstart"] == "touch ~/.no_auto_tmux; shutdown -h +90"
+
+
+def test_a_rejected_ssh_key_fails_fast_instead_of_waiting_out_the_timeout():
+    """An image answering on the ssh port and refusing the key is a permanent failure.
+    Waiting cannot fix it, and the readiness timeout is 20 billed minutes."""
+    source = (REMOTE / "run_remote.sh").read_text()
+
+    assert '*"Permission denied"*' in source
+    assert "refused the ssh key" in source
+
+
+def test_the_sshd_probe_loop_has_its_own_stall_budget():
+    """The first version of the stall guard covered only the outer poll. A rental then sat
+    in the inner sshd probe for the full deadline -- exactly the case the guard was for."""
+    source = (REMOTE / "run_remote.sh").read_text()
+    probe = source[source.index("_ssh_started=") : source.index("did not become reachable")]
+
+    assert "DF_PULL_STALL_SECONDS" in probe
+    assert "without sshd answering" in probe

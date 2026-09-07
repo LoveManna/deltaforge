@@ -53,7 +53,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from .config import FULL_ATTENTION, LINEAR_ATTENTION, ModelConfig
+from .config import FULL_ATTENTION, LINEAR_ATTENTION, SIGMOID_GATE, SWISH_GATE, ModelConfig
 
 __all__ = [
     "DecodeCache",
@@ -62,6 +62,7 @@ __all__ = [
     "ReferenceModel",
     "RMSNorm",
     "SwiGLUMLP",
+    "apply_output_gate",
     "recurrent_gated_delta_rule",
 ]
 
@@ -476,12 +477,30 @@ class GatedDeltaNet(nn.Module):
 # --------------------------------------------------------------------------------------
 
 
-class GatedAttention(nn.Module):
-    """GQA softmax attention with a sigmoid output gate and partial RoPE.
+def apply_output_gate(gate: Tensor, gate_type: str) -> Tensor:
+    """The attention output gate's nonlinearity, selected by config.
 
-    ``head_dim`` is 256 while ``hidden_size / num_heads`` is 160, so none of these
-    projections are square. ``q_proj`` emits twice the query width: the second half is
-    the output gate.
+    ``sigmoid`` for Qwen3.5, ``swish`` (SiLU) for Qwen3.8. Computed in fp32 and cast
+    back, matching how the checkpoints were trained.
+    """
+    if gate_type == SIGMOID_GATE:
+        return torch.sigmoid(gate.float()).to(gate.dtype)
+    if gate_type == SWISH_GATE:
+        return F.silu(gate.float()).to(gate.dtype)
+    raise ValueError(f"unknown output_gate_type {gate_type!r}")
+
+
+class GatedAttention(nn.Module):
+    """GQA softmax attention with a gated output and partial RoPE.
+
+    ``head_dim`` is 256 while ``hidden_size / num_heads`` is 160 (Qwen3.5-4B) or 213
+    (Qwen3.8-27B), so none of these projections are square. ``q_proj`` emits twice the
+    query width: the second half is the output gate.
+
+    The gate's nonlinearity is **config-driven**, not fixed. Qwen3.5 omits
+    ``output_gate_type`` and means sigmoid; Qwen3.8 declares ``swish``. Hardcoding
+    either one gives a model that runs and emits plausible logits on the other
+    checkpoint, which is the failure mode this project is least able to detect.
     """
 
     def __init__(self, config: ModelConfig, layer_idx: int) -> None:
@@ -576,7 +595,7 @@ class GatedAttention(nn.Module):
 
         attn = attn.transpose(1, 2).reshape(batch, seq_len, -1)
         if gate is not None:
-            attn = attn * torch.sigmoid(gate)
+            attn = attn * apply_output_gate(gate, self.config.output_gate_type)
         return self.o_proj(attn)
 
 

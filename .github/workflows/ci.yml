@@ -93,9 +93,15 @@ jobs:
       - name: No credentials in tracked files
         # A leaked API key is unrecoverable once pushed. Cheap to check, so check it.
         run: |
-          if git grep -nIE '(VAST_API_KEY|api[_-]?key)[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9]{20,}' \
+          if git grep -nIE '(VAST_API_KEY|DOCKER_LOGIN_TOKEN|api[_-]?key)[[:space:]]*[=:][[:space:]]*["'"'"']?[A-Za-z0-9]{20,}' \
                -- . ':!*.lock'; then
             echo "possible credential in a tracked file" >&2
+            exit 1
+          fi
+          # A real Docker Hub personal access token. The test fixtures use a short
+          # obviously-fake one, which is below this threshold on purpose.
+          if git grep -nIE 'dckr_pat_[A-Za-z0-9_-]{20,}' -- . ':!*.lock'; then
+            echo "possible Docker Hub token in a tracked file" >&2
             exit 1
           fi
           if git ls-files --error-unmatch .env >/dev/null 2>&1; then

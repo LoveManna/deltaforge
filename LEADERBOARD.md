@@ -13,27 +13,40 @@
 | Last verified on | — |
 | Result record | — |
 
-The bootstrap session built the harness, the reference implementation, the correctness
-gates and the cost machinery. It had no GPU available — the Vast.ai account was unfunded
-and the local machine has no CUDA — so **no benchmark has been run and no number exists.**
+**No benchmark has ever run.** Nothing here is estimated, projected, or placeheld. The
+first session to get a working GPU records the baseline; until then this table stays empty.
 
-Nothing here is estimated, projected, or placeheld. The first funded session records the
-baseline; until then this table stays empty.
+**What the first working session should do** is in `AGENT.md` §4 — the weight-value oracle,
+then an *identity champion* to calibrate the harness, then a profile. Not a kernel. The
+reference is currently proven structurally correct — shapes against the real checkpoint,
+cache contract, causality, the mRoPE reduction — but not yet proven to interpret the weight
+*values* correctly, and every number depends on that.
 
-**Before the first hypothesis:** run the deferred correctness oracle
-(`pytest -m "gpu and weights"`). The reference is currently proven structurally correct —
-shapes against the real checkpoint, cache contract, causality, the mRoPE reduction — but
-not yet proven to interpret the weight *values* correctly. Every subsequent number depends
-on that.
+### GPU access: cause found and fixed, not yet through to a benchmark
 
-**GPU access is blocked again, for a different reason.** The account is email-verified
-and carries signup credit, and provisioning works — eight instances were created, billed
-and destroyed on 2026-09-03. None of them ever finished pulling a container image, across
-four machines, three images and two registries. The account has never made a payment
-(`paid_verified: 0.0`, `has_billing: false`), which is the strongest remaining explanation:
-instances are created and billed but not permitted to pull. Adding a payment method and
-re-running `remote/run_remote.sh` unchanged is the cheap test. Full account of the eight
-rentals: `results/hypotheses/001-fused-rmsnorm-residual/README.md`.
+Provisioning works. Nine instances have been created, billed and destroyed (98.8 min,
+$0.5054, **zero leaked**). None produced a number.
+
+**Rentals 1–8 (2026-09-03) all died on a Docker Hub image pull.** Four machines, three
+images, 2.5–14.1 GB — not one layer ever reached "Pull complete".
+
+**Rental 9 (2026-09-05) identified the cause.** Same filters, same account, one variable
+changed: a `ghcr.io` image instead of Docker Hub. It **pulled in about three minutes and the
+container started** — the first time that has ever happened. Anonymous Docker Hub pull limits
+are the cause; the never-paid-account theory is ruled out, since the account state was
+unchanged.
+
+That rental then hit a **second blocker behind the first**: the container ran sshd and
+refused our key (`Permission denied (publickey)`), because a non-Vast image provisions
+`authorized_keys` by its own convention. Fixed by injecting the key through both
+`PUBLIC_KEY` and `onstart`. Billed 4.57 min, $0.0271.
+
+Three fixes are in and tested: registry credentials via `image_login`, explicit key
+injection, and a stall budget on **both** readiness loops so a stuck run costs ~$0.03
+instead of $0.12. Full account and what to do next: **`docs/GPU-ACCESS.md`**.
+
+**Still unproven:** that the injected key is accepted, and therefore that any run gets past
+sshd to the gates. That is what the next rental tests.
 
 ## Baseline
 
@@ -43,15 +56,23 @@ rentals: `results/hypotheses/001-fused-rmsnorm-residual/README.md`.
 | Definition | `src/deltaforge/reference.py` under `torch.compile(mode="max-autotune")` |
 | Headline workload | batch 1, context 2048, 128 decoded tokens |
 | Secondary workload | batch 32, context 2048, 128 decoded tokens |
+| Model | `Qwen/Qwen3.5-4B` (see `docs/ARCHITECTURE.md` on why not a newer one) |
+| Roofline at headline | 5.11 ms/token, 196 tok/s on an RTX 5090 — `docs/roofline.py` |
 | Record | `results/baseline/` (empty) |
 
 ## Hypotheses
 
-None attempted.
+One attempted, none measured.
 
 | ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
 |---|---|---|---:|---:|---|---|---|---|
-| — | — | — | — | — | — | — | — | — |
+| 001 | Fused residual add + RMSNorm | `rms_norm_residual` | — | — | — | CPU gates pass; GPU gates never ran | **graveyarded on mechanism** | [dir](results/hypotheses/001-fused-rmsnorm-residual/) |
+
+**001 carries no ratio and never will.** It was graveyarded by arithmetic rather than by
+measurement: the operations it fuses move 0.018% of per-token bytes, so its ceiling is
+below the harness's own noise band. The eight failed rentals are incidental — even a clean
+measurement could not have shown a win. See `docs/HYPOTHESES.md` for the full reasoning and
+the lesson that reordered the backlog.
 
 ### Column definitions
 
@@ -72,5 +93,8 @@ None attempted.
   - `loss` — slower. Goes to the graveyard with the mechanism that failed.
   - `inconclusive` — inside the noise band. Neither promoted nor buried; the hypothesis
     stays open for a cleaner measurement.
+  - `graveyarded on mechanism` — closed by arithmetic before or instead of measurement,
+    because its ceiling is below the noise band. Cheaper than measuring, and a legitimate
+    result: `docs/HYPOTHESES.md` records the numbers that closed it.
   - `incorrect` — failed a correctness gate. Recorded with its error magnitudes, because a
     candidate that was fast but wrong is among the most useful things to read.

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from .config import ModelConfig, qwen3_5_4b_config
+from .config import ModelConfig, model_config
 from .kernels import REGISTRY, KernelEntry, KernelRegistry
 from .reference import DecodeCache, ReferenceModel
 
@@ -32,11 +32,11 @@ class InstallerMissing(RuntimeError):
 
 #: Operation name -> a function that splices a kernel implementation into a built model.
 #:
-#: Ships **empty**, on purpose. An installer describes precisely how one reference
-#: operation is swapped out, and writing that before the kernel exists means guessing at
-#: a seam. The session that writes the first kernel adds its installer here, next to it.
-#: `apply_champions` fails loudly rather than silently running the reference if a
-#: champion has no installer — silently benchmarking the baseline as if it were the
+#: An installer describes precisely how one reference operation is swapped out, and it is
+#: added in the same commit as the kernel it installs. Installers stay registered when
+#: their kernel is retired, so a retired entry can still be promoted for a one-off
+#: comparison. `apply_champions` fails loudly rather than silently running the reference
+#: if a champion has no installer — silently benchmarking the baseline as if it were the
 #: candidate is the worst failure this harness could have.
 INSTALLERS: dict[str, Callable[[ReferenceModel, KernelEntry], None]] = {}
 
@@ -54,8 +54,9 @@ def apply_champions(
 ) -> tuple[str, ...]:
     """Install every champion kernel into ``model``. Returns the names installed.
 
-    With an empty registry this is a no-op and returns ``()`` — which is exactly the
-    state the bootstrap session leaves the repo in.
+    With no champions registered this is a no-op and returns ``()``, which makes the
+    ``candidate`` column bit-identical to ``eager`` — the *identity champion* a first GPU
+    session uses to calibrate the harness. That is the repo's current shipped state.
     """
     registry.check_invariants()
     table = INSTALLERS if installers is None else installers
@@ -88,7 +89,7 @@ def build_model(
     ``registry=None`` means "pure reference" — that is what the ``eager`` and ``compiled``
     benchmark columns use. Pass ``REGISTRY`` to build the ``candidate`` column.
     """
-    config = config or qwen3_5_4b_config()
+    config = config or model_config()
     model = ReferenceModel(config).to(device=device, dtype=dtype).eval()
     if weights_path is not None:
         from .weights import load_weights  # noqa: PLC0415 - keeps safetensors optional

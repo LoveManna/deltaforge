@@ -1,116 +1,164 @@
 # Hypothesis backlog
 
-Ordered by expected yield per GPU hour. Pick one, state it in a sentence before writing
-any code, and record the outcome whether it wins or loses.
+Ordered by **share of per-token bytes attacked**, not by how easy the kernel is to write.
+Pick one, state it in a sentence before writing any code, and record the outcome whether
+it wins or loses.
 
-**Nothing here has been attempted.** The bootstrap session built the harness and shipped
-no kernel; benchmarking a kernel with the harness written alongside it produces a broken
-harness and a meaningless number.
+---
 
-## Format
+## Read this before picking anything
 
-Each entry states the **mechanism** — the specific reason the win is expected — because
-"fuse it and see" is not a hypothesis and produces results nobody can learn from. An entry
-moves to the graveyard when it is measured and loses, and it stays here when a measurement
-comes back inside the noise band.
+At batch 1, decode is a weight-streaming problem. Here is where every byte goes for
+`Qwen/Qwen3.5-4B` at batch 1, context 2048 — reproduce it with `docs/roofline.py`:
+
+| What moves | MB/token | share |
+|---|---:|---:|
+| Weights, streamed once | 8411.51 | **91.85%** |
+| GQA `repeat_interleave` materialisation | 570.43 | **6.23%** |
+| Recurrent state, read + write | 100.66 | 1.10% |
+| KV cache read | 71.30 | 0.78% |
+| SwiGLU intermediates | 2.36 | 0.026% |
+| Norm + residual | 1.64 | 0.018% |
+| QKV / RoPE intermediates | 0.33 | 0.004% |
+| **Total** | **9158.23** | |
+
+Roofline on an RTX 5090 (1.79 TB/s): **5.11 ms/token, 196 tok/s.**
+
+Two consequences, and they decide the whole backlog:
+
+**1. A kernel that already streams its data once cannot be beaten.** Once you are at the
+roofline the only thing left is the hardware. Inductor is *good* at getting simple
+memory-bound elementwise and reduction kernels to roofline — that is its home turf, and it
+emits Triton, so "hand-written Triton beats compiler-generated Triton" on a fused RMSNorm
+is a claim about two nearly identical kernels.
+
+**2. The ceiling of a hypothesis is the share of bytes it touches.** A perfect, infinitely
+fast fused RMSNorm buys 0.018%. That is far below the noise band the harness itself
+declares, so the hypothesis is not merely unlikely — it is **unmeasurable**. Do this
+arithmetic before writing a kernel, not after renting a GPU.
+
+### The three ways a hand-written kernel can actually win
+
+Every entry below names which one it uses. An entry that names none of them does not
+belong in this file.
+
+| | How it wins | Why the compiler cannot |
+|---|---|---|
+| **A** | The compiler's kernel is far from roofline | Rare for elementwise and reductions; real for irregular access and hardware features inductor does not emit |
+| **B** | It moves fewer bytes | Quantisation, layout changes, and eliminating a materialised intermediate are choices about representation, not scheduling |
+| **C** | It runs a different algorithm | Chunked parallel scans, online-softmax attention, split-K/split-KV: mathematical reassociations a scheduler will not derive |
+
+### Before you write a kernel, read what you are trying to beat
+
+```sh
+TORCH_LOGS=output_code python -m deltaforge.cli bench --weights … 2>&1 | tee inductor.txt
+```
+
+That prints the exact Triton inductor generated. **This is not optional.** You cannot claim
+to beat code you have not read, you cannot explain *why* you won without it, and it costs
+nothing. Several entries below are graveyarded precisely because inductor already emits the
+kernel someone was about to hand-write.
+
+Also confirm the baseline actually compiled: a silent graph break makes `compiled` fall
+back toward eager and inflates every ratio in your favour. That is the failure mode a
+sceptical reader looks for first.
 
 ---
 
 ## Open
 
-### 1. Fused RMSNorm + residual add
+### 1. Weight-only quantisation with a fused dequantise-GEMV
 
-**Mechanism.** The residual add, the norm's reduction and its rescale each read and write
-the full hidden state. At batch 1 this is entirely memory-bound: three passes over
-`2560 × 2` bytes per layer, 64 norms per forward. Fusing them into one pass should cut
-traffic by roughly two thirds for this operation.
+**Share of bytes: 91.85%. Ceiling: 1.85× at fp8/int8, 3.21× at int4.** Category **B**.
 
-**Replaces.** `rms_norm`, `rms_norm_residual`.
-**Watch for.** `torch.compile` already fuses some of this — the honest comparison is
-against `max-autotune`, not against eager. This may be the smallest margin in the list,
-which is why it is first: it is also the cheapest to write and calibrates the harness.
+**Mechanism.** Decode at batch 1 reads every weight once per token and does almost no
+arithmetic with them, so the model runs at the bandwidth roofline. You cannot beat a
+roofline with a better kernel; you beat it by moving fewer bytes. Storing weights at 4 or 8
+bits and dequantising them *inside* the GEMV's K-loop cuts weight traffic by 2–4×.
 
-**Attempted 2026-09-03 on branch `hyp/001-fused-rmsnorm-residual`: kernel written and
-gated, NOT MEASURED.** Eight rentals ($0.4783, all destroyed cleanly) produced no number —
-every instance was billed but never finished pulling its container image. This stays
-**open**, not graveyarded: a graveyard entry means a mechanism was tried and failed, and
-this mechanism has not been tried. The kernel, its gates and a full account are in
-`results/hypotheses/001-fused-rmsnorm-residual/`. A funded session should re-run it before
-picking anything else from this list.
+The compiler cannot do this, and it fails in a specific, checkable way: given
+`dequant(W_int4, scales) @ x`, inductor materialises the full bf16 weight tensor into
+global memory and then calls into cuBLAS. That *adds* an 8.4 GB write on top of the read,
+making the quantised version **slower** than bf16. The hand-written kernel never
+materialises anything.
 
-### 2. Fused SwiGLU
+**Replaces.** `swiglu_mlp`, `qkv_projection_rope`, and the linear-attention input
+projections — 91.8% of weight bytes sit behind those three.
 
-**Mechanism.** `silu(gate_proj(x)) * up_proj(x)` materialises two `9216`-wide
-intermediates before the elementwise combine. Fusing activation and multiply into the GEMM
-epilogue avoids writing and re-reading both.
+**Watch for.**
+* **Verify the claim above before building on it.** Dump inductor's code for a small
+  quantised linear first. Recent inductor has prologue fusion into its mm templates and may
+  fuse *some* of the dequant; at M = 1 it likely is not using a template at all. Either way,
+  measure, do not assume.
+* **Your real competition is Marlin / machete / AWQ kernels, not torch.compile.** Beating
+  the compiler here is easy and proves little. Record the comparison against a published
+  int4 kernel as an unscored column. If you are at 0.6× Marlin, say so.
+* Correctness changes shape: a quantised candidate is not bit-comparable to a bf16
+  reference, so the layer-2 exact-token gate will fail by construction. Decide *before*
+  measuring what the correctness claim is — the usual answer is perplexity or KL against
+  the bf16 reference on a fixed prompt set, plus exact-match on the dequantise kernel
+  itself against a PyTorch dequantise.
 
-**Replaces.** `swiglu_mlp`.
-**Watch for.** The GEMMs themselves are cuBLAS territory and we will not beat them; the
-win must come from the epilogue and the avoided round trip, not from the matmul.
+### 2. Eliminating the GQA head expansion
 
-### 3. Fused QKV projection + RoPE
+**Share of bytes: 6.23%. Ceiling: 6.2%.** Category **B**.
 
-**Mechanism.** One projection pass feeding RoPE directly, instead of writing Q/K/V out and
-reading them back to rotate.
-
-**Replaces.** `qkv_projection_rope`.
-**Watch for.** RoPE here is **partial** — only the first 64 of each 256-wide head is
-rotated and the other 192 pass through — and the query projection is **doubled** for the
-output gate. Both change the kernel's shape. See `docs/ARCHITECTURE.md`.
-
-### 4. Chunked delta-rule scan
-
-**Mechanism.** This is the project's reason for existing. The baseline runs the delta rule
-as a sequential scan with matrix-valued state, one token at a time. A compiler cannot
-restructure a sequential scan into a chunked parallel form on its own — that restructuring
-is the hand-tuning, and it converts a long dependency chain into blocked matrix work.
-24 of 32 layers are affected.
-
-**Replaces.** `gated_delta_rule`.
-**Watch for.** The recurrent state must stay **fp32** (`mamba_ssm_dtype`), regardless of
-what the surrounding weights are. `reference_test.py` already pins the contract any
-chunked implementation has to satisfy: step-by-step and whole-sequence must agree, and so
-must chunk-by-chunk. Tune block size, chunk length and state layout separately — this is
-one hypothesis by mechanism but several by parameter, so budget for more than one session.
-
-*Expected to be the largest win in the project. It is number 4 rather than number 1
-because it is also the hardest, and the earlier entries calibrate the harness first.*
-
-### 5. Flash decode for the GQA attention layers
-
-**Mechanism.** The 8 full-attention layers currently compute attention as explicit
-matmul + softmax, materialising the score matrix. A flash-style decode kernel keeps it in
-registers.
-
-**Replaces.** `gqa_attention`.
-**Watch for.** This is the one hypothesis where the reference is *deliberately*
-unoptimised: the baseline does not call `F.scaled_dot_product_attention`, because SDPA is
-itself the fused attention kernel we are trying to write. Beating our own explicit
-softmax attention is therefore not the interesting claim — **the honest comparison is
-against `torch.compile(max-autotune)`, which is free to select a fused attention kernel
-itself.** State that plainly in the writeup, and record how the result compares to SDPA as
-an unscored reference point. Getting this wrong would be the easiest way to publish a
-misleading number.
-
-### 6. KV-cache layout and gather strategy
-
-**Mechanism.** GQA expands 4 KV heads to 16 query heads. The baseline does a real
-`repeat_interleave` copy. A layout that avoids materialising the expansion, or that stores
-K/V in an access-friendlier order, removes both the copy and its bandwidth.
+**Mechanism.** The reference expands 4 KV heads to 16 query heads with a real
+`repeat_interleave` (`reference.py:579`), which materialises 4× the KV cache — written,
+then read back by the attention matmul. At context 2048 that is 570 MB/token, 300× more
+than every elementwise fusion in this file combined. A kernel that indexes the unexpanded
+cache directly never pays it.
 
 **Replaces.** `kv_cache_update`, `gqa_attention`.
 
-### 7. Persistent-kernel decode step
+**Watch for.** **This one may already be won by the compiler — check first.** Dump the
+generated code and see whether inductor keeps the expansion materialised or folds the index
+arithmetic into the consumer. If it folds it, `compiled` already has this and there is
+nothing to take; record that as the finding and move on, because it is a genuinely
+interesting fact about inductor. Note also that this number is partly a property of *our*
+baseline's choice to copy rather than alias, so the honest framing is "against
+`max-autotune`", never "against eager".
 
-**Mechanism.** At batch 1 the decode step is launch-bound: 32 layers × several kernels
-each, all tiny. Collapsing per-layer launches into one persistent kernel removes launch
-overhead that dominates when there is almost no work per kernel.
+**The share grows with context.** The expansion scales with the KV cache, so at 32k it is
+already 32.5% of per-token bytes on the 27B config. Run `docs/roofline.py --context N` for
+the context you actually intend to measure before deciding this is a 6% hypothesis.
 
-**Replaces.** `decode_step`.
-**Watch for.** CUDA graphs already attack this problem, and the `compiled` column has them
-on. That is exactly what the `compiled_nocudagraphs` column is for: if this wins against
-`compiled` it is a real win, and if it only wins against `compiled_nocudagraphs` it is
-launch overhead that CUDA graphs already remove. Report both.
+### 3. Chunked delta-rule scan — **at prefill and long context, not at batch-1 decode**
+
+**Share of bytes at batch-1 decode: 1.10%.** Category **C**.
+
+**Mechanism.** The delta rule is a sequential scan with matrix-valued state. Restructuring
+it into a chunked parallel form converts a long dependency chain into blocked matrix work.
+No compiler will derive that: it is a reassociation of the recurrence, not a fusion or
+tiling decision. 24 of 32 layers are affected.
+
+**Watch for — this is why the entry moved.** A chunked scan needs *a sequence to chunk*. At
+batch-1 single-token decode there is no sequence: it is one rank-1 update to a 128×128
+state per head, and the state is 1.1% of traffic. **Measured in the `headline` workload this
+hypothesis cannot express itself.** Running it there and recording a null would be a
+measurement error, not a result.
+
+To attempt it, add a prefill or long-context workload to `DEFAULT_WORKLOADS` and score it
+there, stating in the writeup that the workload differs from the headline. Also: the
+recurrent state must stay **fp32** (`mamba_ssm_dtype`) whatever the surrounding weights
+are, and `reference_test.py` already pins the contract any chunked implementation must
+satisfy — step-by-step, whole-sequence and chunk-by-chunk must all agree. Compare against
+`flash-linear-attention` as an unscored reference point; beating a compiler at a recurrence
+is trivial, and matching a tuned kernel is the result worth publishing.
+
+### 4. Quantised KV cache and long-context attention decode
+
+**Share of bytes at ctx 2048: 0.78%, and it grows linearly with context.** Category **B**
+for the cache, **C** for the split-KV decode kernel.
+
+**Mechanism.** Two things that only matter once the context is long. Storing K/V at fp8
+halves cache traffic. And at batch 1 there is no batch or head parallelism to fill the GPU,
+so a flash-decode kernel that splits the reduction across KV blocks and combines partial
+softmax results manufactures parallelism a scheduler will not invent.
+
+**Watch for.** Both are worthless at 2048 tokens. Pair this with a 32k or 128k workload or
+do not run it. At 128k the KV cache alone exceeds the weights, which inverts the whole
+table above — recompute it for the context you intend to measure.
 
 ---
 
@@ -118,39 +166,61 @@ launch overhead that CUDA graphs already remove. Report both.
 
 Hypotheses that were measured and lost, or that were ruled out before measurement. Each
 entry records the **mechanism that failed and why**, so a later session does not pay to
-rediscover it.
+learn it twice.
 
-Format:
+The four entries below were ruled out by arithmetic, not by measurement. That is a
+legitimate and much cheaper way to close a hypothesis, and stating it explicitly
+demonstrates more understanding of the compiler than measuring them would have.
 
-```
-### NNN. <title>  —  retired YYYY-MM-DD
-**Expected mechanism.** What was supposed to produce the win.
-**What happened.** The measurement, with the median ratio and its IQR, or the reason no
-measurement was needed.
-**Why it failed.** The actual cause, not a restatement of the result.
-**Result record.** results/hypotheses/NNN-slug.json
-```
+### Fused RMSNorm + residual add — ruled out 2026-09-04
 
-A hypothesis whose measurement landed **inside the noise band** does not belong here. That
-is recorded as *inconclusive*: it neither promotes nor enters the graveyard, and the
-hypothesis stays open for a cleaner measurement.
+**Ceiling 0.018% of per-token bytes.** The residual add and the two hidden-size norms per
+layer move 1.64 MB/token against 9158 MB total. An infinitely fast kernel is unmeasurable
+against the harness's own noise band. Scored instead as pure launch overhead — 64 fused
+pairs at 1–2 µs — the ceiling is 1–3%, and CUDA graphs plus inductor's fusion already
+collect most of that. Inductor emits a single persistent reduction kernel here that loads
+the row once, computes the sum of squares and rescales: the same kernel, generated.
 
-### 7'. Fused MoE routing and grouped GEMM — retired 2026-08-30, before any GPU time
+**Attempted before the arithmetic was done.** Branch `hyp/001-fused-rmsnorm-residual`,
+2026-09-03: the kernel was written and passed its CPU gates but was **never measured** —
+eight Vast.ai rentals ($0.4783, all destroyed cleanly) produced no number because no
+instance finished pulling its container image. The kernel, its gates and a full account are
+in `results/hypotheses/001-fused-rmsnorm-residual/`. It is graveyarded on the mechanism,
+not on the failed rentals: even a perfect measurement could not have shown a win.
 
-*(Numbered 7 in the design spec's original backlog; the open list above has been
-renumbered.)*
+**Lesson, and the reason this file now leads with a byte table:** the hypothesis was ranked
+first because it was the cheapest to *write*, and "calibrate the harness on a cheap kernel"
+was used to justify the order. Both were wrong. A harness is calibrated with an **identity
+champion** — an installer that changes nothing — whose columns must come back at 1.00 ±
+noise. That measures the harness with zero kernel-writing risk.
 
-**Expected mechanism.** If the 4B variant's FFN were sparse, fusing expert routing with a
-grouped GEMM would avoid a scatter/gather round trip per token.
+### Fused SwiGLU — ruled out 2026-09-04
 
-**What happened.** No measurement was needed. The published `config.json` and the
-checkpoint's own tensor list settle it: `intermediate_size` is 9216, `mlp_only_layers` is
-empty, there is no expert, router or MoE key anywhere in `text_config`, and every one of
-the 32 layers carries exactly three dense SwiGLU projections and no expert tensors.
+**Ceiling 0.026%.** The MLP is 53.9% of weight bytes, but the *fusion target* is the
+activation, not the weights: at batch 1 the two 9216-wide intermediates are 18 KB each
+against 141 MB of weights per layer. The GEMMs are cuBLAS territory and the epilogue is
+rounding error. Concatenating `gate_proj` and `up_proj` into one GEMM reduces launches but
+reads exactly the same bytes.
 
-**Why it failed.** The premise was false. Sources conflicted about whether the 4B variant
-was sparse; it is dense. There is no routing to fuse.
+### Fused QKV projection + RoPE — ruled out 2026-09-04
 
-**Result record.** None — retired on architecture, not on measurement. The evidence is in
-`docs/ARCHITECTURE.md` and is asserted by `config_test.py::test_ffn_is_dense`, which reads
-the committed checkpoint manifest rather than trusting this document.
+**Ceiling 0.004%**, the smallest in the file. Same argument: the projections' cost is
+streaming their weights, and the Q/K/V intermediates being written and re-read are 0.33
+MB/token across all 8 full-attention layers.
+
+### Persistent-kernel decode step — ruled out 2026-09-04
+
+**No byte-share to attack.** The premise was that batch-1 decode is launch-bound, but at
+91.8% weight streaming it is bandwidth-bound: the kernels are not tiny-and-idle, they are
+each waiting on memory. CUDA graphs already remove the launch overhead that remains, which
+is what the `compiled_nocudagraphs` column exists to show. Reviving this needs a
+*measurement* first — a profile showing gaps between kernels — not an assumption.
+
+---
+
+## Adding an entry
+
+State the **mechanism**, the **category** (A, B or C above), and the **share of per-token
+bytes** it attacks. "Fuse it and see" is not a hypothesis. An entry whose ceiling is below
+the noise band goes straight to the graveyard with its arithmetic, and that is a result
+worth recording.

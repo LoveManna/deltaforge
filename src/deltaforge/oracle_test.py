@@ -1,10 +1,9 @@
 """Deferred: the full-weight correctness oracle against HuggingFace `transformers`.
 
-**None of this ran during the bootstrap session.** That session had no GPU, ~1 GB of free
-RAM and no CUDA, so it could not load a 9 GB checkpoint. Rather than fake, estimate or
-placeholder a number, these tests are written, wired, and **skipped** — and they skip on
-a real condition (no CUDA, no checkpoint), so they start running by themselves the moment
-a funded session provides both.
+**None of this has ever run.** No session has had both a CUDA device and the 9 GB
+checkpoint. Rather than fake, estimate or placeholder a number, these tests are written,
+wired, and **skipped** — and they skip on a real condition (no CUDA, no checkpoint), so
+they start running by themselves the moment a session provides both.
 
 What is already proven without a GPU, elsewhere in this suite:
 

@@ -70,6 +70,7 @@ Usage: remote/provision.sh [options]
   --gpu NAME                Preferred GPU name (default: RTX 5090).
   --fallback-gpu NAME       Fallback GPU name (default: RTX 4090).
   --max-rate USD            Hourly rate ceiling (default: 0.45).
+  --exclude-machines IDS    Comma-separated machine ids to skip.
   --max-minutes N           Estimated ceiling written to the ledger (default: 90).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --mtd-limit USD           Month-to-date refusal threshold (default: 45).
@@ -96,6 +97,7 @@ while [ $# -gt 0 ]; do
         --offers-file)   DF_OFFERS_FILE="$2"; shift ;;
         --state-file)    DF_STATE_FILE="$2"; shift ;;
         --image)         DF_IMAGE="$2"; shift ;;
+        --exclude-machines) DF_EXCLUDE_MACHINES="$2"; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)               df_die "unknown option: $1 (try --help)" ;;
     esac
@@ -193,6 +195,9 @@ if [ "$DF_DRY_RUN" != "1" ] || [ -z "$DF_OFFERS_FILE" ]; then
     fi
 fi
 
+# Optional, and inert when absent.
+df_load_registry_login || true
+
 OFFER=""
 for gpu in "$DF_GPU" "$DF_FALLBACK_GPU"; do
     [ -n "$gpu" ] || continue
@@ -225,10 +230,37 @@ fi
 # Create, then record. The ledger row is written before the instance is used.
 # ---------------------------------------------------------------------------
 
+# The public half of the key run_remote.sh authenticates with. Vast associates the account
+# key with every instance, but that only reaches images built to its conventions: an
+# `ghcr.io/ai-dock` image pulled and ran and then answered ssh with "Permission denied
+# (publickey)", which cost a rental. Injecting the key ourselves works for any image family
+# -- `PUBLIC_KEY` is what the ai-dock and RunPod-style images read, and appending to
+# authorized_keys covers everything else. A public key is not a secret.
+df_public_key() {
+    _pub="${DF_SSH_KEY:-$HOME/.ssh/deltaforge_vast}.pub"
+    [ -f "$_pub" ] && tr -d '\n' < "$_pub"
+}
+
 create_body() {
-    printf '{"client_id":"me","image":"%s","disk":%s,"runtype":"ssh","onstart":"%s"}' \
-        "$DF_IMAGE" "$DF_DISK_GB" \
-        "touch ~/.no_auto_tmux; shutdown -h +$DF_MAX_MINUTES"
+    set +x
+    _pubkey=$(df_public_key)
+    _onstart="touch ~/.no_auto_tmux"
+    if [ -n "$_pubkey" ]; then
+        _onstart="$_onstart; mkdir -p /root/.ssh; chmod 700 /root/.ssh; grep -qF '$_pubkey' /root/.ssh/authorized_keys 2>/dev/null || echo '$_pubkey' >> /root/.ssh/authorized_keys; chmod 600 /root/.ssh/authorized_keys"
+    fi
+    _onstart="$_onstart; shutdown -h +$DF_MAX_MINUTES"
+    # `image_login` is the field Vast passes to `docker login` on the host before pulling.
+    # Present only when credentials were found; the token is never logged, and the body
+    # reaches curl through a 0600 file rather than argv (see df_api in lib.sh).
+    _env=""
+    [ -n "$_pubkey" ] && _env=$(printf ',"env":"-e PUBLIC_KEY=\\"%s\\""' "$_pubkey")
+    if [ -n "${DF_REGISTRY_LOGIN:-}" ]; then
+        printf '{"client_id":"me","image":"%s","disk":%s,"runtype":"ssh","onstart":"%s","image_login":"%s"%s}' \
+            "$DF_IMAGE" "$DF_DISK_GB" "$_onstart" "$DF_REGISTRY_LOGIN" "$_env"
+    else
+        printf '{"client_id":"me","image":"%s","disk":%s,"runtype":"ssh","onstart":"%s"%s}' \
+            "$DF_IMAGE" "$DF_DISK_GB" "$_onstart" "$_env"
+    fi
 }
 
 if df_dry "would PUT /asks/$OFFER_ID/ with image $DF_IMAGE, disk ${DF_DISK_GB}GB"; then

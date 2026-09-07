@@ -14,12 +14,40 @@ import pytest
 from .config import (
     FULL_ATTENTION,
     LINEAR_ATTENTION,
+    SIGMOID_GATE,
+    SWISH_GATE,
     ModelConfig,
     from_hf_config,
     qwen3_5_4b_config,
+    qwen3_8_27b_config,
     tiny_config,
 )
 from .weights import load_manifest
+
+
+def _minimal_text_config() -> dict:
+    """The smallest `text_config` `from_hf_config` accepts, for gate-reading tests."""
+    return {
+        "hidden_size": 2560,
+        "intermediate_size": 9216,
+        "num_hidden_layers": 4,
+        "vocab_size": 248320,
+        "layer_types": ["linear_attention"] * 3 + ["full_attention"],
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "head_dim": 256,
+        "linear_num_key_heads": 16,
+        "linear_num_value_heads": 32,
+        "linear_key_head_dim": 128,
+        "linear_value_head_dim": 128,
+        "linear_conv_kernel_dim": 4,
+        "rope_parameters": {
+            "rope_theta": 10000000,
+            "partial_rotary_factor": 0.25,
+            "mrope_section": [11, 11, 10],
+            "mrope_interleaved": True,
+        },
+    }
 
 
 @pytest.fixture(scope="module")
@@ -239,3 +267,53 @@ def test_from_hf_config_reads_text_config_only(tmp_path):
     # Unmodelled text keys are preserved rather than silently dropped, so a new one is
     # visible instead of invisible.
     assert config.extra["mtp_num_hidden_layers"] == 1
+
+
+# -- the attention output gate ----------------------------------------------------------
+#
+# Qwen3.5 omits `output_gate_type` and means sigmoid; Qwen3.8 declares "swish". Reading
+# the wrong one produces a model that runs and emits plausible logits, which is the class
+# of bug this project is least able to detect, so it is pinned here rather than assumed.
+
+
+def test_a_checkpoint_without_output_gate_type_means_sigmoid(tmp_path):
+    raw = {"text_config": _minimal_text_config()}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw))
+
+    assert from_hf_config(path).output_gate_type == SIGMOID_GATE
+
+
+def test_a_checkpoint_declaring_swish_is_read_as_swish(tmp_path):
+    raw = {"text_config": {**_minimal_text_config(), "output_gate_type": "swish"}}
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps(raw))
+
+    assert from_hf_config(path).output_gate_type == SWISH_GATE
+
+
+def test_an_unknown_gate_type_is_refused_rather_than_defaulted():
+    with pytest.raises(ValueError, match="output_gate_type"):
+        ModelConfig(
+            hidden_size=128,
+            intermediate_size=256,
+            num_hidden_layers=2,
+            vocab_size=512,
+            layer_types=(LINEAR_ATTENTION, FULL_ATTENTION),
+            num_attention_heads=2,
+            num_key_value_heads=1,
+            head_dim=32,
+            output_gate_type="gelu",
+            linear_num_key_heads=2,
+            linear_num_value_heads=4,
+            linear_key_head_dim=16,
+            linear_value_head_dim=16,
+            partial_rotary_factor=0.25,
+            mrope_section=(2, 1, 1),
+        )
+
+
+def test_the_two_shipped_models_disagree_about_the_gate():
+    """If these ever match, one of them has been transcribed wrongly."""
+    assert qwen3_5_4b_config().output_gate_type == SIGMOID_GATE
+    assert qwen3_8_27b_config().output_gate_type == SWISH_GATE

@@ -1,13 +1,29 @@
-"""Text-decode configuration for Qwen3.5-4B.
+"""Text-decode configuration for the Qwen3.5/3.8 hybrid-attention family.
 
 Only the ``text_config`` half of the checkpoint's ``config.json`` is modelled here.
 The vision tower and the multi-token-prediction head are deliberately outside the
 decode path (see README, "What is and is not benchmarked").
+
+Two checkpoints are supported. They share one architecture (``model_type: qwen3_5``),
+so the same :mod:`deltaforge.reference` serves both:
+
+* ``Qwen/Qwen3.5-4B`` — **the benchmark target.** 32 layers, 8.4 GB of text decode
+  weights, tied embeddings, a **sigmoid** attention output gate. Small enough that the
+  checkpoint downloads in minutes and a bf16 baseline plus a quantised candidate both
+  fit on one 32 GB card, which is what the interleaved A/B/A protocol requires.
+* ``Qwen/Qwen3.8-27B`` — verified, **not the target.** 64 layers, 53.8 GB, untied
+  embeddings, a **swish** output gate. Present because a session asked "what about the
+  latest Qwen?" and the answer is worth not re-deriving: Qwen3.8 ships no small
+  checkpoint (27B, a 2.4T MoE, and a 360 GB Flash-Next), and Qwen3.6 is 27B/35B-A3B
+  only, so the newest *small* Qwen is 3.5. All 851 of this config's decode parameters
+  were checked against the published safetensors headers on 2026-09-04 and match, so a
+  future session with an 80 GB card can select it with ``--model`` and nothing else.
 """
 
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -15,13 +31,17 @@ from typing import Any
 LINEAR_ATTENTION = "linear_attention"
 FULL_ATTENTION = "full_attention"
 
+SIGMOID_GATE = "sigmoid"
+SWISH_GATE = "swish"
+OUTPUT_GATE_TYPES = (SIGMOID_GATE, SWISH_GATE)
+
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """The subset of Qwen3.5-4B's ``text_config`` that the decode path needs.
+    """The subset of a checkpoint's ``text_config`` that the decode path needs.
 
     Field names mirror the checkpoint's keys so that a diff against ``config.json``
-    is readable. Values for the real model live in :func:`qwen3_5_4b_config`.
+    is readable. Values for the published models live in :data:`MODELS`.
     """
 
     hidden_size: int
@@ -37,6 +57,11 @@ class ModelConfig:
     head_dim: int = 256
     attn_output_gate: bool = True
     attention_bias: bool = False
+    #: How the attention output gate is applied. Qwen3.5 omits the key and means
+    #: ``sigmoid``; Qwen3.8 declares ``swish``. Reading the wrong one produces a model
+    #: that runs and emits plausible logits, so it is a config field rather than a
+    #: constant in the reference.
+    output_gate_type: str = SIGMOID_GATE
 
     # Linear-attention (Gated DeltaNet) layers.
     linear_num_key_heads: int = 16
@@ -85,6 +110,10 @@ class ModelConfig:
             )
         if self.mamba_ssm_dtype != "float32":
             raise ValueError("only float32 recurrent state is supported")
+        if self.output_gate_type not in OUTPUT_GATE_TYPES:
+            raise ValueError(
+                f"unknown output_gate_type {self.output_gate_type!r}; known: {list(OUTPUT_GATE_TYPES)}"
+            )
 
     # -- derived shapes -------------------------------------------------------
 
@@ -123,24 +152,69 @@ class ModelConfig:
         return tuple(i for i, t in enumerate(self.layer_types) if t == layer_type)
 
 
-def qwen3_5_4b_config() -> ModelConfig:
-    """The real model, transcribed from ``Qwen/Qwen3.5-4B`` ``config.json``.
+def _hybrid_layer_types(num_layers: int, full_attention_interval: int = 4) -> tuple[str, ...]:
+    """The 3:1 linear/full schedule both checkpoints use: every 4th layer is full."""
+    return tuple(
+        LINEAR_ATTENTION if (i + 1) % full_attention_interval else FULL_ATTENTION for i in range(num_layers)
+    )
 
-    Verified against the published checkpoint on 2026-08-30; see
-    ``docs/ARCHITECTURE.md`` for the tensor shapes this was cross-checked against.
+
+def qwen3_8_27b_config() -> ModelConfig:
+    """Not the target — see the module docstring. From ``Qwen/Qwen3.8-27B``.
+
+    Verified against the published checkpoint on 2026-09-04: all 851 decode parameters
+    match the safetensors headers in name and shape, with nothing missing and nothing
+    unmapped. See ``docs/ARCHITECTURE.md``.
+
+    Differs from Qwen3.5-4B in ways that matter: **untied embeddings** (a separate
+    2.54 GB ``lm_head``), a **swish** output gate rather than sigmoid, 64 layers, and
+    48 linear value heads sharing 16 key heads.
     """
-    layer_types = tuple(LINEAR_ATTENTION if (i + 1) % 4 else FULL_ATTENTION for i in range(32))
+    return ModelConfig(
+        hidden_size=5120,
+        intermediate_size=17408,
+        num_hidden_layers=64,
+        vocab_size=248320,
+        layer_types=_hybrid_layer_types(64),
+        rms_norm_eps=1e-6,
+        num_attention_heads=24,
+        num_key_value_heads=4,
+        head_dim=256,
+        attn_output_gate=True,
+        output_gate_type=SWISH_GATE,
+        linear_num_key_heads=16,
+        linear_num_value_heads=48,
+        linear_key_head_dim=128,
+        linear_value_head_dim=128,
+        linear_conv_kernel_dim=4,
+        rope_theta=1e7,
+        partial_rotary_factor=0.25,
+        mrope_section=(11, 11, 10),
+        mrope_interleaved=True,
+        max_position_embeddings=262144,
+        tie_word_embeddings=False,
+        name="qwen3.8-27b",
+    )
+
+
+def qwen3_5_4b_config() -> ModelConfig:
+    """**The benchmark target**, transcribed from ``Qwen/Qwen3.5-4B`` ``config.json``.
+
+    Verified against the published checkpoint on 2026-08-30; see ``docs/ARCHITECTURE.md``
+    for the tensor shapes this was cross-checked against.
+    """
     return ModelConfig(
         hidden_size=2560,
         intermediate_size=9216,
         num_hidden_layers=32,
         vocab_size=248320,
-        layer_types=layer_types,
+        layer_types=_hybrid_layer_types(32),
         rms_norm_eps=1e-6,
         num_attention_heads=16,
         num_key_value_heads=4,
         head_dim=256,
         attn_output_gate=True,
+        output_gate_type=SIGMOID_GATE,
         linear_num_key_heads=16,
         linear_num_value_heads=32,
         linear_key_head_dim=128,
@@ -192,6 +266,29 @@ def tiny_config() -> ModelConfig:
     )
 
 
+#: Published checkpoint -> the config transcribed from it.
+#:
+#: A session normally passes ``--weights`` and the config is read from the checkpoint's
+#: own ``config.json`` by :func:`from_hf_config`. This table exists so the CPU test suite
+#: can assert the transcription against the tensor manifest without a download, and so
+#: ``--model`` has something to name.
+MODELS: dict[str, Callable[[], ModelConfig]] = {
+    "Qwen/Qwen3.5-4B": qwen3_5_4b_config,
+    "Qwen/Qwen3.8-27B": qwen3_8_27b_config,
+}
+
+#: What a session benchmarks unless it says otherwise. Kept small on purpose: the
+#: benchmark holds a bf16 baseline and a candidate in one process on one card.
+DEFAULT_REPO_ID = "Qwen/Qwen3.5-4B"
+
+
+def model_config(repo_id: str = DEFAULT_REPO_ID) -> ModelConfig:
+    try:
+        return MODELS[repo_id]()
+    except KeyError:
+        raise ValueError(f"unknown model {repo_id!r}; known: {sorted(MODELS)}") from None
+
+
 def from_hf_config(path: str | Path) -> ModelConfig:
     """Build a :class:`ModelConfig` from a HuggingFace ``config.json``.
 
@@ -215,6 +312,7 @@ def from_hf_config(path: str | Path) -> ModelConfig:
         "head_dim",
         "attn_output_gate",
         "attention_bias",
+        "output_gate_type",
         "linear_num_key_heads",
         "linear_num_value_heads",
         "linear_key_head_dim",
@@ -238,6 +336,8 @@ def from_hf_config(path: str | Path) -> ModelConfig:
         head_dim=text["head_dim"],
         attn_output_gate=text.get("attn_output_gate", True),
         attention_bias=text.get("attention_bias", False),
+        # Absent means sigmoid: Qwen3.5 predates the key, Qwen3.8 declares "swish".
+        output_gate_type=text.get("output_gate_type", SIGMOID_GATE),
         linear_num_key_heads=text["linear_num_key_heads"],
         linear_num_value_heads=text["linear_num_value_heads"],
         linear_key_head_dim=text["linear_key_head_dim"],
