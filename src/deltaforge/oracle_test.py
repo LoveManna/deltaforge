@@ -142,8 +142,20 @@ def test_mrope_reduction_holds_against_the_oracle(reference, oracle, prompt_ids)
             torch.zeros(1, 1, dtype=torch.bfloat16, device="cuda"), position_ids
         )
 
-    torch.testing.assert_close(cos_ours, cos_theirs, rtol=1e-3, atol=1e-3)
-    torch.testing.assert_close(sin_ours, sin_theirs, rtol=1e-3, atol=1e-3)
+    # bf16 tolerances, for the third time in this file and for the same reason: both sides
+    # are bf16, where one ULP at magnitude ~1 is already ~0.008, so a 1e-3 *absolute* bound
+    # is below the dtype's granularity and unmeetable by any correct implementation.
+    # Measured 2026-09-07 on an RTX 5090: 0.0152 max absolute, 4.9% of elements — about two
+    # ULP, on values bounded in [-1, 1].
+    #
+    # The reduction claim itself is validated far more strongly elsewhere and transitively:
+    # RoPE is applied to every query and key in every full-attention layer, so a genuine
+    # disagreement about the mRoPE sections could not survive
+    # `test_reference_greedy_decode_matches_the_oracle_token_for_token`, which requires 32
+    # greedy tokens identical to HuggingFace's and passes. What this test adds is that the
+    # agreement is direct rather than inferred.
+    torch.testing.assert_close(cos_ours, cos_theirs, rtol=2e-2, atol=2e-2)
+    torch.testing.assert_close(sin_ours, sin_theirs, rtol=2e-2, atol=2e-2)
 
 
 def test_incremental_decode_matches_a_full_forward_on_real_weights(reference, prompt_ids):
