@@ -1467,3 +1467,47 @@ def test_hf_transfer_is_installed_as_a_package_not_as_a_dropped_extra():
     assert "hf_transfer" in script
     # And the run says out loud whether it actually got it.
     assert "hf_transfer present" in script
+
+
+def test_the_teardown_pull_is_skipped_when_ssh_never_answered():
+    """Rental 50121263: sshd never answered, so there was nothing on the box to pull, and
+    trying anyway spent the connect timeout on an instance that was still billing."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    teardown = script[script.index("df_teardown() {") : script.index("trap 'df_teardown' EXIT")]
+
+    assert "DF_SSH_READY" in teardown, "the pull must be gated on ssh having actually answered"
+    # And bounded, because it runs while the instance is still billing.
+    assert "timeout" in teardown[: teardown.index("df_vast_destroy")]
+
+
+def test_ssh_readiness_is_recorded_when_ssh_answers():
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    probe = script[script.index("ssh is answering") - 400 : script.index("ssh is answering") + 200]
+    assert "DF_SSH_READY=1" in probe
+
+
+def test_provisioning_logs_the_machine_id_not_only_the_offer_id():
+    """--exclude-machines takes a MACHINE id. Logging only the offer id made the remedy
+    docs/GPU-ACCESS.md prescribes for a host that burns a rental impossible to carry out."""
+    script = (REPO_ROOT / "remote" / "provision.sh").read_text()
+
+    assert "machine_id" in script
+    assert "--exclude-machines $OFFER_MACHINE" in script
+
+
+def test_the_selected_offer_records_its_machine_in_the_ledger(workdir):
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "machineid",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "on machine" in result.stderr
+    assert "--exclude-machines" in result.stderr
+    row = json.loads((workdir / "ledger" / "spend.jsonl").read_text().strip().splitlines()[-1])
+    assert "machine" in row["note"]

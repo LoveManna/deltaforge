@@ -158,6 +158,7 @@ fi
 DF_INSTANCE_ID=""
 DF_SSH_HOST=""
 DF_SSH_PORT="22"
+DF_SSH_READY=0
 DF_INSTANCE_GPU=""
 DF_INSTANCE_RATE="0"
 DF_INSTANCE_START_EPOCH=""
@@ -194,9 +195,15 @@ df_teardown() {
     #
     # Best-effort and fully guarded: this must never be able to prevent the destroy below.
     # A leaked instance costs about $13/day; a lost result costs one rental.
-    if [ -n "$DF_INSTANCE_ID" ] && [ -n "${DF_SSH_HOST:-}" ] && [ "$DF_DRY_RUN" != "1" ]; then
+    # `DF_SSH_READY` rather than merely `DF_SSH_HOST`: a host that never answered has
+    # nothing to pull, and trying anyway spends the connect timeout on an instance that is
+    # still billing. Rental 50121263 died exactly there, and paid 20s for the discovery.
+    if [ -n "$DF_INSTANCE_ID" ] && [ "${DF_SSH_READY:-0}" = "1" ] && [ "$DF_DRY_RUN" != "1" ]; then
         df_log "[teardown] pulling results before destroying"
-        if sh "$DF_REPO_ROOT/remote/sync.sh" down \
+        # Hard-bounded: this runs while the instance is still billing, and no amount of
+        # results is worth an unbounded wait before the destroy call.
+        if timeout "${DF_TEARDOWN_PULL_TIMEOUT:-180}" \
+            sh "$DF_REPO_ROOT/remote/sync.sh" down \
             --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
             --remote-dir "$DF_REMOTE_DIR" 2>&1; then
             df_log "[teardown] results pulled"
@@ -340,6 +347,7 @@ wait_for_ssh() {
                     _probe=$(ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new \
                         -o ConnectTimeout=15 -o BatchMode=yes "$DF_SSH_HOST" true 2>&1) && {
                         df_log "ssh is answering"
+                        DF_SSH_READY=1
                         return 0
                     }
                     # A rejected key is a permanent failure, not a slow boot: the image is

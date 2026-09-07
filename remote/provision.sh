@@ -179,7 +179,8 @@ select_offer() {
         | sort_by(.dph_total)
         | .[0]
         | if . == null then empty
-          else [.id, .gpu_name, .dph_total, .reliability2, .gpu_ram, (.cuda_max_good // "?")]
+          else [.id, .gpu_name, .dph_total, .reliability2, .gpu_ram, (.cuda_max_good // "?"),
+                (.machine_id // "?")]
                | @tsv
           end'
 }
@@ -218,7 +219,13 @@ OFFER_RATE=$(printf '%s' "$OFFER" | cut -f3)
 OFFER_REL=$(printf '%s' "$OFFER" | cut -f4)
 OFFER_RAM=$(printf '%s' "$OFFER" | cut -f5)
 OFFER_CUDA=$(printf '%s' "$OFFER" | cut -f6)
-df_log "selected offer $OFFER_ID: $OFFER_GPU, \$$OFFER_RATE/hr, reliability $OFFER_REL, ${OFFER_RAM}MB, CUDA $OFFER_CUDA"
+# The machine id, not the offer id, is what --exclude-machines takes. Logging only the
+# offer id made the documented remedy for a host that burns a rental — "record the machine
+# id in --exclude-machines so the deterministic, price-ordered search does not hand you the
+# same host again" — impossible to actually carry out.
+OFFER_MACHINE=$(printf '%s' "$OFFER" | cut -f7)
+df_log "selected offer $OFFER_ID on machine $OFFER_MACHINE: $OFFER_GPU, \$$OFFER_RATE/hr, reliability $OFFER_REL, ${OFFER_RAM}MB, CUDA $OFFER_CUDA"
+df_log "if this host burns the rental: re-run with --exclude-machines $OFFER_MACHINE"
 
 # Belt and braces: the ceiling is re-checked after selection, in case a filter was
 # loosened upstream by an edit that looked harmless.
@@ -274,7 +281,7 @@ fi
 
 df_ledger_append_provision "$DF_LEDGER" "$DF_SESSION_ID" "$INSTANCE_ID" \
     "$OFFER_GPU" "$OFFER_RATE" "$DF_MAX_MINUTES" "$DF_HYPOTHESIS" \
-    "offer $OFFER_ID reliability $OFFER_REL"
+    "offer $OFFER_ID machine $OFFER_MACHINE reliability $OFFER_REL"
 df_log "ledger row appended before use: instance $INSTANCE_ID at \$$OFFER_RATE/hr"
 
 # The remote-side shutdown timer above is the second line of defence; the local watchdog
