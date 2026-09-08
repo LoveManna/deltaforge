@@ -1247,6 +1247,30 @@ def test_the_sshd_probe_loop_has_its_own_stall_budget():
     assert "without sshd answering" in probe
 
 
+def test_the_sshd_probe_loop_tracks_progress_rather_than_counting_blindly():
+    """`cur_state` can report `running` on the very first poll, before the image has
+    landed. A flat countdown from that moment destroys healthy hosts that are simply
+    still starting -- it cost two rentals on 2026-09-08, on two different machines,
+    each killed at exactly the stall budget with zero outer poll iterations.
+
+    The fix is the one the outer loop already had: watch `status_msg`. A container still
+    rewriting it is progressing and keeps the full readiness timeout; only a static one
+    is destroyed early."""
+    source = (REMOTE / "run_remote.sh").read_text()
+    probe = source[source.index("_ssh_started=") : source.index("did not become reachable")]
+
+    assert "_ssh_msg_changed_at" in probe, "the sshd loop must track status_msg progress"
+    assert "status_msg" in probe, "the sshd loop must read status_msg, not just the clock"
+    # The budget must reset on progress, not run from _ssh_started unconditionally.
+    assert "_ssh_msg_changed_at=$(df_now_epoch)" in probe
+    assert "$(( $(df_now_epoch) - _ssh_started )) -ge" not in probe, (
+        "a flat countdown from _ssh_started is the blind guard this replaced"
+    )
+    # The waiting line must surface what the instance is actually doing, so a future
+    # failure is diagnosable from the log alone rather than costing another rental.
+    assert "waiting for sshd (status:" in probe
+
+
 # ---------------------------------------------------------------------------
 # Batch mode
 # ---------------------------------------------------------------------------

@@ -342,6 +342,8 @@ wait_for_ssh() {
                 # Probe until it answers, so the first real command is not the thing that
                 # discovers the connection is not up.
                 _ssh_started=$(df_now_epoch)
+                _ssh_last_msg=""
+                _ssh_msg_changed_at=$(df_now_epoch)
                 while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
                     # shellcheck disable=SC2086
                     _probe=$(ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new \
@@ -358,12 +360,30 @@ wait_for_ssh() {
                             df_die "instance $DF_INSTANCE_ID refused the ssh key: ${_probe##*$(printf '\n')}. The image does not honour the Vast account key. See docs/GPU-ACCESS.md; provision.sh injects the key through PUBLIC_KEY and authorized_keys, so an image ignoring both needs its own handling."
                             ;;
                     esac
-                    # Same stall budget as the pull: sshd that has not come up in this long
-                    # is not coming up.
-                    if [ $(( $(df_now_epoch) - _ssh_started )) -ge "$DF_PULL_STALL_SECONDS" ]; then
-                        df_die "instance $DF_INSTANCE_ID has been running for ${DF_PULL_STALL_SECONDS}s without sshd answering. Destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Last probe: ${_probe:-no output}"
+                    # Same stall budget as the pull, and now the same progress signal.
+                    #
+                    # This loop used to be blind: it counted a flat 300s from the moment
+                    # `cur_state` said `running` and destroyed the instance regardless of
+                    # what the container was doing. Two rentals died to that on
+                    # 2026-09-08 -- both reported `running` on the *first* poll, before a
+                    # single byte of the image had landed, so the whole budget was spent
+                    # on hosts that were still starting normally. A guard that cannot see
+                    # progress cannot tell a dead host from a slow one, which is the exact
+                    # mistake the outer loop was already fixed for.
+                    #
+                    # So track `status_msg` here too: a container still rewriting it is
+                    # making progress and gets the full readiness timeout, while one that
+                    # has gone static for the stall budget is destroyed early as before.
+                    _ssh_row=$(df_instance_row "$(df_api_v1 GET "/instances/" 2>/dev/null || true)" "$DF_INSTANCE_ID")
+                    _ssh_state=$(printf '%s' "$_ssh_row" | jq -r '.actual_status // .cur_state // empty' 2>/dev/null || true)
+                    _ssh_msg=$(printf '%s' "$_ssh_row" | jq -r '.status_msg // empty' 2>/dev/null | tr -d '\n' | cut -c1-70)
+                    if [ "$_ssh_msg" != "$_ssh_last_msg" ]; then
+                        _ssh_last_msg="$_ssh_msg"
+                        _ssh_msg_changed_at=$(df_now_epoch)
+                    elif [ $(( $(df_now_epoch) - _ssh_msg_changed_at )) -ge "$DF_PULL_STALL_SECONDS" ]; then
+                        df_die "instance $DF_INSTANCE_ID has been running for $(( $(df_now_epoch) - _ssh_started ))s without sshd answering and has not progressed in ${DF_PULL_STALL_SECONDS}s (status: ${_ssh_state:-unknown} | ${_ssh_msg:-no status_msg}). Destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Last probe: ${_probe:-no output}"
                     fi
-                    df_log "instance is running; waiting for sshd"
+                    df_log "instance is running; waiting for sshd (status: ${_ssh_state:-unknown}${_ssh_msg:+ | $_ssh_msg})"
                     sleep 10
                 done
                 df_die "instance $DF_INSTANCE_ID started but ssh never answered within ${DF_SSH_READY_TIMEOUT}s"
