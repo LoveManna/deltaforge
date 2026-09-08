@@ -34,6 +34,16 @@ DF_HYPOTHESIS="${DF_HYPOTHESIS:-}"
 # billed on this project and none produced a number. Empty means the old
 # single-hypothesis path, which is still supported and is a batch of one.
 DF_BATCH="${DF_BATCH:-}"
+# Which benchmark columns the batch measures. Empty means the CLI default
+# (eager, compiled, candidate, candidate_compiled).
+#
+# Every column is a live model state on the card: its own KV cache, and for a compiled one
+# its own CUDA-graph pool. The reference's columns are built once and held for the whole
+# batch, so they are resident while every candidate compiles on top of them. Rental 21 lost
+# all nine slots to an OOM at 30.7 GiB of 31.4 with the four-column default, and only two
+# of those columns score -- `compiled` and `candidate_compiled`. Dropping the two eager
+# diagnostic columns is the cheapest way to fit a 32 GB card.
+DF_COLUMNS="${DF_COLUMNS:-}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
 # 90 rather than 60: a nine-slot batch does not fit an hour. At the $0.356/hr RTX 5090
 # these rentals have been landing on, a full 90 minutes is about $0.53.
@@ -85,6 +95,9 @@ Usage: remote/run_remote.sh [options]
                             (e.g. 001-calibration). Amortises the ~15 minute fixed
                             cost across 7-12 measurements instead of one. Mutually
                             exclusive with --hypothesis.
+  --columns LIST            Comma-separated benchmark columns, or 'all'. Each column
+                            is a resident model state on the card; the scoring pair
+                            is compiled,candidate_compiled.
   --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --session-limit N         Session GPU-time soft gate, in minutes (default: 90).
@@ -111,6 +124,7 @@ while [ $# -gt 0 ]; do
         --session-id)        DF_SESSION_ID="$2"; shift ;;
         --hypothesis)        DF_HYPOTHESIS="$2"; shift ;;
         --batch)             DF_BATCH="$2"; shift ;;
+        --columns)           DF_COLUMNS="$2"; shift ;;
         --model)             DF_MODEL="$2"
                              DF_WEIGHTS_DIR="/workspace/$(printf '%s' "${DF_MODEL#*/}" | tr 'A-Z' 'a-z')"
                              shift ;;
@@ -551,7 +565,10 @@ if [ -n "$DF_BATCH" ]; then
 already used ${SESSION_MINUTES}, this rental ${DF_ELAPSED_MINUTES}, reserve ${DF_BATCH_RESERVE_MINUTES})"
 
     df_log "running batch $DF_BATCH (remote step ceiling ${DF_BATCH_TIMEOUT}s)"
-    remote_sh "timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
+    # expandable_segments costs nothing and buys back the allocator fragmentation that a
+    # sequence of max-autotune compilations leaves behind. It is not a fix for genuinely
+    # not fitting -- see --columns for that -- but the OOM messages asked for it by name.
+    remote_sh "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'${DF_COLUMNS:+ --columns '$DF_COLUMNS'}"
 else
     if df_stage_should_fail correctness; then
         df_die "correctness gate failed (simulated)"

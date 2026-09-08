@@ -195,8 +195,7 @@ def fused_gated_delta_rule(query, key, value, g, beta, initial_state=None):
     """
     import math
 
-    from ..config import STATE_DTYPE
-    from ..reference import l2norm
+    from ..reference import STATE_DTYPE, l2norm
 
     initial_dtype = query.dtype
     query, key, value, beta, g = (

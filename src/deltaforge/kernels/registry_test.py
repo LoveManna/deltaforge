@@ -208,3 +208,47 @@ def test_every_registered_kernel_has_an_installer_not_only_the_champions():
 
     for entry in REGISTRY:
         assert entry.name in INSTALLERS, f"{entry.name!r} is registered with no installer"
+
+
+def test_every_deferred_relative_import_in_a_kernel_resolves():
+    """Kernels import from the rest of the package *inside* functions, to keep Triton off
+    the CPU import path. Nothing then checks those imports until the function runs -- and
+    for a kernel body, that means on a rented GPU.
+
+    `gated_delta_step` imported `STATE_DTYPE` from `..config`, where it has never lived
+    (it is defined in `reference`). The CPU suite was green, and the error surfaced as a
+    lost slot on rental 21 at 2026-09-08, in a batch that had already paid for a container,
+    torch, a 9.32 GB checkpoint and a max-autotune compile.
+
+    Resolve every one of them statically instead. This is a pure AST + getattr check: it
+    needs no GPU, no Triton, and no kernel execution."""
+    import ast
+    import importlib
+    import pathlib
+
+    kernels_dir = pathlib.Path(__file__).resolve().parent
+    failures = []
+
+    for path in sorted(kernels_dir.glob("*.py")):
+        if path.name.endswith("_test.py"):
+            continue
+        tree = ast.parse(path.read_text(), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or not node.level:
+                continue
+            # `from ..reference import X` inside a function body.
+            package = "deltaforge.kernels" if node.level == 1 else "deltaforge"
+            target = f"{package}.{node.module}" if node.module else package
+            try:
+                module = importlib.import_module(target)
+            except ImportError as exc:  # a missing module is just as fatal as a missing name
+                failures.append(f"{path.name}:{node.lineno} cannot import {target}: {exc}")
+                continue
+            for alias in node.names:
+                if alias.name != "*" and not hasattr(module, alias.name):
+                    failures.append(
+                        f"{path.name}:{node.lineno} imports {alias.name!r} from {target}, "
+                        f"which does not define it"
+                    )
+
+    assert not failures, "unresolvable deferred imports:\n" + "\n".join(failures)

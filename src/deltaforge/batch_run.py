@@ -137,16 +137,38 @@ class BatchRunner:
 
         return setup, run
 
+    def _log_memory(self, where: str) -> None:
+        """Say how much of the card is gone, and where it went.
+
+        Rental 21 lost all nine slots to an OOM at 30.71 GiB of 31.36, and the logs could
+        not say what was holding it: the batch reported memory only on slots that
+        *succeeded*, which is exactly the set that is empty when memory is the problem.
+        A number that only prints on the happy path is not instrumentation.
+        """
+        import torch
+
+        if not torch.cuda.is_available():
+            return
+        allocated = torch.cuda.memory_allocated() / (1024**3)
+        reserved = torch.cuda.memory_reserved() / (1024**3)
+        total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+        self.log(
+            f"[batch] memory after {where}: {allocated:.2f} GiB allocated, "
+            f"{reserved:.2f} GiB reserved, of {total:.2f} GiB"
+        )
+
     def prepare_reference(self) -> None:
         """Build and warm the reference columns. The batch's one fixed compilation cost."""
         from .cli import BENCH_COLUMNS
 
+        self._log_memory("loading weights")
         for label in self.columns:
             which, mode = BENCH_COLUMNS[label]
             if which != "reference":
                 continue
             self.log(f"[batch] building reference column {label!r} (mode={mode})")
             self._reference_columns[label] = self._make_column(self.reference, mode)
+            self._log_memory(f"reference column {label!r}")
 
     # -- one slot --------------------------------------------------------------------
 
@@ -263,6 +285,7 @@ class BatchRunner:
             correctness = self._run_correctness(hypothesis, candidate)
 
             self.log(f"[batch] {hypothesis.slug}: benchmarking")
+            self._log_memory(f"{hypothesis.slug} candidate build")
             columns: dict[str, Any] = {}
             setups: dict[str, Any] = {}
             for label in self.columns:
@@ -271,6 +294,7 @@ class BatchRunner:
                     setups[label], columns[label] = self._reference_columns[label]
                 else:
                     setups[label], columns[label] = self._make_column(candidate, mode)
+                    self._log_memory(f"{hypothesis.slug} column {label!r}")
 
             result = run_interleaved(
                 columns,
@@ -296,6 +320,7 @@ class BatchRunner:
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
             self.log(f"[batch] {hypothesis.slug}: ERROR {type(exc).__name__}: {exc}")
+            self._log_memory(f"{hypothesis.slug} failure")
             return SlotResult(
                 hypothesis=hypothesis,
                 outcome="error",
