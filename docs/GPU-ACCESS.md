@@ -12,7 +12,8 @@ the chain:
 | 4 | `accelerate` absent, so the HF oracle cannot be constructed | rental 13 | installing it, and verifying the import out loud | yes |
 | 5 | Four `oracle_test.py` bounds were fp32 absolutes on bf16 tensors | rental 14 | scoring relative to the tensor's own scale | yes |
 | 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | **no** |
-| — | Some hosts never answer sshd at all | rentals 11, 17 | the 300s stall guard; re-run with `--exclude-machines` | n/a |
+| 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
+| — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 All are fixed. **Blocker 6's fix has not been tested on a GPU** — the session's 90-minute
 gate arrived first. That is where the next session starts.
@@ -301,6 +302,70 @@ trap, including one cancelled mid-flight with SIGTERM.
 with `reliability2 > 0.98` in both cases. That rate is worth knowing: budget for it, keep
 the stall guard, and use `--exclude-machines` (provisioning now logs the machine id and the
 exact flag to re-run with).
+
+## The seventh blocker: waiting for the contract instead of the container
+
+Three rentals on 2026-09-08 (50314339, 50314728, 50316163) died identically: "instance is
+running", then twelve `waiting for sshd` polls, then destroyed at the 300s stall budget with
+`Connection timed out` to the vast ssh proxy. Two different machines, two different proxy
+hosts. The obvious reading was the one already in this file — some hosts never answer sshd —
+and it was wrong.
+
+**The tell was in a line that did not exist yet.** The sshd probe loop never logged what the
+instance was doing, so 300s of "waiting for sshd" carried no information. Adding the
+instance's own status to that line answered it on the next rental:
+
+```
+[deltaforge] instance is running; waiting for sshd (status: loading | no status_msg)
+```
+
+The instance was `loading`. The poller had declared it ready anyway.
+
+### The two fields
+
+| Field | What it means | When it says `running` |
+|---|---|---|
+| `cur_state` | the **rental contract** — this instance is rented and meant to run | from the moment it is created |
+| `actual_status` | the **container** — null, then `loading`, then `running` | when the container is actually up |
+
+The readiness poll asked for `.actual_status // .cur_state`. In jq that falls back when the
+left side is null — which is exactly the window before the container has started. So the
+fallback fired **only** in the case where it was guaranteed to be wrong, and readiness was
+declared on the first poll of every rental this project has ever run.
+
+The evidence was sitting in the logs the whole time: **zero** `waiting for instance to start`
+lines. The outer poll loop never completed a single iteration. The image pull, the container
+start, and the ssh probe were all happening at once, and only the probe was being timed.
+
+### Why it looked like a host problem
+
+Because it is invisible on a host that has the image cached. There the container comes up in
+well under the budget and everything works — which is what rentals 13-16 were. On a host that
+must pull ~2.5 GB first, the probe spends its entire budget against a container that does not
+exist yet, and the run reports the host as dead.
+
+**Rentals 11 and 17 are almost certainly this, not bad hosts.** The "2 in 17 rentals go to
+hosts that never answer sshd, budget for it" note that used to be here is withdrawn: it was a
+real pattern with the wrong cause attached, and it made a code bug look like a cost of doing
+business. That is the expensive kind of wrong — it argues against investigating.
+
+### The fix, and the guard it broke
+
+Gate on `actual_status` alone; an absent value is "not ready yet", never "ready".
+
+That exposed a second problem. The outer stall guard watches `status_msg` for progress, and
+these hosts populate no `status_msg` at all. An always-empty message is indistinguishable
+from a frozen one, so the guard would now destroy healthy instances at 300s for being quiet.
+The Docker Hub hangs it was built for all *did* report one, so the guard keeps working where
+it has a signal and defers to the readiness deadline where it does not. The container state
+is folded into the progress key, so `null -> loading -> running` counts as the progress it is.
+
+The inner sshd loop keeps a flat budget. That is correct there and only there: by the time it
+runs, the container is genuinely up and sshd is the only thing still missing.
+
+**The pattern, again:** every blocker in this file was cheap to fix and expensive to notice,
+and this one hid behind a plausible story about flaky hosts. A wrong explanation that
+predicts the observation is worse than no explanation, because it ends the investigation.
 
 ## Current status
 
