@@ -327,11 +327,25 @@ wait_for_ssh() {
     while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
         _listing=$(df_api_v1 GET "/instances/" 2>/dev/null || true)
         _row=$(df_instance_row "$_listing" "$DF_INSTANCE_ID")
-        # `actual_status` is present but null on live instances in the v1 listing;
-        # `cur_state` is the field that actually carries "running". Read the documented
-        # one first and fall back, so this keeps working whichever one the API fills in.
-        _status=$(printf '%s' "$_row" | jq -r '.actual_status // .cur_state // empty' 2>/dev/null || true)
-        if [ "$_status" = "running" ]; then
+        # `actual_status` is the *container* state: null, then "loading", then "running".
+        # `cur_state` is the *contract* state and reads "running" from the moment the
+        # instance is created, before a byte of the image has landed.
+        #
+        # Falling back from one to the other was therefore backwards. The fallback fired
+        # exactly when `actual_status` had not been populated yet -- which is precisely
+        # when the instance is not ready -- so readiness was declared on the first poll of
+        # every rental, and the ssh probe ran against a container that did not exist. Five
+        # rentals were written off as "the host never answered sshd" on the strength of
+        # it. The committed fixture encodes the same trap: `actual_status: null` with
+        # `cur_state: "running"` is a freshly created instance, not a live one.
+        #
+        # So gate on the container state alone. An absent `actual_status` is "not ready
+        # yet", not "ready"; the stall guard below and the readiness deadline bound how
+        # long that can go on.
+        _actual=$(printf '%s' "$_row" | jq -r '.actual_status // empty' 2>/dev/null || true)
+        _contract=$(printf '%s' "$_row" | jq -r '.cur_state // empty' 2>/dev/null || true)
+        _status="${_actual:-${_contract:+starting}}"
+        if [ "$_actual" = "running" ]; then
             _host=$(printf '%s' "$_row" | jq -r '.ssh_host // empty')
             _port=$(printf '%s' "$_row" | jq -r '.ssh_port // empty')
             if [ -n "$_host" ] && [ -n "$_port" ]; then
@@ -375,9 +389,14 @@ wait_for_ssh() {
                     # making progress and gets the full readiness timeout, while one that
                     # has gone static for the stall budget is destroyed early as before.
                     _ssh_row=$(df_instance_row "$(df_api_v1 GET "/instances/" 2>/dev/null || true)" "$DF_INSTANCE_ID")
-                    _ssh_state=$(printf '%s' "$_ssh_row" | jq -r '.actual_status // .cur_state // empty' 2>/dev/null || true)
+                    _ssh_state=$(printf '%s' "$_ssh_row" | jq -r '.actual_status // empty' 2>/dev/null || true)
                     _ssh_msg=$(printf '%s' "$_ssh_row" | jq -r '.status_msg // empty' 2>/dev/null | tr -d '\n' | cut -c1-70)
-                    if [ "$_ssh_msg" != "$_ssh_last_msg" ]; then
+                    # `_ssh_msg_changed_at` starts at `_ssh_started`, so a host that
+                    # reports no `status_msg` gets exactly the old flat budget -- which is
+                    # the right answer *here*, unlike in the outer loop, because the
+                    # container is genuinely running by this point and sshd is the only
+                    # thing still missing. A host that does report progress gets extended.
+                    if [ -n "$_ssh_msg" ] && [ "$_ssh_msg" != "$_ssh_last_msg" ]; then
                         _ssh_last_msg="$_ssh_msg"
                         _ssh_msg_changed_at=$(df_now_epoch)
                     elif [ $(( $(df_now_epoch) - _ssh_msg_changed_at )) -ge "$DF_PULL_STALL_SECONDS" ]; then
@@ -410,9 +429,21 @@ wait_for_ssh() {
         # byte counts; a pull that is stuck repeats the same line forever. Distinguishing
         # them is what the eight lost rentals paid for, so it is checked rather than
         # waited out.
-        if [ "$_msg" != "$_last_msg" ]; then
-            _last_msg="$_msg"
+        #
+        # The guard needs a progress signal to mean anything. The Docker Hub hangs it was
+        # built for all reported one ("Pulling fs layer", repeated forever), but some
+        # hosts populate no `status_msg` at all -- and an always-empty message looks
+        # identical to a frozen one, so applying the budget to it would destroy healthy
+        # instances at 300s for the crime of being quiet. Where there is no signal, say so
+        # and let the readiness deadline do the bounding instead of inventing a verdict.
+        # The container state is folded into the key so null -> loading -> running counts
+        # as the progress it is.
+        _progress="$_status|$_msg"
+        if [ "$_progress" != "$_last_msg" ]; then
+            _last_msg="$_progress"
             _msg_changed_at=$(df_now_epoch)
+        elif [ -z "$_msg" ]; then
+            : # no progress signal from this host; bounded by DF_SSH_READY_TIMEOUT alone
         elif [ $(( $(df_now_epoch) - _msg_changed_at )) -ge "$DF_PULL_STALL_SECONDS" ]; then
             df_die "instance $DF_INSTANCE_ID has not progressed in ${DF_PULL_STALL_SECONDS}s (status: ${_status:-unknown} | ${_msg:-no status_msg}). Image pull is stuck, not slow: destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Try --image on another registry, or add DOCKER_LOGIN_USER/DOCKER_LOGIN_TOKEN to .env."
         fi

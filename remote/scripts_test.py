@@ -981,17 +981,35 @@ def test_the_running_instance_is_found_by_id_in_a_v1_listing():
     assert row["ssh_port"] == 41234
 
 
-def test_the_readiness_state_falls_back_to_cur_state():
-    """A live instance comes back with `actual_status: null` and the state in
-    `cur_state`. Reading only the documented field leaves the poller unable to tell
-    "not ready yet" from "asking the wrong question", which cost two rented cards."""
-    listing = INSTANCES_FIXTURE.read_text()
-    state = _shell(
-        "row=$(df_instance_row '" + listing.replace("'", "") + "' 49700454); "
-        "printf '%s' \"$row\" | jq -r '.actual_status // .cur_state // empty'"
-    )
+def test_readiness_is_the_container_state_and_never_falls_back_to_cur_state():
+    """`cur_state` is the *contract* state and says "running" from the moment the instance
+    is created; `actual_status` is the *container* state and goes null -> loading ->
+    running. The poller used to read `.actual_status // .cur_state`, so the fallback fired
+    exactly when `actual_status` had not been populated yet -- precisely when the instance
+    is not ready. Readiness was therefore declared on the first poll of every rental and
+    the ssh probe ran against a container that did not exist.
 
-    assert state == "running"
+    Five rentals were written off as "the host never answered sshd" before the log showed
+    `status: loading` inside the probe loop. The fixture below is the trap in miniature:
+    `actual_status: null` with `cur_state: "running"` is a freshly created instance."""
+    listing = INSTANCES_FIXTURE.read_text()
+    row = json.loads(_row("49700454"))
+
+    # The fixture is a not-yet-ready instance, whatever cur_state claims.
+    assert row["actual_status"] is None
+    assert row["cur_state"] == "running"
+
+    gated = _shell(
+        "row=$(df_instance_row '" + listing.replace("'", "") + "' 49700454); "
+        "printf '%s' \"$row\" | jq -r '.actual_status // empty'"
+    )
+    assert gated == "", "an unpopulated actual_status must read as not-ready, not ready"
+
+    source = (REMOTE / "run_remote.sh").read_text()
+    assert ".actual_status // .cur_state" not in source, (
+        "the backwards fallback is the bug; it must not come back"
+    )
+    assert 'if [ "$_actual" = "running" ]; then' in source
 
 
 def test_another_instance_in_the_same_listing_is_not_confused_for_ours():
