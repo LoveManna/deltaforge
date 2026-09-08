@@ -11,12 +11,14 @@ the chain:
 | 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` | yes |
 | 4 | `accelerate` absent, so the HF oracle cannot be constructed | rental 13 | installing it, and verifying the import out loud | yes |
 | 5 | Four `oracle_test.py` bounds were fp32 absolutes on bf16 tensors | rental 14 | scoring relative to the tensor's own scale | yes |
-| 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | **no** |
+| 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | yes |
 | 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
+| 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
-All are fixed. **Blocker 6's fix has not been tested on a GPU** — the session's 90-minute
-gate arrived first. That is where the next session starts.
+Blockers 1-7 are fixed and proven on a GPU. **Blocker 8's fix is untested**: rental 22
+was stopped by the session gate before its warmup completed. That, and the ~40-minute cold
+`max-autotune` compile behind it, is where the next session starts.
 
 This file records each one so a future session spends its money on kernels rather than
 rediscovering them.
@@ -294,14 +296,25 @@ project have not been the loud ones.
 | 15 | 2026-09-07 | one bf16 tolerance left | 10.38 min | $0.0663 |
 | 16 | 2026-09-07 | **GPU suite passed; batch ran** — 9 slots, all OOM | 17.35 min | $0.1107 |
 | 17 | 2026-09-07 | host never answered sshd | 5.07 min | $0.0324 |
+| 18 | 2026-09-08 | blocker 7 — killed while still `loading` | 5.55 min | $0.0354 |
+| 19 | 2026-09-08 | blocker 7 again, different machine | 5.42 min | $0.0346 |
+| 20 | 2026-09-08 | blocker 7, now logged as `status: loading` | 5.90 min | $0.0382 |
+| 21 | 2026-09-08 | **batch ran** — candidates built, 8 OOM at bench, 1 ImportError | 25.14 min | $0.1548 |
+| 22 | 2026-09-08 | 2-column batch; ~40 min in one cold max-autotune compile | 56.68 min | $0.3492 |
 
-Seventeen rentals, $0.561, **zero leaked instances** — every one destroyed cleanly by the
-trap, including one cancelled mid-flight with SIGTERM.
+Twenty-two rentals, $1.514, **zero leaked instances** — every one destroyed cleanly by the
+trap, including two cancelled mid-flight with SIGTERM.
 
-**Two of seventeen rentals died to hosts that never answered sshd**, on different machines,
-with `reliability2 > 0.98` in both cases. That rate is worth knowing: budget for it, keep
-the stall guard, and use `--exclude-machines` (provisioning now logs the machine id and the
-exact flag to re-run with).
+The "some hosts never answer sshd" rate this table used to report was **blocker 7**, not the
+market. Rentals 11, 17, 18, 19 and 20 all died to it. `--exclude-machines` is still worth
+having, but it was treating a symptom: rentals 21 and 22 landed on machine 144172, which
+rental 20's predecessor would have excluded as dead.
+
+**A note on cancelling a run.** `run_remote.sh` traps TERM, but POSIX `sh` defers a trap
+until the current foreground command returns — and during a batch that command is an `ssh`
+that can sit for the better part of an hour. Signalling the script alone does nothing
+visible. Kill the `ssh` child as well; the step then returns, the trap fires, and teardown
+still pulls results before destroying.
 
 ## The seventh blocker: waiting for the contract instead of the container
 
@@ -369,14 +382,21 @@ predicts the observation is worse than no explanation, because it ends the inves
 
 ## Current status
 
-The default `vastai/base-image` on Docker Hub **pulls, starts, and accepts the injected
-key** — rental 50119910 on 2026-09-07 got through all three and on to the pip installs. The
-key injection through `PUBLIC_KEY` plus the `onstart` append is therefore **proven**, not
-merely written; that was the open question this file previously flagged.
+**Access is solved.** Blockers 1-5 and 7 are fixed and proven on a GPU; blocker 6's
+meta-device fix is proven too — every slot on rental 21 built its candidate and passed
+correctness, which is exactly what rental 16 could not do.
 
-What is still unproven is everything past the checkpoint download: no rental has yet
-reached the GPU test suite, the correctness gates or a benchmark.
+**No benchmark number exists yet.** What stands between the project and its first
+measurement is no longer the rental path:
 
-The default image is still `vastai/base-image` on Docker Hub, because with credentials in
-`.env` that is the better choice: it is purpose-built for Vast and its key handling already
-works. Switch with `--image` if you have no Docker Hub account.
+1. **The benchmark OOMs with the default four columns** — 30.71 GiB of 31.36, eight slots,
+   all at warmup. Construction is not the cost: weights are 7.83 GiB and both columns
+   together reach 8.07 GiB. The two eager columns are the suspects and
+   `run_remote.sh --columns compiled,candidate_compiled` drops them, but that configuration
+   has not yet been observed to survive warmup.
+2. **A cold `max-autotune` compile takes ~40 minutes**, not the 3-4 the batch cost model
+   assumes. That is now the binding constraint on how many hypotheses fit a rental, and it
+   should be measured before another batch is filled.
+
+Both are questions about the benchmark, not about access. That is a different project than
+the one this file has been documenting.

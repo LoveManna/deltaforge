@@ -150,6 +150,12 @@ front of a batch to "get a result faster" — an uncalibrated result is not a re
 
 ## 5. Money and safety
 
+**Before filling a batch, know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot
+split in §4 and `docs/BATCHES.md` is an *estimate that has never been measured*, and the
+only evidence so far contradicts it: rental 22 spent ~40 minutes in one slot's cold
+`max-autotune` compile and the session gate ended the run. Until that number is known, a
+batch's size is a guess. See `results/batches/001-calibration/README.md`.
+
 **At 90 cumulative billed minutes, this session may not start another batch.**
 `run_remote.sh` checks before each run and exits 3 when the session is spent. When that
 happens: destroy any live instance, then finish recording and writing up the work you

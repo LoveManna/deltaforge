@@ -36,11 +36,17 @@ rentals. It means `head_dim` 256 (not 160), the `1 + weight` RMSNorm convention,
 sigmoid output gate, partial mRoPE, the fp32 recurrent state and the GatedDeltaNet
 projection layout are all correct.
 
-**No benchmark ratio exists yet.** Batch 001 ran all nine of its slots and all nine errored
-with the same CUDA OOM, the identity champion among them, so the batch is void by its own
-rule and reports itself that way. Full account: `results/batches/001-calibration/README.md`.
+**No benchmark ratio exists yet.** Batch 001 has now been attempted on two more rentals and
+is still void: the identity champion has never returned a number, so nothing else it reports
+would mean anything. Full account: `results/batches/001-calibration/README.md`.
 
-Seventeen rentals have now been billed across the project, $0.561 lifetime, **zero leaked**.
+What moved on 2026-09-08: candidate *construction* is fixed and proven, the rental path is
+fixed and proven, and the failure has relocated to the benchmark's own warmup — a CUDA OOM
+at 30.71 GiB of 31.36 with the default four columns. A cold `max-autotune` compile also
+turns out to cost ~40 minutes rather than the 3-4 the batch cost model assumes, which is now
+the binding constraint on how many hypotheses fit a rental.
+
+Twenty-two rentals have now been billed across the project, $1.514 lifetime, **zero leaked**.
 
 ### The chain of blockers, and where it stands
 
@@ -53,11 +59,18 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 3 | The image has `python3` but no `python` | fixed, proven |
 | 4 | `accelerate` absent, so the oracle cannot even be constructed | fixed, proven |
 | 5 | Four `oracle_test.py` bounds were fp32-era absolutes applied to bf16 | fixed, proven |
-| 6 | Candidate construction double-allocates the 8.4 GB of weights | fixed, **unverified on a GPU** |
+| 6 | Candidate construction double-allocates the 8.4 GB of weights | fixed, **proven** — every slot on rental 21 built and passed correctness |
+| 7 | Readiness waited on `cur_state` (the rental contract), not `actual_status` (the container) | fixed, proven |
+| 8 | The benchmark OOMs at warmup with the default four columns | fix written, **untested** |
 
-Blocker 6 is where the next session starts, and testing it is cheap: if the identity slot
-returns 1.00 ± noise, the harness is calibrated and the remaining eight slots are a ~25
-minute run. See `docs/GPU-ACCESS.md`.
+Blocker 7 is worth reading even though it is closed: it had been costing rentals since 11
+while wearing a convincing disguise as flaky hosts, and the "2 in 17 rentals go to hosts
+that never answer sshd" line this file used to carry has been withdrawn.
+
+**The next session starts on blocker 8, and on the compile time behind it.** Both are
+questions about the benchmark rather than about access, which is a different — and better —
+place to be stuck. See `docs/GPU-ACCESS.md` and
+`results/batches/001-calibration/README.md`.
 
 ## Baseline
 

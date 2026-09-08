@@ -1,90 +1,84 @@
-# Batch 001 — calibration. Void, and why.
+# Batch 001 — calibration. Void again, and further along.
 
-**No hypothesis in this batch was measured.** All nine slots errored with the same CUDA
-out-of-memory, the identity champion among them, so the batch is **void by its own rule**:
-if the calibration slot cannot show the harness measuring 1.00 on a candidate that *is* the
-reference, nothing else it reports means anything.
+**No hypothesis in this batch has been measured.** Two rentals on 2026-09-08 (21 and 22)
+reached the batch loop; neither produced a ratio. The identity champion never returned a
+number, so the batch is **void by its own rule** — `calibrated: false`,
+`counts: {"error": 9}`, `prediction_record: {"correct": 0, "scored": 0}`.
 
-Recorded here for diagnosis, not as findings. `summary.json` says the same thing in the
-machine-readable record: `calibrated: false`, `counts: {"error": 9}`,
-`prediction_record: {"correct": 0, "scored": 0}`.
+Not one of the nine predictions was scored. A slot that errored never tested its
+prediction, and counting those as wrong would understate the record exactly as counting
+them right would flatter it.
 
-**Not one of the nine predictions was scored, and that is the correct handling.** A slot
-that errored never tested its prediction; counting those as wrong would understate the
-record exactly as counting them right would flatter it.
+The JSON records here are **rental 21's**. Rental 22 completed no slot, so it overwrote
+nothing.
 
 ---
 
-## What failed
+## What is now settled
 
-```
-OutOfMemoryError: CUDA out of memory. Tried to allocate 46.00 MiB.
-GPU 0 has a total capacity of 31.36 GiB of which 43.88 MiB is free.
-Of the allocated memory 30.63 GiB is allocated by PyTorch.
-```
+**Blocker 6 is fixed and proven.** Rental 16 lost all nine slots inside
+`BatchRunner._build_candidate` to a double allocation of the weights. On rental 21 every
+slot built its candidate and cleared the correctness gates. Construction is no longer where
+this dies, and the meta-device fix in `1d5f2a9` needs no further testing.
 
-Every slot, at the same place: `BatchRunner._build_candidate`. Between 32 and 58 seconds
-each, on an RTX 5090 with 31.36 GiB usable.
+**Blocker 7 was found and fixed** — the readiness poll waited on the rental contract rather
+than the container. See `docs/GPU-ACCESS.md`; it had been costing rentals since 11 and
+masquerading as flaky hosts.
 
-**The cause is a double allocation of the model weights.**
-`ReferenceModel(config).to("cuda")` materialises a full fresh 8.4 GB of parameters, and
-only *then* does `load_state_dict(assign=True)` rebind them onto the reference's tensors and
-free the duplicates. Peak is 16.8 GB of weights for a model that needs 8.4.
+**A kernel bug that had never run.** `007-gated-delta-fused-step` errored in 0s with
+`ImportError: cannot import name 'STATE_DTYPE' from 'deltaforge.config'` — it lives in
+`reference`. Kernels import from the package inside function bodies to keep Triton off the
+CPU import path, so nothing checked that name until the function ran on a rented GPU.
+`registry_test.py` now resolves every deferred relative import statically, and reverting
+the fix reproduces the rental's exact message on CPU.
 
-That is survivable in the single-hypothesis path — it happens once, before anything has been
-compiled. It is fatal in a batch, because batch mode's whole saving is keeping the
-reference's compiled state resident, and that state is already on the card when each
-candidate is built. The batch design created the pressure that exposed a latent bug in code
-it inherited.
+## Where it dies now: the benchmark, not the build
 
-**Fixed after this run** (`batch_run.py`): candidates are constructed under
-`torch.device("meta")`, which allocates nothing, then bound to the reference's tensors by
-assignment. Non-persistent buffers need explicit handling — `rotary_emb.inv_freq` never
-appears in a `state_dict`, so `assign=True` leaves it on meta and the first forward dies
-with "Cannot copy out of meta tensor". Verified on CPU with the tiny config: no meta
-leftovers, parameters shared, forward bit-identical to the reference.
+Rental 21 lost eight slots to a CUDA OOM at **30.71 GiB of 31.36**, every one of them at
+the *benchmarking* step, 16-18s in — past construction, past correctness. The batch
+recorded peak memory only for slots that **succeeded**, which is precisely the empty set
+when memory is the problem, so nine identical failures said 30.71 GiB and nothing about
+where it went. That instrumentation now runs on the error path too.
 
-**The fix is unverified on a GPU.** The session's 90-minute gate was reached before another
-rental could test it. That is the first thing the next session should do, and it is cheap:
-if slot 0 comes back at 1.00 ± noise, the harness is calibrated and the remaining eight
-slots are a ~25 minute run.
+Rental 22 ran with only the two scoring columns and reported the breakdown:
 
-## What this run did prove
+| After | Allocated |
+|---|---:|
+| loading weights | 7.83 GiB |
+| reference column `compiled` | 7.95 GiB |
+| candidate build | 7.96 GiB |
+| candidate column `candidate_compiled` | 8.07 GiB |
 
-The failure was total, which made it an unusually complete test of the machinery around it.
-Every one of these is a property batch mode promised and had never demonstrated:
+**Construction is nearly free.** Weights are 7.83 GiB and the candidate shares them, adding
+0.11 GiB. Four columns cannot cost 30 GiB at construction either — so the ~22 GiB in rental
+21 was accumulated *during warmup*, by the two eager columns that the default includes and
+the scoring pair does not need. `run_remote.sh --columns` now exists to say so; batch mode
+had always accepted the flag and nothing passed it.
 
-| Promise | Evidence |
-|---|---|
-| A failing slot costs a slot, not the rental | Nine slots failed; the run continued through all nine and exited 0 |
-| Records are written as each slot finishes | All nine `<slug>.json` files present |
-| Teardown pulls results before destroying | All ten files reached the local checkout from a run that failed |
-| A void batch says so | `calibrated: false`, and the markdown leads with **CALIBRATION FAILED** |
-| Unscored predictions are not scored | `prediction_record: {"correct": 0, "scored": 0}`, not 0/9 |
+**This is a hypothesis, not a result.** Rental 22 was stopped by the session gate before
+warmup completed, so the two-column configuration has never been observed to survive the
+benchmark. It is the next thing to test, and it is cheap to test.
 
-Under the old one-hypothesis-per-rental workflow this OOM would have produced a single
-failed run and no record at all.
+## The wall in front of the next session
 
-## Provenance
+Rental 22 spent **~40 minutes inside slot 0 without finishing it.** `nvidia-smi` showed the
+GPU at 0% with python at 129% CPU and an inductor worker alongside: a cold
+`max-autotune` compile, not a hang.
 
-| | |
-|---|---|
-| Session | `batch001-20260907T032449Z` |
-| Instance | 50125608, RTX 5090, $0.3830/hr, 17.35 min |
-| Environment | torch 2.11.0+cu128, Triton 3.6.0, CUDA 12.8, driver via host |
-| Workload | headline — batch 1, context 2048, 128 decoded tokens |
-| Commit | see `git` block in `summary.json` |
+That breaks the arithmetic the whole batch design rests on. `AGENT.md` and
+`docs/BATCHES.md` cost a rental at ~15 minutes fixed plus 2-4 per slot, which is what makes
+7-12 hypotheses per rental worth doing. A 40-minute first compile means a nine-slot batch
+does not fit a 90-minute session at all, and the session gate — not the science — decided
+when this run ended.
 
-## The one number this session did produce
+**Do not fill another batch until that number is known.** Time one `max-autotune`
+compilation, then either bring it down (`mode="reduce-overhead"`, a warm inductor cache
+carried between rentals, `torch.compiler` caching to disk) or re-cut the batch size around
+what a compile actually costs. Either is a better use of the next rental than nine more
+slots that will not run.
 
-Not in this directory, because it is not a benchmark: on instance 50123509 the
-**weight-value oracle passed**. `test_reference_greedy_decode_matches_the_oracle_token_for_token`
-greedy-decodes 32 tokens identically to HuggingFace's own Qwen3.5-4B.
+## Cost
 
-`AGENT.md` §4 calls that the precondition for every number downstream of it. It had never
-run before this session. It passes, which means `head_dim` 256, the `1 + weight` RMSNorm
-convention, the sigmoid output gate, partial mRoPE, the fp32 recurrent state and the
-GatedDeltaNet projection layout are all correct.
-
-That result is worth more than the nine ratios this batch failed to produce, and it is not
-void — it does not depend on the harness being calibrated, only on the model being right.
+Five rentals, 91.39 billed minutes, $0.567 — session `batch001-20260908T211825Z`, which
+ended at its 90-minute gate. Zero leaked instances. Three of the five died to blocker 7
+before it was understood.

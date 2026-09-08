@@ -13,8 +13,19 @@ A rental's cost splits in two:
 | | Cost | Paid |
 |---|---:|---|
 | Container image, torch, 9.32 GB checkpoint, GPU suite | ~10-15 min | **once per rental** |
-| Reference `max-autotune` compile | ~3-4 min | **once per rental** |
-| Candidate compile + correctness gate + benchmark | ~2-4 min | **per hypothesis** |
+| Reference `max-autotune` compile | ~3-4 min *(estimated — see below)* | **once per rental** |
+| Candidate compile + correctness gate + benchmark | ~2-4 min *(estimated — see below)* | **per hypothesis** |
+
+> **These two estimates have never been measured, and the first evidence contradicts them.**
+> Rental 22 (2026-09-08) spent **~40 minutes inside a single slot** without finishing it —
+> `nvidia-smi` showing the GPU at 0% and python at 129% CPU, i.e. a cold `max-autotune`
+> compile, not a hang. The session gate ended the run, not the science.
+>
+> If a first compile really costs 40 minutes, **the arithmetic below does not hold and a
+> nine-slot batch does not fit a 90-minute session.** Measure one compilation before
+> filling another batch, then either bring it down (`reduce-overhead`, a warm inductor
+> cache carried between rentals, on-disk `torch.compiler` caching) or re-cut the batch
+> around what it actually costs.
 
 One hypothesis per rental pays fifteen minutes of fixed cost to buy three minutes of
 science. Nine rentals were billed that way and none produced a number. A batch pays the
