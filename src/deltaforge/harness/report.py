@@ -155,6 +155,11 @@ class ResultRecord:
     cost: dict[str, Any] | None = None
     environment: dict[str, Any] = field(default_factory=dict)
     git: dict[str, Any] = field(default_factory=dict)
+    #: Wall-clock seconds per phase — candidate build, correctness, one entry per column
+    #: compiled, and the benchmark. `docs/BATCHES.md` costs a rental at ~15 minutes fixed
+    #: plus 2-4 per slot; rental 22 contradicted that with a ~40-minute compile. This is
+    #: how that estimate stops being one.
+    phases: dict[str, float] = field(default_factory=dict)
     notes: str = ""
     timestamp: str = ""
     schema_version: int = SCHEMA_VERSION
@@ -180,6 +185,7 @@ class ResultRecord:
             "config_name": self.config_name,
             "hypothesis": self.hypothesis,
             "workload": self.workload,
+            "phases": self.phases,
             "git": self.git,
             "environment": self.environment,
             "bench": self.bench,
@@ -359,6 +365,9 @@ class BatchRecord:
     cost: dict[str, Any] | None = None
     environment: dict[str, Any] = field(default_factory=dict)
     git: dict[str, Any] = field(default_factory=dict)
+    #: Every slot's phase timings, keyed `<slug>.<phase>`. The batch-level view of what
+    #: `ResultRecord.phases` holds per slot, so one file answers "where did the rental go".
+    phases: dict[str, float] = field(default_factory=dict)
     notes: str = ""
     timestamp: str = ""
     schema_version: int = SCHEMA_VERSION
@@ -396,6 +405,7 @@ class BatchRecord:
             "timestamp": self.timestamp,
             "config_name": self.config_name,
             "workload": self.workload,
+            "phases": self.phases,
             "calibrated": self.calibrated,
             "counts": self.counts,
             "predictions": self.predictions,

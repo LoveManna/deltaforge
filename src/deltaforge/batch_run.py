@@ -28,7 +28,7 @@ import contextlib
 import gc
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +98,9 @@ class SlotResult:
     error: str | None = None
     duration_s: float | None = None
     peak_memory_mb: int | None = None
+    #: Wall-clock seconds per phase. Recorded even when the slot failed, because a slot
+    #: that died 40 minutes into a compile is itself the measurement worth having.
+    phases_s: dict[str, float] = field(default_factory=dict)
 
     def to_slot_dict(self) -> dict[str, Any]:
         return {
@@ -115,6 +118,7 @@ class SlotResult:
             "error": self.error,
             "duration_s": self.duration_s,
             "peak_memory_mb": self.peak_memory_mb,
+            "phases_s": self.phases_s,
         }
 
 
@@ -302,42 +306,62 @@ class BatchRunner:
             "correctness_max_new_tokens": self.max_new_tokens,
         }
 
-    def run_slot(self, hypothesis: Hypothesis) -> SlotResult:
-        """Measure one hypothesis. Never raises: a failure becomes an `error` outcome."""
+    def run_slot(self, hypothesis: Hypothesis, cap_s: float = 0.0) -> SlotResult:
+        """Measure one hypothesis. Never raises: a failure becomes an `error` outcome.
+
+        ``cap_s`` bounds the slot's wall clock. `SlotTimeout` is an `Exception`, so a slot
+        that overruns is recorded as `error` by the same handler that isolates a wrong
+        kernel — which is the point: a runaway slot costs a slot, not the rental.
+        """
         import torch
 
         from .cli import BENCH_COLUMNS
         from .harness.bench import CudaEventTimer, run_interleaved
+        from .slot_timer import slot_deadline
 
         started = time.monotonic()
+        phases: dict[str, float] = {}
         candidate = None
+
+        def phase(name: str, mark: float) -> float:
+            now = time.monotonic()
+            phases[name] = now - mark
+            return now
+
         try:
-            torch.cuda.reset_peak_memory_stats()
-            self.log(f"[batch] {hypothesis.slug}: building candidate")
-            candidate = self._build_candidate(hypothesis)
+            with slot_deadline(cap_s):
+                torch.cuda.reset_peak_memory_stats()
+                mark = time.monotonic()
 
-            self.log(f"[batch] {hypothesis.slug}: correctness gates")
-            correctness = self._run_correctness(hypothesis, candidate)
+                self.log(f"[batch] {hypothesis.slug}: building candidate")
+                candidate = self._build_candidate(hypothesis)
+                mark = phase("candidate_build", mark)
 
-            self.log(f"[batch] {hypothesis.slug}: benchmarking")
-            self._log_memory(f"{hypothesis.slug} candidate build")
-            columns: dict[str, Any] = {}
-            setups: dict[str, Any] = {}
-            for label in self.columns:
-                which, mode = BENCH_COLUMNS[label]
-                if which == "reference":
-                    setups[label], columns[label] = self._reference_columns[label]
-                else:
-                    setups[label], columns[label] = self._make_column(candidate, mode)
-                    self._log_memory(f"{hypothesis.slug} column {label!r}")
+                self.log(f"[batch] {hypothesis.slug}: correctness gates")
+                correctness = self._run_correctness(hypothesis, candidate)
+                mark = phase("correctness", mark)
 
-            result = run_interleaved(
-                columns,
-                self.bench_config,
-                timer=CudaEventTimer(),
-                setups=setups,
-                metadata=self._slot_metadata(hypothesis),
-            )
+                self.log(f"[batch] {hypothesis.slug}: benchmarking")
+                self._log_memory(f"{hypothesis.slug} candidate build")
+                columns: dict[str, Any] = {}
+                setups: dict[str, Any] = {}
+                for label in self.columns:
+                    which, mode = BENCH_COLUMNS[label]
+                    if which == "reference":
+                        setups[label], columns[label] = self._reference_columns[label]
+                    else:
+                        setups[label], columns[label] = self._make_column(candidate, mode)
+                        mark = phase(f"compile_{label}", mark)
+                        self._log_memory(f"{hypothesis.slug} column {label!r}")
+
+                result = run_interleaved(
+                    columns,
+                    self.bench_config,
+                    timer=CudaEventTimer(),
+                    setups=setups,
+                    metadata=self._slot_metadata(hypothesis),
+                )
+                phase("bench", mark)
 
             ratio = result.median_ratio.get(CANDIDATE_COLUMN)
             iqr = result.iqr_ratio.get(CANDIDATE_COLUMN, 0.0)
@@ -352,6 +376,7 @@ class BatchRunner:
                 bench=result.to_dict(),
                 duration_s=time.monotonic() - started,
                 peak_memory_mb=int(torch.cuda.max_memory_allocated() // (1024 * 1024)),
+                phases_s=phases,
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
             self.log(f"[batch] {hypothesis.slug}: ERROR {type(exc).__name__}: {exc}")
@@ -361,6 +386,7 @@ class BatchRunner:
                 outcome="error",
                 error=f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}",
                 duration_s=time.monotonic() - started,
+                phases_s=phases,
             )
         finally:
             del candidate
@@ -393,12 +419,18 @@ def run_batch(
     for index, hypothesis in enumerate(batch):
         if not budget.can_start():
             log(f"[batch] stopping before {hypothesis.slug}: {budget.why_not()}")
+            # `not_run` means the batch stopped early having already measured something.
+            # `starved` means the rental scored nothing at all and the session gate is the
+            # reason — the evidence for raising that gate, which the last two rentals
+            # needed and did not have. Flattening the two would erase it.
+            scored = any(r.outcome in ("win", "loss", "inconclusive", "incorrect") for r in results)
+            outcome = "not_run" if scored else "starved"
             for remaining in list(batch)[index:]:
-                results.append(SlotResult(hypothesis=remaining, outcome="not_run"))
+                results.append(SlotResult(hypothesis=remaining, outcome=outcome))
             break
 
         log(f"[batch] slot {index}/{len(batch) - 1}: {hypothesis.slug} (predicted {hypothesis.prediction})")
-        result = runner.run_slot(hypothesis)
+        result = runner.run_slot(hypothesis, cap_s=budget.cap_for(index))
         results.append(result)
         if result.duration_s is not None and result.outcome != "not_run":
             budget.record(result.duration_s)

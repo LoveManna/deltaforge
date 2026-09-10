@@ -476,6 +476,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
             workload=workload,
             bench=result.bench,
             correctness=result.correctness,
+            phases=result.phases_s,
             notes=result.error or "",
         )
         path = slot_record_path(root, batch.batch_id, result.hypothesis.slug)
@@ -511,6 +512,12 @@ def cmd_batch(args: argparse.Namespace) -> int:
         predictions=[s.to_dict() for s in scores],
         workload=workload,
         cost=cost,
+        # Flattened `<slug>.<phase>` so one file answers "where did the rental go" without
+        # opening nine slot records. The batch's cost arithmetic was an estimate that a
+        # rental contradicted; this is the measurement that replaces it.
+        phases={
+            f"{r.hypothesis.slug}.{name}": seconds for r in results for name, seconds in r.phases_s.items()
+        },
     )
     summary = root / "batches" / batch.batch_id / "summary.json"
     write_batch_record(record, summary)

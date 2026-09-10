@@ -51,12 +51,14 @@ class FakeRunner:
         self.slot_seconds = slot_seconds
         self.prepared = False
         self.ran: list[str] = []
+        self.caps: list[float] = []
 
     def prepare_reference(self) -> None:
         self.prepared = True
 
-    def run_slot(self, hypothesis: Hypothesis) -> SlotResult:
+    def run_slot(self, hypothesis: Hypothesis, cap_s: float = 0.0) -> SlotResult:
         self.ran.append(hypothesis.slug)
+        self.caps.append(cap_s)
         if self.clock is not None:
             self.clock.advance(self.slot_seconds)
         result = self.results.get(hypothesis.slug)
@@ -334,3 +336,51 @@ def test_releasing_compiled_state_does_nothing_without_cuda():
 
     assert release_compiled_state(_fake_torch(calls, cuda=False), None, log=silent) == []
     assert calls == []
+
+
+# -- the cap, and what the clock ending a rental is called --------------------------------
+
+
+def test_each_slot_is_handed_the_cap_its_index_earns():
+    """Slots 0 and 1 get the whole remaining budget; later slots get the ceiling."""
+    clock = FakeClock()
+    runner = FakeRunner({}, clock=clock, slot_seconds=0.0)
+    batch = batch_of(hyp("a"), hyp("b"), hyp("c"))
+    budget = SlotBudget(deadline_epoch=1000.0, clock=clock, slot_cap_s=60.0)
+
+    run_batch(runner, batch, budget=budget, log=silent)
+
+    assert runner.caps == [1000.0, 1000.0, 60.0]
+
+
+def test_a_rental_that_scored_nothing_records_starved_not_merely_not_run():
+    """`not_run` means the batch stopped early having already measured something.
+
+    A rental where the clock arrived before any slot scored produced nothing, and the
+    session gate is the reason. Flattening the two would erase the evidence for raising
+    that gate — which is exactly what the last two rentals needed and did not have.
+    """
+    clock = FakeClock()
+    runner = FakeRunner(
+        {"a": SlotResult(hypothesis=hyp("a"), outcome="error", error="boom", duration_s=100.0)},
+        clock=clock,
+        slot_seconds=100.0,
+    )
+    batch = batch_of(hyp("a"), hyp("b"), hyp("c"))
+    budget = SlotBudget(deadline_epoch=150.0, clock=clock, seed_estimate_s=100.0)
+
+    results, _calibrated, _scores = run_batch(runner, batch, budget=budget, log=silent)
+
+    assert [r.outcome for r in results] == ["error", "starved", "starved"]
+
+
+def test_a_batch_that_measured_something_before_stopping_records_not_run():
+    clock = FakeClock()
+    runner = FakeRunner({}, clock=clock, slot_seconds=100.0)
+    batch = batch_of(hyp("a"), hyp("b"), hyp("c"))
+    budget = SlotBudget(deadline_epoch=150.0, clock=clock, seed_estimate_s=100.0)
+
+    results, _calibrated, _scores = run_batch(runner, batch, budget=budget, log=silent)
+
+    assert results[0].outcome == "inconclusive"
+    assert [r.outcome for r in results[1:]] == ["not_run", "not_run"]

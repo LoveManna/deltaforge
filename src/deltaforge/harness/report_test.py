@@ -391,3 +391,33 @@ def test_not_run_is_a_valid_outcome_for_a_result_record():
 
     record = ResultRecord(kind="hypothesis", outcome="not_run", config_name="m")
     assert record.outcome == "not_run"
+
+
+def test_a_record_carries_its_phase_timings():
+    """The phase split is the calibration rental's product.
+
+    `docs/BATCHES.md` costs a rental at ~15 minutes fixed plus 2-4 per slot, and rental 22
+    contradicted that with a ~40-minute compile. A record that carries where its own time
+    went is what lets an estimate be replaced by a measurement.
+    """
+    record = ResultRecord(
+        kind="hypothesis",
+        outcome="win",
+        config_name="Qwen/Qwen3.5-4B",
+        phases={"candidate_build": 3.5, "compile_candidate_compiled": 2400.0},
+    )
+
+    assert record.to_dict()["phases"]["compile_candidate_compiled"] == 2400.0
+
+
+def test_a_batch_record_carries_phase_timings_too():
+    from .report import BatchRecord
+
+    record = BatchRecord(
+        batch_id="002-compile-cost",
+        session_id="s",
+        config_name="Qwen/Qwen3.5-4B",
+        phases={"000-identity.bench": 180.0},
+    )
+
+    assert record.to_dict()["phases"]["000-identity.bench"] == 180.0
