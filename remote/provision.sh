@@ -270,12 +270,26 @@ create_body() {
     fi
 }
 
+# Create the instance for an offer, and make a refusal explain itself.
+#
+# curl runs with --fail-with-body so the API's reason survives an error status -- but a
+# plain `RESPONSE=$(df_api ...)` assignment hands that status straight to `set -e`, and
+# the run dies on a bare `curl: (22)` one line before the message written to explain it.
+# A create was refused with HTTP 400 and the log said nothing about why. Taking the status
+# in a `||` list keeps `set -e` out of it, so the body reaches the log.
+create_instance() {
+    _offer_id="$1"
+    _resp=$(df_api PUT "/asks/$_offer_id/" "$(create_body)") || df_die \
+        "the API refused to create an instance on offer $_offer_id: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+    _iid=$(printf '%s' "$_resp" | jq -r '.new_contract // empty')
+    [ -n "$_iid" ] || df_die "instance creation failed: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+    printf '%s' "$_iid"
+}
+
 if df_dry "would PUT /asks/$OFFER_ID/ with image $DF_IMAGE, disk ${DF_DISK_GB}GB"; then
     INSTANCE_ID="dryrun-$(df_now_epoch)"
 else
-    RESPONSE=$(df_api PUT "/asks/$OFFER_ID/" "$(create_body)")
-    INSTANCE_ID=$(printf '%s' "$RESPONSE" | jq -r '.new_contract // empty')
-    [ -n "$INSTANCE_ID" ] || df_die "instance creation failed: $(printf '%s' "$RESPONSE" | jq -c '.' 2>/dev/null || printf '%s' "$RESPONSE")"
+    INSTANCE_ID=$(create_instance "$OFFER_ID")
     df_log "created instance $INSTANCE_ID"
 fi
 

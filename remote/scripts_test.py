@@ -1776,3 +1776,40 @@ def test_the_outer_poll_exempts_a_settled_pull_from_the_stall_budget():
     loop = source[source.index("_progress=") : source.index("Image pull is stuck")]
 
     assert "df_pull_settled" in loop, "the outer poll must exempt a settled pull"
+
+
+def _run_provision_func(names, script_body):
+    """Run named provision.sh functions against a stub, the way _create_body does."""
+    script = (REMOTE / "provision.sh").read_text()
+    funcs = ""
+    for name in names:
+        start = script.index(f"{name}() {{")
+        funcs += script[start : script.index("\n}", start) + 2] + "\n"
+    return subprocess.run(
+        ["sh", "-c", f'set -eu; DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; {funcs}\n{script_body}'],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_a_rejected_create_reports_what_the_api_said():
+    """The create endpoint returned HTTP 400 and the run died with nothing but
+    `curl: (22)`. The diagnostic was already written -- `instance creation failed: ...`
+    with the response body -- but it was unreachable: `RESPONSE=$(df_api ...)` is a plain
+    assignment, so under `set -e` a curl exit of 22 killed the script one line before the
+    message that would have explained it.
+
+    curl runs with --fail-with-body precisely so the body survives an HTTP error. Losing
+    it to `set -e` wastes the one thing that says why the offer was refused."""
+    result = _run_provision_func(
+        ["create_instance"],
+        'df_api() { printf \'{"error":"no_such_ask","msg":"ask 48657232 is gone"}\'; return 22; }\n'
+        "create_instance 48657232",
+    )
+
+    assert result.returncode != 0, "a refused create must still fail the run"
+    combined = result.stdout + result.stderr
+    assert "no_such_ask" in combined or "ask 48657232 is gone" in combined, (
+        f"the API's explanation must reach the log; got: {combined!r}"
+    )
