@@ -245,15 +245,21 @@ BENCH_COLUMNS: dict[str, tuple[str, str | None]] = {
 #: Without both of these there is no result, so they cannot be dropped.
 SCORING_COLUMNS = ("compiled", "candidate_compiled")
 
-#: What runs unless `--columns` says otherwise.
+#: What runs unless `--columns` says otherwise: the two that score, and nothing else.
 #:
-#: `compiled_nocudagraphs` is omitted on purpose. It costs a full `max-autotune`
-#: compilation — a third of the benchmark's fixed cost — and it existed to show that a win
-#: was not merely CUDA-graph launch-overhead removal. That confound disappeared when the
-#: scoring column became `candidate_compiled`, since both sides of the comparison now have
-#: CUDA graphs. It remains a useful debugging column: run `--columns all` on a calibration
-#: run, or whenever a hypothesis is itself about launch overhead.
-DEFAULT_COLUMNS = ("eager", "compiled", "candidate", "candidate_compiled")
+#: `eager` and `candidate` are diagnostics — the gap between them is the compiler's
+#: contribution — but every column is a live model state on the card with its own KV cache
+#: and, when compiled, its own CUDA-graph pool, and all of them stay resident through
+#: warmup. Rental 21 OOMed there at 30.71 GiB of 31.36 while construction accounted for
+#: 0.11. Two of those four columns scored nothing.
+#:
+#: `compiled_nocudagraphs` is in `all` and not here for a second reason: it costs a full
+#: `max-autotune` compilation, and the confound it existed to rule out disappeared when the
+#: scoring column became `candidate_compiled`, since both sides now have CUDA graphs.
+#:
+#: `--columns all` asks for the full set when a result is confusing enough to be worth the
+#: memory and the compile, or when a hypothesis is itself about launch overhead.
+DEFAULT_COLUMNS = SCORING_COLUMNS
 
 
 def _selected_columns(args: argparse.Namespace) -> tuple[str, ...]:

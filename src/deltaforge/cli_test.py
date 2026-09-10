@@ -229,3 +229,16 @@ def test_no_hf_transfer_skips_the_fast_path_entirely(tmp_path, monkeypatch):
     )
 
     assert cli.cmd_fetch_weights(_fetch_args(tmp_path, no_hf_transfer=True)) == 0
+
+
+def test_the_default_columns_are_the_two_that_score():
+    """Rental 21 OOMed at 30.71 GiB of 31.36 during warmup with four columns.
+
+    Rental 22 measured construction at 0.11 GiB on top of the weights, so the memory went
+    to columns being resident through warmup — and two of the four score nothing.
+    `--columns all` still asks for the diagnostics when a result is confusing enough to be
+    worth the memory and the compile.
+    """
+    from .cli import DEFAULT_COLUMNS, SCORING_COLUMNS
+
+    assert DEFAULT_COLUMNS == SCORING_COLUMNS
