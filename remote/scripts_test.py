@@ -448,10 +448,10 @@ def test_the_provision_row_is_written_before_the_instance_is_used(workdir):
     assert rows[0]["hypothesis"] == "001-fused-rmsnorm"
     assert rows[0]["gpu_model"] == "RTX 5090"
     assert rows[0]["hourly_rate_usd"] == 0.3240
-    # The --max-minutes default, 150 minutes, at $0.324/hr. It tracks the hard watchdog
+    # The --max-minutes default, 210 minutes, at $0.324/hr. It tracks the hard watchdog
     # rather than the session gate: the ceiling written to the ledger is what this rental
     # could cost at worst, and the watchdog is what bounds that.
-    assert rows[0]["estimated_ceiling_usd"] == pytest.approx(0.81)
+    assert rows[0]["estimated_ceiling_usd"] == pytest.approx(1.134)
     assert rows[0]["actual_minutes"] is None, "not reconciled until destroy"
 
 
@@ -1375,7 +1375,7 @@ def test_the_batch_deadline_leaves_the_session_gate_room_for_teardown(workdir):
         "--batch",
         "001-calibration",
         "--session-limit",
-        "90",
+        "180",
         "--ledger",
         str(workdir / "ledger" / "spend.jsonl"),
         "--state-file",
@@ -1384,11 +1384,13 @@ def test_the_batch_deadline_leaves_the_session_gate_room_for_teardown(workdir):
 
     line = next(ln for ln in result.stderr.splitlines() if "deadline in" in ln)
     minutes = float(line.split("deadline in")[1].split("minutes")[0].strip())
-    # 90 minute gate, nothing spent, 12 minute reserve.
-    assert 77.0 <= minutes <= 78.5, line
+    # 180 minute gate, nothing spent, 12 minute reserve. The limit cannot be dropped below
+    # the gate's default here: the pre-flight check refuses a session that cannot fit one
+    # hypothesis, and on cold estimates that needs ~143 minutes.
+    assert 167.0 <= minutes <= 168.5, line
 
 
-def test_the_session_gate_defaults_to_two_hours(workdir):
+def test_the_session_gate_defaults_to_three_hours(workdir):
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
         [
@@ -1397,8 +1399,8 @@ def test_the_session_gate_defaults_to_two_hours(workdir):
                 event="destroy",
                 session_id="spent",
                 instance_id="a",
-                actual_minutes=120.0,
-                actual_cost_usd=0.712,
+                actual_minutes=180.0,
+                actual_cost_usd=1.068,
             ),
         ],
     )
@@ -1434,21 +1436,25 @@ def test_the_hard_watchdog_stays_above_the_session_gate():
     gate = default_of("DF_SESSION_LIMIT_MINUTES")
     watchdog = default_of("DF_WATCHDOG_MINUTES")
 
-    assert gate == 120.0
+    assert gate == 180.0
     assert watchdog > gate
 
 
-def test_ninety_billed_minutes_no_longer_refuses_a_run(workdir):
-    """The gate moved 60 -> 90 so a nine-slot batch fits, then 90 -> 120 once a cold
-    `max-autotune` compile was seen to cost ~40 minutes of it. Pinned so a silent revert
-    shows up as a failing test rather than as a batch cut short on the box."""
+def test_the_two_refusals_are_distinguishable(workdir):
+    """A session with 90 of its 180 minutes spent passes the GPU-time gate and is still
+    refused, because 90 minutes cannot fit one hypothesis on a cold cache.
+
+    The two refusals mean different things and a session must be able to tell them apart:
+    the gate says "this session is spent", the pre-flight says "what is left cannot buy a
+    measurement". Reporting either as the other sends the next session after the wrong fix.
+    """
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
         [
-            ledger_line(session_id="sixty", instance_id="a"),
+            ledger_line(session_id="half", instance_id="a"),
             ledger_line(
                 event="destroy",
-                session_id="sixty",
+                session_id="half",
                 instance_id="a",
                 actual_minutes=90.0,
                 actual_cost_usd=0.534,
@@ -1460,14 +1466,18 @@ def test_ninety_billed_minutes_no_longer_refuses_a_run(workdir):
         "run_remote.sh",
         "--dry-run",
         "--session-id",
-        "sixty",
+        "half",
+        "--batch",
+        "001-calibration",
         "--ledger",
         str(ledger),
         "--state-file",
         str(workdir / "state"),
+        expect=5,
     )
 
-    assert "REFUSED" not in result.stderr
+    assert "REFUSED by the session GPU-time gate" not in result.stderr
+    assert "cannot fit one hypothesis" in result.stderr
 
 
 def test_teardown_pulls_results_before_destroying(workdir):
@@ -1601,3 +1611,125 @@ def test_accelerate_is_installed_because_the_oracle_cannot_load_without_it():
     assert any("accelerate" in ln for ln in install_lines), "accelerate is not installed"
     # And verified out loud, so a resolver that drops it is visible in the log.
     assert "import accelerate" in script
+
+
+# =====================================================================================
+# The compile cache
+# =====================================================================================
+
+
+def test_the_remote_steps_point_torch_at_a_cache_that_is_pulled_home(workdir):
+    """Torch's fx-graph and autotune caches are on by default and write to /tmp on a box we
+    destroy, so every rental this project has run compiled cold."""
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "cache",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "TORCHINDUCTOR_CACHE_DIR=/workspace/df-cache/inductor" in result.stderr
+    assert "TRITON_CACHE_DIR=/workspace/df-cache/triton" in result.stderr
+    assert "TORCHINDUCTOR_COMPILE_THREADS=" in result.stderr
+
+
+def test_the_compile_cache_is_pulled_after_the_results_and_before_the_destroy():
+    """Same ordering rule as the results pull, for the same reason: the trap cannot rsync
+    from a dead box. Results first, because a cold compile costs 40 minutes and a lost
+    measurement costs the rental."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    teardown = script[script.index("df_teardown() {") : script.index("trap 'df_teardown' EXIT")]
+
+    results_at = teardown.index("pulling results before destroying")
+    cache_at = teardown.index("pulling the compile cache")
+    destroy_at = teardown.index("destroying instance")
+
+    assert results_at < cache_at < destroy_at
+
+
+def test_the_compile_cache_pull_cannot_block_the_destroy():
+    """A leaked instance costs about $13/day. The cache is worth 40 minutes, once."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    teardown = script[script.index("df_teardown() {") : script.index("trap 'df_teardown' EXIT")]
+    start = teardown.index("pulling the compile cache")
+    cache_block = teardown[start : teardown.index("destroying instance")]
+
+    assert "timeout" in cache_block
+
+
+def test_a_cache_pull_with_no_cache_on_the_box_is_not_a_failure(workdir):
+    """The first rental after this lands has nothing to bring home, and must not report a
+    teardown failure for it."""
+    result = run(
+        "sync.sh",
+        "cache-down",
+        "--dry-run",
+        "--cache-key",
+        "RTX5090-2.14-cu128",
+    )
+
+    assert result.returncode == 0
+
+
+def test_a_session_that_cannot_fit_one_hypothesis_is_refused_before_renting(workdir):
+    """The other gate refuses a session that is spent. This one refuses a session that is
+    not spent enough: time to rent and compile, but not to score anything.
+
+    Nine rentals were billed on this project without producing a number, and the cheapest
+    of those failures would have been not renting.
+    """
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="tight", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="tight",
+                instance_id="a",
+                actual_minutes=170.0,
+                actual_cost_usd=1.008,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "tight",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+        expect=5,
+    )
+
+    assert "cannot fit one hypothesis" in result.stderr
+
+
+def test_a_fresh_session_passes_the_pre_flight_check(workdir):
+    """The cold estimates must fit the gate they are checked against, or the change that
+    raised the gate and the change that added the check disagree and nothing ever runs."""
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "fresh",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "pre-flight:" in result.stderr
+    assert "REFUSED" not in result.stderr

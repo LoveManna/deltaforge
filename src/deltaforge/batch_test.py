@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from .batch import (
+    COLD_PHASE_ESTIMATES,
     Batch,
     Hypothesis,
     SlotBudget,
@@ -17,6 +18,7 @@ from .batch import (
     classify_outcome,
     scoped_registry,
     score_predictions,
+    session_fits_one_hypothesis,
 )
 from .kernels import KernelRegistry, KernelStatus, RegistryError
 
@@ -365,3 +367,54 @@ def test_a_starved_prediction_is_untested_not_wrong():
 
     assert scores[1].correct is None
     assert scores[1].outcome == "starved"
+
+
+# -- can this session finish one hypothesis at all? ---------------------------------------
+
+
+def test_a_session_with_room_for_one_hypothesis_fits():
+    fits, shortfall = session_fits_one_hypothesis(
+        remaining_s=7200.0,
+        phases={"setup_s": 900.0, "reference_compile_s": 2400.0, "slot_s": 900.0},
+        reserve_s=720.0,
+    )
+
+    assert fits is True
+    assert shortfall == 0.0
+
+
+def test_a_session_that_cannot_fit_one_hypothesis_says_how_short_it_is():
+    """Nine rentals produced no number. Not renting beats renting to produce nothing, and
+    the shortfall is what tells the next session how far the gate is from being enough."""
+    fits, shortfall = session_fits_one_hypothesis(
+        remaining_s=3600.0,
+        phases={"setup_s": 900.0, "reference_compile_s": 2400.0, "slot_s": 900.0},
+        reserve_s=720.0,
+    )
+
+    assert fits is False
+    # 900 + 2400 + two slots of 900 + 720 of reserve = 5820, against 3600 available.
+    assert shortfall == pytest.approx(2220.0)
+
+
+def test_the_cold_estimates_are_used_when_nothing_has_been_measured():
+    """The first rental after this lands has no measured phases: it must fall back to the
+    worst case, not to optimism."""
+    fits, _shortfall = session_fits_one_hypothesis(remaining_s=10800.0, phases={}, reserve_s=720.0)
+
+    assert fits is True
+    assert set(COLD_PHASE_ESTIMATES) == {"setup_s", "reference_compile_s", "slot_s"}
+
+
+def test_the_minimum_is_two_slots_because_calibration_alone_scores_nothing():
+    """The identity champion proves the harness measures what it says. It is not a
+    hypothesis, so a rental that fits only that slot has bought no science."""
+    # Nothing is zero: a zero in phases.env means "not measured" and falls back to the
+    # cold estimate, so a test that wants a phase ignored must make it negligible instead.
+    phases = {"setup_s": 1.0, "reference_compile_s": 1.0, "slot_s": 600.0}
+
+    one_slot, _ = session_fits_one_hypothesis(remaining_s=602.0, phases=phases, reserve_s=0.0)
+    two_slots, _ = session_fits_one_hypothesis(remaining_s=1202.0, phases=phases, reserve_s=0.0)
+
+    assert one_slot is False
+    assert two_slots is True

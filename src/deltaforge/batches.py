@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from .batch import Batch, Hypothesis
 
-__all__ = ["BATCHES", "BATCH_001", "get_batch"]
+__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "get_batch"]
 
 
 BATCH_001 = Batch(
@@ -231,8 +231,89 @@ BATCH_001 = Batch(
 )
 
 
+BATCH_002 = Batch(
+    batch_id="002-compile-cost",
+    is_calibration=True,
+    description=(
+        "Three slots, and the product is the clock rather than the ratios. Rental 22 spent "
+        "~40 minutes inside one cold `max-autotune` compile, which breaks the arithmetic "
+        "every batch size in this repo rests on: `docs/BATCHES.md` costs a rental at ~15 "
+        "minutes fixed plus 2-4 per slot, and that has never been measured. This batch "
+        "measures it -- with the compile cache carried home afterwards, so the next rental "
+        "can also say what a WARM compile costs, which is the number that decides whether "
+        "7-12 slots is a batch or a fantasy."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            replaces=(),
+            mechanism=(
+                "Install nothing. The candidate is then bit-identical to the reference, so "
+                "every column must measure the same thing."
+            ),
+            prediction="identity",
+            rationale=(
+                "Still the strongest claim in any batch, and this project still does not "
+                "have it: two rentals reached the batch loop and neither returned a ratio "
+                "from this slot. Until it measures 1.00 within the noise band there is no "
+                "calibrated harness, and every other number ever recorded here is void."
+            ),
+            notes=(
+                "Also the cleanest possible compile measurement. The candidate is the same "
+                "graph as the reference, so this slot's compile time is the cost of "
+                "compiling a candidate with a FULLY warm in-process cache -- the floor that "
+                "every other slot is measured against."
+            ),
+        ),
+        Hypothesis(
+            slug="003-qk-norm-triton",
+            kernels=("rmsnorm_qk",),
+            category="A",
+            byte_share=0.00001,
+            replaces=("rms_norm",),
+            mechanism=(
+                "The same Triton RMSNorm on q_norm/k_norm: 256-wide rows instead of "
+                "2560-wide, ten times as many of them, in the 8 full-attention layers only."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "Chosen for its compile cost, not its ceiling. It swaps one module class in "
+                "8 of 32 layers and restructures nothing around it, which makes it the "
+                "smallest graph change available -- and therefore the cheapest possible "
+                "measurement of what a candidate recompile costs on top of a warm reference. "
+                "Its byte share is ~0.001%, far below the noise band, so the ratio itself is "
+                "predicted null and would be worth almost nothing on its own. The clock is "
+                "what this slot is for."
+            ),
+        ),
+        Hypothesis(
+            slug="002-rmsnorm-only",
+            kernels=("rmsnorm_hidden",),
+            category="A",
+            byte_share=0.00018,
+            replaces=("rms_norm",),
+            mechanism=(
+                "The same Triton RMSNorm on the three hidden-size sites, 2560-wide rows in "
+                "all 32 layers, without fusing the residual add."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "The same kernel as the slot before it, applied to four times as many sites "
+                "in four times as many layers. Two slots differing mainly in how much of the "
+                "graph they touch is what turns a single compile timing into a slope, which "
+                "is what `docs/BATCHES.md` needs in order to cost a batch it has not run "
+                "yet. The ratio is again predicted null on a 0.018% ceiling."
+            ),
+        ),
+    ),
+)
+
+
 #: Every batch, by id.
-BATCHES: dict[str, Batch] = {BATCH_001.batch_id: BATCH_001}
+BATCHES: dict[str, Batch] = {BATCH_001.batch_id: BATCH_001, BATCH_002.batch_id: BATCH_002}
 
 
 def get_batch(batch_id: str) -> Batch:

@@ -156,22 +156,46 @@ front of a batch to "get a result faster" — an uncalibrated result is not a re
 split in §4 and `docs/BATCHES.md` is an *estimate that has never been measured*, and the
 only evidence so far contradicts it: rental 22 spent ~40 minutes in one slot's cold
 `max-autotune` compile and the session gate ended the run. Until that number is known, a
-batch's size is a guess. See `results/batches/001-calibration/README.md`.
+batch's size is a guess. See `results/batches/001-calibration/README.md`, and run
+`002-compile-cost` — three slots whose product is the clock — before filling another
+full batch.
 
-**At 120 cumulative billed minutes — two hours — this session may not start another
+**The compile cache now comes home.** Torch's fx-graph and autotune caches are on by
+default but write to `/tmp` on a box that gets destroyed, so every rental this project has
+run compiled cold. `run_remote.sh` points them at `/workspace/df-cache`, pulls that
+directory back into `cache/compile/<gpu>-<torch>-<cuda>/` before destroying the instance,
+and pushes it up again next time the same card comes back. A warm cache changes how long
+compilation takes, not what it emits, and both scored columns share it.
+
+**At 180 cumulative billed minutes — three hours — this session may not start another
 batch.** `run_remote.sh` checks before each run and exits 3 when the session is spent. When that
 happens: destroy any live instance, then finish recording and writing up the work you
 already did — none of which needs a GPU — and stop. Do not start "just one more attempt".
 
-The gate was an hour, then 90 minutes, and is now two hours because rental 22 spent ~40
-of them inside a single cold `max-autotune` compile: below two hours the clock, not the
-measurement, was deciding when runs ended. It is not licence to spend longer — at
-$0.356/hr a full two hours is about $0.71, and the batch still stops itself early.
+**And it refuses to rent at all when even three hours cannot fit one hypothesis** — exit
+5, before provisioning. The minimum is two slots: the identity champion calibrates the
+harness but scores nothing, so a rental that fits only that has bought no science. Nine
+rentals were billed here without producing a number, and the cheapest of those failures
+would have been not renting. The estimate comes from the last rental on the same card when
+there is one (`cache/compile/<key>/phases.env`) and from the deliberately pessimistic cold
+numbers in `batch.COLD_PHASE_ESTIMATES` when there is not.
 
-The check happens before a run, never during one: a benchmark executing at minute 119
+The gate was an hour, then 90 minutes, then two, and is now three because one hypothesis on
+a **cold compile cache** does not fit in two — see
+`docs/superpowers/specs/2026-09-10-compile-cost-and-memory-design.md` §4.1. It is not
+licence to spend longer: the gate is a ceiling, not a target. Vast bills by the minute and
+the run destroys itself when the batch ends, so a warm session still pays for the ~40
+minutes it uses, and the real budget control is the $45 month-to-date gate.
+
+The check happens before a run, never during one: a benchmark executing at minute 179
 finishes normally, because killing it would waste the money already spent and leave nothing
-recorded in exchange. The 150-minute watchdog is a backstop for hangs and is always set
+recorded in exchange. The 210-minute watchdog is a backstop for hangs and is always set
 above the gate — **if it ever fires, that is a fault and the writeup must say so.**
+
+**Inside a run, a slot that runs away costs a slot rather than the rental.** Every slot
+carries a wall-clock cap (`SlotBudget.cap_for`), and a slot that overruns is recorded as
+`error` with a `SlotTimeout`. The first two slots are exempt, because capping them would
+defeat the guarantee the cap protects.
 
 `VAST_API_KEY` lives in a gitignored `.env` at the repo root and reaches curl through a
 config file on stdin, so it never enters argv, a file, or a log. **Never** print it, commit

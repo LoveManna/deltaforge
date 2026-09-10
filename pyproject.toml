@@ -67,6 +67,11 @@ addopts = "-q --strict-markers"
 [tool.ruff]
 line-length = 110
 src = ["src"]
+# Markdown is prose here, and recent ruff formats python blocks inside it. The specs and
+# plans in docs/ quote fragments -- a keyword argument on its own, a diff hunk -- that are
+# not valid modules, and reformatting them changes what the document says. It rewrote one
+# snippet from a kwarg into a tuple assignment before this line existed.
+extend-exclude = ["*.md"]
 
 [tool.ruff.lint.per-file-ignores]
 # The correctness prompts are data, not code: wrapping them to satisfy a line limit

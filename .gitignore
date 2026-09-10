@@ -22,6 +22,10 @@ weights/
 # preinstalled CUDA torch differ fundamentally, and a lock pinned to one fights the other.
 uv.lock
 
+# Compile cache pulled off rented boxes: a build artefact of a machine that no longer
+# exists, not a record. Keyed by GPU and toolchain under cache/compile/<key>/.
+cache/
+
 # Local run state
 .deltaforge-instance
 .deltaforge-watchdog-cancel

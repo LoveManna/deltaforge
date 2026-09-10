@@ -32,9 +32,14 @@ science. Nine rentals were billed that way and none produced a number. A batch p
 same fifteen minutes and buys 7-12 measurements.
 
 **7 is the floor** — fewer does not justify the fixed cost. **12 is the ceiling** — more
-does not fit the 120-minute session gate. Both numbers assume the per-slot cost above, and
+does not fit the 180-minute session gate. Both numbers assume the per-slot cost above, and
 that estimate is the thing rental 22 contradicted: re-cut them the moment a compile has
 actually been timed.
+
+**A calibration batch is exempt from the floor.** `Batch(is_calibration=True)` says so, and
+`002-compile-cost` is one: three slots whose product is the clock rather than the ratios.
+The floor exists to amortise a rental's fixed cost across many measurements, which cannot
+be an argument against the rental that is measuring what that fixed cost is.
 
 ## What a hypothesis has to say for itself
 
@@ -134,6 +139,10 @@ The batch is not finished when the instance is destroyed.
 7. **Reconcile this file with what the rental measured.** The per-slot and fixed costs
    above are estimates; a rental that timed them replaces them. **An estimate a rental has
    contradicted is worse than no estimate**, and the batch size is derived from it.
-8. **Then the rest of the docs** — `AGENT.md` §6.1 lists which, and when each is worth
+8. **Check `cache/compile/<key>/phases.env` came home.** The batch writes its measured
+   phase costs there and `run_remote.sh` sources them next time, so the pre-flight check
+   uses what this rental actually cost rather than the pessimistic cold estimates in
+   `batch.COLD_PHASE_ESTIMATES`. No file means the next session pays the cold assumption.
+9. **Then the rest of the docs** — `AGENT.md` §6.1 lists which, and when each is worth
    touching. Void batches are written up too: `results/batches/001-calibration/` is what a
    batch that produced no ratio at all still owes the next session.

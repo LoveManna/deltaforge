@@ -404,6 +404,34 @@ def _load_reference_only(args):
     return config, reference
 
 
+def _write_phases_env(path: Path, phases: dict[str, float], results) -> None:
+    """Record what this rental actually cost, for the next one's pre-flight check.
+
+    Shell `KEY=VALUE` lines rather than JSON: `run_remote.sh` sources this file, and it has
+    to work before any python environment exists. The keys match
+    `batch.COLD_PHASE_ESTIMATES`, which is what they replace.
+
+    `slot_s` is the **longest** slot rather than the median. The check it feeds decides
+    whether to rent at all, and being wrong in the optimistic direction costs a rental that
+    buys nothing — which is the failure this whole change exists to stop.
+    """
+    reference_compile_s = sum(
+        seconds for name, seconds in phases.items() if name.endswith(".compile_compiled")
+    )
+    slot_times = [r.duration_s for r in results if r.duration_s and r.outcome != "not_run"]
+    measured = {
+        "DF_PHASE_REFERENCE_COMPILE_S": reference_compile_s,
+        "DF_PHASE_SLOT_S": max(slot_times) if slot_times else 0.0,
+    }
+    lines = [f"{key}={value:.1f}\n" for key, value in measured.items() if value > 0]
+    if not lines:
+        print(f"[batch] no phase timings to record; leaving {path} alone")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(lines))
+    print(f"[batch] wrote {path}")
+
+
 def cmd_batch(args: argparse.Namespace) -> int:
     """Measure a whole batch of hypotheses on one rental."""
     import time
@@ -530,6 +558,9 @@ def cmd_batch(args: argparse.Namespace) -> int:
     print(render_batch_markdown(record))
     print(f"[batch] wrote {summary}")
 
+    if args.phases_env:
+        _write_phases_env(Path(args.phases_env), record.phases, results)
+
     # Exit 0 whenever the batch ran to its own conclusion. An errored slot is a recorded
     # result, not a failed run, and failing the process here would make `run_remote.sh`
     # tear down as if the rental had gone wrong — losing the slots that did succeed.
@@ -631,6 +662,15 @@ def build_parser() -> argparse.ArgumentParser:
             "absolute unix time the batch must stop by, passed down by run_remote.sh from "
             "the session gate. The batch stops itself before a slot it cannot finish, so "
             "the watchdog never has to — a watchdog firing is a reportable fault."
+        ),
+    )
+    batch.add_argument(
+        "--phases-env",
+        default="",
+        help=(
+            "write this rental's measured phase costs here as shell KEY=VALUE lines. "
+            "run_remote.sh sources the file before the next rental, so the pre-flight "
+            "check uses measurements rather than the cold estimates in batch.py."
         ),
     )
     batch.add_argument(

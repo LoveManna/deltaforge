@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from .batch import scoped_registry
-from .batches import BATCH_001, BATCHES, get_batch
+from .batches import BATCH_001, BATCH_002, BATCHES, get_batch
 from .config import tiny_config
 from .kernels import REGISTRY
 from .model import apply_champions
@@ -175,3 +175,32 @@ def test_get_batch_rejects_an_unknown_id():
 def test_get_batch_returns_the_manifest():
     assert get_batch("001-calibration") is BATCH_001
     assert "001-calibration" in BATCHES
+
+
+def test_a_batch_holds_seven_to_twelve_hypotheses_unless_it_is_calibrating():
+    """The floor amortises a rental's fixed cost across measurements.
+
+    A calibration batch's product IS that cost, measured, so the argument for the floor
+    cannot apply to it — and rental 22 showed the cost is not what `docs/BATCHES.md`
+    assumed.
+    """
+    assert 7 <= len(BATCH_001) <= 12
+    assert BATCH_001.is_calibration is False
+
+    assert len(BATCH_002) < 7
+    assert BATCH_002.is_calibration is True
+
+
+def test_batch_002_opens_with_the_identity_champion():
+    assert BATCH_002.hypotheses[0].is_identity
+    assert BATCH_002.calibration_slug == "000-identity"
+
+
+def test_batch_002_can_score_a_kernel_hypothesis():
+    """Calibration is necessary and is not a result. A rental that measures only the
+    identity slot has proved the harness works and scored no hypothesis."""
+    assert sum(1 for h in BATCH_002 if not h.is_identity) >= 1
+
+
+def test_batch_002_is_registered_and_fetchable():
+    assert get_batch("002-compile-cost") is BATCH_002

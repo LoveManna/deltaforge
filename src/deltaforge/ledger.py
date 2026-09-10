@@ -50,10 +50,12 @@ __all__ = [
 #: of headroom absorbs an in-flight instance whose actual cost is not yet known.
 MONTH_TO_DATE_LIMIT_USD = 45.0
 
-#: Cumulative billed minutes after which a session may not start another batch. Two hours:
-#: a cold `max-autotune` compile alone has cost ~40 minutes of a rental, so a shorter gate
-#: ends runs on the clock rather than on the measurement. The hard watchdog sits above it.
-SESSION_MINUTES_LIMIT = 120.0
+#: Cumulative billed minutes after which a session may not start another batch. Three
+#: hours, because one hypothesis on a cold compile cache does not fit in two: a cold
+#: `max-autotune` compile alone has cost ~40 minutes, and the identity slot plus one kernel
+#: slot must both finish for a rental to have scored anything. The hard watchdog sits above
+#: this, and `run_remote.sh` refuses to rent when even this cannot fit one hypothesis.
+SESSION_MINUTES_LIMIT = 180.0
 
 PROVISION = "provision"
 DESTROY = "destroy"

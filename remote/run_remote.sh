@@ -45,14 +45,22 @@ DF_BATCH="${DF_BATCH:-}"
 # diagnostic columns is the cheapest way to fit a 32 GB card.
 DF_COLUMNS="${DF_COLUMNS:-}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
-# 120 rather than 90: rental 22 spent ~40 minutes in one cold `max-autotune` compile, so
-# an hour and a half was ending runs on the gate rather than on the science. At the
-# $0.356/hr RTX 5090 these rentals have been landing on, a full 120 minutes is about $0.71.
-DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-120}"
+# 180 rather than 120: the cold-cache arithmetic in
+# docs/superpowers/specs/2026-09-10-compile-cost-and-memory-design.md §4.1 puts one
+# hypothesis -- the identity slot plus one kernel slot -- at 83-129 minutes, and 120 minus
+# the 12-minute reserve left 108. The pre-flight check below refuses to rent at all when
+# these two numbers disagree, so they are not independent: raising the check without
+# raising this would refuse every run.
+#
+# The gate is a ceiling, not a spend commitment. Vast bills by the minute and the run
+# destroys itself when the batch ends, so a warm session still pays for the ~40 minutes it
+# uses; the month-to-date $45 gate is the real budget control. Three hours at $0.356/hr is
+# $1.07.
+DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-180}"
 # Always above the session gate: the gate is what should end a run, and a watchdog firing
 # is a reportable fault. Raising the gate without raising this would make the backstop the
 # routine control.
-DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-150}"
+DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-210}"
 # How much of the session gate the batch may spend on slots, leaving the rest for setup
 # and teardown. The batch stops itself before a slot it cannot finish, so the watchdog
 # never has to — AGENT.md treats a watchdog firing as a reportable fault.
@@ -83,10 +91,25 @@ DF_BENCH_TIMEOUT="${DF_BENCH_TIMEOUT:-2400}"
 # A batch's single remote step is the entire measurement run, not one benchmark, so it
 # gets its own ceiling. The batch stops itself at its deadline long before this; this is
 # the backstop for a step that has stopped making progress at all. It has to stay clear of
-# the largest deadline the gate can hand out — a 120-minute gate minus a few minutes of
-# setup and the 12-minute reserve is already ~98 — or this backstop would become the thing
+# the largest deadline the gate can hand out — a 180-minute gate minus a few minutes of
+# setup and the 12-minute reserve is already ~155 — or this backstop would become the thing
 # that ends healthy batches.
-DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-6600}"
+DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-9600}"
+# Torch's fx-graph and autotune caches are enabled by default but write to
+# /tmp/torchinductor_<user> on a box that gets destroyed, so every rental this project has
+# ever run compiled cold -- and rental 22 spent ~40 minutes doing it. Point them somewhere
+# we can pull home, and key the local copy by GPU and toolchain, because inductor keys its
+# entries the same way and a 4090's cache buys a 5090 nothing.
+DF_REMOTE_CACHE="${DF_REMOTE_CACHE:-/workspace/df-cache}"
+DF_LOCAL_CACHE="${DF_LOCAL_CACHE:-$DF_REPO_ROOT/cache/compile}"
+export DF_LOCAL_CACHE
+DF_CACHE_PULL_TIMEOUT="${DF_CACHE_PULL_TIMEOUT:-180}"
+# Filled in once the box has told us what it is. Until then a cache cannot be matched.
+DF_CACHE_KEY="${DF_CACHE_KEY:-}"
+# `nproc` on the box, not here: rental 22 showed a single inductor worker alongside python
+# at 129% CPU, which is what a one-core view of the machine looks like. If a container
+# really does report one core, that alone explains a 40-minute compile.
+DF_COMPILE_ENV="TORCHINDUCTOR_CACHE_DIR=$DF_REMOTE_CACHE/inductor TRITON_CACHE_DIR=$DF_REMOTE_CACHE/triton TORCHINDUCTOR_COMPILE_THREADS=\$(nproc)"
 DF_PROVISION_ARGS=""
 
 usage() {
@@ -106,8 +129,8 @@ Usage: remote/run_remote.sh [options]
                             is compiled,candidate_compiled.
   --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
-  --session-limit N         Session GPU-time soft gate, in minutes (default: 120).
-  --watchdog-minutes N      Hard watchdog timeout (default: 150). Keep it above the gate.
+  --session-limit N         Session GPU-time soft gate, in minutes (default: 180).
+  --watchdog-minutes N      Hard watchdog timeout (default: 210). Keep it above the gate.
   --max-rate USD            Hourly rate ceiling, passed to provision.sh.
   --image REF               Container image. Use a non-Docker-Hub registry to test
                             whether a stalled pull is a Docker Hub rate limit.
@@ -117,7 +140,8 @@ Usage: remote/run_remote.sh [options]
                             For testing the teardown path.
   -h, --help                This message.
 
-Exit codes: 0 ok, 1 error (teardown still ran), 3 refused by a budget gate.
+Exit codes: 0 ok, 1 error (teardown still ran), 3 refused by a budget gate,
+            5 refused because the session gate cannot fit one hypothesis.
 
 An errored hypothesis inside a batch is a recorded result, not a failed run: the batch
 continues and exits 0. Only a failure of the rental itself is exit 1.
@@ -232,6 +256,22 @@ df_teardown() {
         fi
     fi
 
+    # The compile cache, after the results and before the destroy. Same rule as the pull
+    # above -- the trap cannot rsync from a dead box -- and the same guards: bounded, and
+    # unable to prevent the destroy. Results come first because a lost measurement costs a
+    # rental and a cold cache costs 40 minutes, once.
+    if [ -n "$DF_INSTANCE_ID" ] && [ "${DF_SSH_READY:-0}" = "1" ] && [ "$DF_DRY_RUN" != "1" ]; then
+        df_log "[teardown] pulling the compile cache"
+        if timeout "$DF_CACHE_PULL_TIMEOUT" \
+            sh "$DF_REPO_ROOT/remote/sync.sh" cache-down \
+            --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
+            --remote-dir "$DF_REMOTE_CACHE" --cache-key "${DF_CACHE_KEY:-unknown}" 2>&1; then
+            df_log "[teardown] compile cache pulled; the next rental on this card starts warm"
+        else
+            df_warn "[teardown] could not pull the compile cache (exit $?); destroying anyway"
+        fi
+    fi
+
     if [ -n "$DF_INSTANCE_ID" ]; then
         df_log "[teardown] destroying instance $DF_INSTANCE_ID"
         df_vast_destroy "$DF_INSTANCE_ID"
@@ -285,6 +325,42 @@ if df_ge "$SESSION_MINUTES" "$DF_SESSION_LIMIT_MINUTES"; then
     df_log "needs a GPU - and end the session."
     exit 3
 fi
+
+# Pre-flight: can this session finish one hypothesis at all?
+#
+# The gate above refuses a session that is spent. This refuses one that is not spent enough
+# -- a session with time to rent, compile, and then stop before scoring anything. Nine
+# rentals have been billed on this project without producing a number, and the cheapest of
+# those failures would have been not renting.
+#
+# The minimum is two slots: the identity champion calibrates the harness but scores no
+# hypothesis, so a rental that fits only that has bought no science. The estimates come
+# from the last rental on this card when there was one, and from the deliberately
+# pessimistic cold numbers in `batch.py` when there was not -- being wrong optimistically
+# here costs a whole rental.
+DF_PHASE_SETUP_S="${DF_PHASE_SETUP_S:-1500}"
+DF_PHASE_REFERENCE_COMPILE_S="${DF_PHASE_REFERENCE_COMPILE_S:-2400}"
+DF_PHASE_SLOT_S="${DF_PHASE_SLOT_S:-1980}"
+DF_PHASES_FILE="$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}/phases.env"
+if [ -f "$DF_PHASES_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$DF_PHASES_FILE"
+    df_log "pre-flight: using measured phase costs from $DF_PHASES_FILE"
+fi
+DF_NEEDED_MIN=$(awk -v s="$DF_PHASE_SETUP_S" -v c="$DF_PHASE_REFERENCE_COMPILE_S" \
+    -v t="$DF_PHASE_SLOT_S" -v r="$DF_BATCH_RESERVE_MINUTES" \
+    'BEGIN { printf "%.1f", (s + c + 2 * t) / 60 + r }')
+DF_AVAILABLE_MIN=$(awk -v l="$DF_SESSION_LIMIT_MINUTES" -v u="$SESSION_MINUTES" \
+    'BEGIN { printf "%.1f", l - u }')
+if df_ge "$DF_NEEDED_MIN" "$DF_AVAILABLE_MIN"; then
+    df_warn "REFUSED: the session gate cannot fit one hypothesis."
+    df_warn "needs ${DF_NEEDED_MIN} minutes (setup + reference compile + two slots + reserve),"
+    df_warn "has ${DF_AVAILABLE_MIN}. Raise --session-limit, or start a new session."
+    df_warn "Renting anyway would buy a compile and no measurement, which is how the first"
+    df_warn "nine rentals were spent."
+    exit 5
+fi
+df_log "pre-flight: ${DF_AVAILABLE_MIN} minutes available; one hypothesis needs ${DF_NEEDED_MIN}"
 
 # ---------------------------------------------------------------------------
 # Provision
@@ -502,6 +578,15 @@ remote_sh() {
         "cd '$DF_REMOTE_DIR' && $*"
 }
 
+# Like `remote_sh`, but the box's answer comes back on stdout instead of being logged. Used
+# for the two facts only the box knows: what card this is, and how many cores it will admit
+# to. Never used for a step whose *effect* matters -- a dry run must not silently skip work.
+remote_capture() {
+    # shellcheck disable=SC2086
+    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
+        "cd '$DF_REMOTE_DIR' && $*" 2>/dev/null
+}
+
 df_log "preparing the remote environment"
 remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq g++)"
 # Guarantee a `python` on PATH before anything tries to use one.
@@ -538,6 +623,27 @@ remote_sh "python -m pip install --quiet torch --index-url https://download.pyto
 remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest huggingface_hub hf_transfer accelerate"
 remote_sh "python -c 'import accelerate, transformers; print(\"accelerate\", accelerate.__version__, \"transformers\", transformers.__version__)'"
 remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
+
+# The cache is only ever reused on the hardware and toolchain that built it, so the key is
+# read off the box rather than assumed. A key we cannot read means no reuse, not a failure.
+if [ "$DF_DRY_RUN" = "1" ]; then
+    DF_CACHE_KEY="dryrun-cache-key"
+else
+    DF_CACHE_KEY=$(remote_capture "python -c \"import torch,re;print(re.sub(r'[^A-Za-z0-9]+','',torch.cuda.get_device_name(0))+'-'+torch.__version__.split('+')[0]+'-cu'+str(torch.version.cuda))\"" 2>/dev/null | tr -d '\r' | tail -1)
+fi
+[ -n "$DF_CACHE_KEY" ] || DF_CACHE_KEY="unknown"
+df_log "compile cache key: $DF_CACHE_KEY"
+if [ "$DF_DRY_RUN" != "1" ]; then
+    df_log "compile workers: $(remote_capture 'nproc' | tr -d '\r' | tail -1) cores reported by the box"
+fi
+# The direction is sync.sh's first positional argument, so flags come after it.
+CACHE_FLAGS=""
+[ "$DF_DRY_RUN" = "1" ] && CACHE_FLAGS="--dry-run"
+# shellcheck disable=SC2086
+sh "$DF_REPO_ROOT/remote/sync.sh" cache-up $CACHE_FLAGS \
+    --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
+    --remote-dir "$DF_REMOTE_CACHE" --cache-key "$DF_CACHE_KEY" || \
+    df_warn "could not send the compile cache up; this rental compiles cold"
 remote_sh "python -m deltaforge.cli fetch-weights --model '$DF_MODEL' --dest '$DF_WEIGHTS_DIR'"
 
 # The GPU-marked tests skip themselves on a CPU machine, so this is the first place they
@@ -574,13 +680,13 @@ already used ${SESSION_MINUTES}, this rental ${DF_ELAPSED_MINUTES}, reserve ${DF
     # expandable_segments costs nothing and buys back the allocator fragmentation that a
     # sequence of max-autotune compilations leaves behind. It is not a fix for genuinely
     # not fitting -- see --columns for that -- but the OOM messages asked for it by name.
-    remote_sh "PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'${DF_COLUMNS:+ --columns '$DF_COLUMNS'}"
+    remote_sh "$DF_COMPILE_ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE' --phases-env '$DF_REMOTE_CACHE/phases.env'${DF_COLUMNS:+ --columns '$DF_COLUMNS'}"
 else
     if df_stage_should_fail correctness; then
         df_die "correctness gate failed (simulated)"
     fi
     df_log "running correctness gates"
-    remote_sh "python -m deltaforge.cli correctness --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
+    remote_sh "$DF_COMPILE_ENV python -m deltaforge.cli correctness --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS'"
 
     # Pull what has been recorded so far, before the longest and riskiest step. The
     # correctness record is the expensive part of this run — it needed the checkpoint on a
@@ -594,7 +700,7 @@ else
         df_die "benchmark failed (simulated)"
     fi
     df_log "running the benchmark (remote step ceiling ${DF_BENCH_TIMEOUT}s)"
-    remote_sh "timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
+    remote_sh "$DF_COMPILE_ENV timeout ${DF_BENCH_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --hypothesis '$DF_HYPOTHESIS' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE'"
 fi
 
 if df_stage_should_fail pull; then

@@ -39,6 +39,7 @@ from .kernels import REGISTRY, KernelRegistry, KernelStatus, RegistryError
 
 __all__ = [
     "BATCH_OUTCOMES",
+    "COLD_PHASE_ESTIMATES",
     "PREDICTIONS",
     "Batch",
     "Hypothesis",
@@ -48,6 +49,7 @@ __all__ = [
     "classify_outcome",
     "score_predictions",
     "scoped_registry",
+    "session_fits_one_hypothesis",
 ]
 
 
@@ -136,6 +138,11 @@ class Batch:
     batch_id: str
     hypotheses: tuple[Hypothesis, ...]
     description: str = ""
+    #: A batch whose product is the cost measurement itself rather than a ranked set of
+    #: hypotheses. Exempt from the 7-12 floor in `docs/BATCHES.md`, which exists to
+    #: amortise a rental's fixed cost across many measurements — an argument that cannot
+    #: apply to the rental that is measuring what that fixed cost actually is.
+    is_calibration: bool = False
 
     def __post_init__(self) -> None:
         if not self.hypotheses:
@@ -301,6 +308,47 @@ def score_predictions(
             PredictionScore(slug=hyp.slug, predicted=hyp.prediction, outcome=outcome, correct=correct)
         )
     return tuple(scores)
+
+
+#: Worst-case cold-cache phase costs in seconds, from §4.1 of
+#: `docs/superpowers/specs/2026-09-10-compile-cost-and-memory-design.md`.
+#:
+#: **These are estimates**, used only until a rental has measured the real ones into
+#: `cache/compile/<key>/phases.env`. Exactly one of them was observed rather than reasoned:
+#: `reference_compile_s`, from rental 22's ~40-minute cold `max-autotune` compile. They are
+#: deliberately pessimistic, because the cost of overestimating is a session that waits and
+#: the cost of underestimating is a rental that buys nothing.
+COLD_PHASE_ESTIMATES = {
+    "setup_s": 1500.0,
+    "reference_compile_s": 2400.0,
+    "slot_s": 1980.0,
+}
+
+
+def session_fits_one_hypothesis(
+    remaining_s: float,
+    phases: dict[str, float] | None = None,
+    reserve_s: float = 720.0,
+) -> tuple[bool, float]:
+    """``(fits, shortfall_s)`` for the least a rental may produce and still be worth it.
+
+    That minimum is **two** slots: the identity champion plus one kernel. The identity slot
+    calibrates the harness — without it every other number in the batch is void — but it
+    scores no hypothesis, so a rental that fits only that has bought no science.
+
+    Nine rentals have been billed on this project without producing a number. A session
+    that cannot reach the minimum should not rent at all, and the shortfall says how far
+    the gate is from being enough — which is the number a future session needs in order to
+    raise it, rather than guessing again.
+    """
+    # A zero means "not measured" -- a phases.env written by a rental that never reached
+    # that phase -- so it falls back to the cold estimate rather than claiming the phase is
+    # free. Optimism here spends a rental.
+    known = dict(COLD_PHASE_ESTIMATES)
+    known.update({name: value for name, value in (phases or {}).items() if value > 0})
+    needed = known["setup_s"] + known["reference_compile_s"] + 2 * known["slot_s"] + reserve_s
+    shortfall = needed - remaining_s
+    return (shortfall <= 0, max(0.0, shortfall))
 
 
 @dataclass

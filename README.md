@@ -148,10 +148,15 @@ Failures are recorded, not discarded. A candidate that was fast but wrong goes i
 Budget is **$50/month**, enforced by code rather than by discipline:
 
 - Month-to-date gate: provisioning refuses at ≥ $45.
-- Session GPU-time soft gate: 120 cumulative billed minutes, checked *before* a run starts
-  and never during one. Two hours because a single cold `max-autotune` compile has been
-  observed to take ~40 of them; a shorter gate ended runs on the clock, not the science.
-- Hard watchdog: a local-side process destroys the instance at 150 minutes regardless of
+- Session GPU-time soft gate: 180 cumulative billed minutes, checked *before* a run starts
+  and never during one. Three hours because one hypothesis on a cold compile cache does not
+  fit in two: a single `max-autotune` compile has been observed to take ~40 minutes.
+- **A pre-flight refusal**: provisioning is refused outright when the remaining budget
+  cannot fit the identity slot plus one kernel slot. Not renting beats renting to produce
+  nothing, which is how the first nine rentals were spent.
+- Per-slot wall-clock cap, so a slot that runs away inside a compile costs a slot rather
+  than the rental. The first two slots are exempt — capping them would defeat the guarantee.
+- Hard watchdog: a local-side process destroys the instance at 210 minutes regardless of
   what the remote is doing — always above the gate, so the routine control is the gate and
   a watchdog firing stays a fault. A remote that hangs cannot defeat its own kill switch.
 - A batch stops *itself* before a hypothesis it cannot finish before the session deadline,
@@ -162,6 +167,9 @@ Budget is **$50/month**, enforced by code rather than by discipline:
   so a crash still destroys the instance.
 - The spend row is written to `ledger/spend.jsonl` *before* the instance is used, then
   reconciled with actuals at destroy.
+- The compile cache is pulled off the box before it is destroyed and pushed back to the
+  next rental on the same card, so a 40-minute cold `max-autotune` compile is paid once
+  rather than every session. It changes how long compilation takes, not what it emits.
 
 Every script in `remote/` supports `--dry-run`, which exercises the full logic path —
 including all the gates and the teardown trap — without contacting the create or destroy
