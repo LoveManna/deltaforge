@@ -456,7 +456,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         """One record per slot, written the moment the slot finishes.
 
         A hard crash at slot 8 must leave slots 0-7 on disk. Writing at the end of the
-        batch would put ninety minutes of paid measurement behind a single point of
+        batch would put a whole rental of paid measurement behind a single point of
         failure.
         """
         record = ResultRecord(

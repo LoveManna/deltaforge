@@ -50,7 +50,7 @@ DF_MIN_GPU_RAM="${DF_MIN_GPU_RAM:-24000}"
 DF_REQUIRE_VERIFIED="${DF_REQUIRE_VERIFIED:-1}"
 DF_MIN_INET_DOWN="${DF_MIN_INET_DOWN:-300}"
 DF_DISK_GB="${DF_DISK_GB:-40}"
-DF_MAX_MINUTES="${DF_MAX_MINUTES:-90}"
+DF_MAX_MINUTES="${DF_MAX_MINUTES:-150}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
 DF_MTD_LIMIT="${DF_MTD_LIMIT:-45}"
 DF_SESSION_ID="${DF_SESSION_ID:-}"
@@ -71,7 +71,7 @@ Usage: remote/provision.sh [options]
   --fallback-gpu NAME       Fallback GPU name (default: RTX 4090).
   --max-rate USD            Hourly rate ceiling (default: 0.45).
   --exclude-machines IDS    Comma-separated machine ids to skip.
-  --max-minutes N           Estimated ceiling written to the ledger (default: 90).
+  --max-minutes N           Estimated ceiling written to the ledger (default: 150).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --mtd-limit USD           Month-to-date refusal threshold (default: 45).
   --offers-file PATH        Read offers from a file instead of the API.

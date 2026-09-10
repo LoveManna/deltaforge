@@ -35,12 +35,12 @@ def model():
 
 def test_batch_001_has_between_seven_and_twelve_hypotheses():
     # The batch exists to amortise a ~15-minute fixed rental cost. Fewer than 7 does not
-    # justify it; more than 12 will not fit the 90-minute session gate.
+    # justify it; more than 12 will not fit the 120-minute session gate.
     assert 7 <= len(BATCH_001) <= 12
 
 
 def test_batch_001_starts_with_the_calibration_slot():
-    """A broken harness must be discovered in three minutes, not at minute ninety."""
+    """A broken harness must be discovered in three minutes, not at the end of a rental."""
     assert BATCH_001.hypotheses[0].is_identity
     assert BATCH_001.calibration_slug == "000-identity"
 

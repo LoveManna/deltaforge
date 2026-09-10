@@ -22,7 +22,7 @@ A rental's cost splits in two:
 > compile, not a hang. The session gate ended the run, not the science.
 >
 > If a first compile really costs 40 minutes, **the arithmetic below does not hold and a
-> nine-slot batch does not fit a 90-minute session.** Measure one compilation before
+> nine-slot batch does not fit a two-hour session either.** Measure one compilation before
 > filling another batch, then either bring it down (`reduce-overhead`, a warm inductor
 > cache carried between rentals, on-disk `torch.compiler` caching) or re-cut the batch
 > around what it actually costs.
@@ -32,7 +32,9 @@ science. Nine rentals were billed that way and none produced a number. A batch p
 same fifteen minutes and buys 7-12 measurements.
 
 **7 is the floor** — fewer does not justify the fixed cost. **12 is the ceiling** — more
-does not fit the 90-minute session gate.
+does not fit the 120-minute session gate. Both numbers assume the per-slot cost above, and
+that estimate is the thing rental 22 contradicted: re-cut them the moment a compile has
+actually been timed.
 
 ## What a hypothesis has to say for itself
 
@@ -64,8 +66,8 @@ would be hope; `batches_test.py` asserts that only the highest byte-share slot p
 ## Ordering is load-bearing and is never sorted
 
 1. **Identity champion first.** It installs nothing, so it *is* the reference and must
-   measure 1.00 ± noise. A broken harness then costs three minutes instead of ninety — and
-   if it misses, **every other number in the batch is void.**
+   measure 1.00 ± noise. A broken harness then costs three minutes instead of a rental —
+   and if it misses, **every other number in the batch is void.**
 2. **Cheapest and most diagnostic next.**
 3. **Riskiest last**, so everything already measured is on disk before one of them fails.
 
@@ -119,3 +121,19 @@ Re-check anything being promoted at 128.
 4. `remote/run_remote.sh --dry-run --session-id smoke --batch NNN-slug`.
 5. Commit, **then** rent. The predictions must be committed before the measurement or they
    are not predictions.
+
+## After the rental
+
+The batch is not finished when the instance is destroyed.
+
+6. **Write `results/batches/NNN-slug/README.md`.** What is now settled, where the batch
+   died if it died, what is still open, and what it cost. The prediction scorecard belongs
+   here: which predictions were scored, which were right, and which slots never tested
+   theirs. A slot that errored tested nothing — counting it wrong understates the record
+   exactly as counting it right would flatter it.
+7. **Reconcile this file with what the rental measured.** The per-slot and fixed costs
+   above are estimates; a rental that timed them replaces them. **An estimate a rental has
+   contradicted is worse than no estimate**, and the batch size is derived from it.
+8. **Then the rest of the docs** — `AGENT.md` §6.1 lists which, and when each is worth
+   touching. Void batches are written up too: `results/batches/001-calibration/` is what a
+   batch that produced no ratio at all still owes the next session.

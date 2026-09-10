@@ -12,8 +12,8 @@ it, and nothing else is required reading until you need the detail it holds.
 > much**, and **why**, in advance.
 
 The target is `Qwen/Qwen3.5-4B`, benchmarked at batch-1 decode. Every session rents one GPU
-for under an hour, tests one hypothesis, records the result win or lose, and destroys the
-instance.
+for at most two hours, measures a batch of hypotheses, records every result win or lose,
+and destroys the instance.
 
 **The last clause is the whole project.** "My kernel beat the compiler" is the premise the
 entire inference-serving industry is built on — vLLM, SGLang and TensorRT-LLM are all
@@ -110,6 +110,8 @@ that way without producing a number. `docs/BATCHES.md` has the arithmetic and th
    remote/run_remote.sh --session-id "$SESSION" --batch "NNN-slug"
    ```
 8. **Record the outcome** (§6). Every slot, win, loss or error.
+9. **Update the docs before you finish** (§6.1). The writeup is part of the session, not a
+   follow-up to it.
 
 The benchmark runs four columns. `compiled` against `candidate_compiled` is the score —
 identical `max-autotune` treatment, the only difference being who wrote the kernel.
@@ -156,15 +158,20 @@ only evidence so far contradicts it: rental 22 spent ~40 minutes in one slot's c
 `max-autotune` compile and the session gate ended the run. Until that number is known, a
 batch's size is a guess. See `results/batches/001-calibration/README.md`.
 
-**At 90 cumulative billed minutes, this session may not start another batch.**
-`run_remote.sh` checks before each run and exits 3 when the session is spent. When that
+**At 120 cumulative billed minutes — two hours — this session may not start another
+batch.** `run_remote.sh` checks before each run and exits 3 when the session is spent. When that
 happens: destroy any live instance, then finish recording and writing up the work you
 already did — none of which needs a GPU — and stop. Do not start "just one more attempt".
 
-The check happens before a run, never during one: a benchmark executing at minute 59
+The gate was an hour, then 90 minutes, and is now two hours because rental 22 spent ~40
+of them inside a single cold `max-autotune` compile: below two hours the clock, not the
+measurement, was deciding when runs ended. It is not licence to spend longer — at
+$0.356/hr a full two hours is about $0.71, and the batch still stops itself early.
+
+The check happens before a run, never during one: a benchmark executing at minute 119
 finishes normally, because killing it would waste the money already spent and leave nothing
-recorded in exchange. The 120-minute watchdog is a backstop for hangs — **if it ever fires,
-that is a fault and the writeup must say so.**
+recorded in exchange. The 150-minute watchdog is a backstop for hangs and is always set
+above the gate — **if it ever fires, that is a fault and the writeup must say so.**
 
 `VAST_API_KEY` lives in a gitignored `.env` at the repo root and reaches curl through a
 config file on stdin, so it never enters argv, a file, or a log. **Never** print it, commit
@@ -202,6 +209,39 @@ is re-benchmarked every time.
 
 **Do not fabricate, estimate, or placeholder any number.** If a run produced no measurement,
 the record says so.
+
+### 6.1 Close the session by updating the docs
+
+The records above say what a *hypothesis* measured. They do not say what the *session*
+learned, and the prose docs are what the next session reads first. So the last step of
+every session — it needs no GPU, and it still works after the session gate has stopped
+everything else — is a pass over the docs, adding what this session proved and fixing what
+it proved wrong.
+
+| Doc | Update it when |
+|---|---|
+| `LEADERBOARD.md` | Anything ran. Champion, plus a row per attempt, win or lose. |
+| `docs/HYPOTHESES.md` | A hypothesis died (graveyard entry, with the *cause* rather than the result), or its ceiling or ranking changed. |
+| `results/batches/NNN-slug/README.md` | A batch ran. What is now settled, where it died, what is still open, what it cost. **Void batches are written up too** — `results/batches/001-calibration/` is the worked example. |
+| `docs/BATCHES.md` | A rental measured something the cost arithmetic had only estimated. An estimate a rental has contradicted is worse than no estimate. |
+| `docs/GPU-ACCESS.md` | A run failed before the benchmark. A blocker row, and whether its fix is *proven on a GPU* or merely believed. |
+| `docs/ARCHITECTURE.md` | The model turned out to work differently than written — and add the test that catches it next time. |
+| `AGENT.md` §8 | A trap cost this session real time and would cost the next one the same. |
+| `README.md` | The headline result, or any claim it makes, is no longer true. It faces outward and is the first file to go stale. |
+
+**"If necessary" is a real test, not politeness.** Write an entry only if a future session
+would *act differently* for having read it. A changelog of what you did is not that — the
+git log already holds it. Prefer amending an existing entry to appending a new one, and
+delete what a measurement has superseded.
+
+Two things are never optional. **A claim this session disproved gets fixed in the same
+pass**, and **anything still unproven says so out loud** — `docs/GPU-ACCESS.md` keeps a
+"Proven?" column and answers `no` in it for exactly this reason. A doc that quietly carries
+a wrong number spends the next rental.
+
+Commit the writeup on the same branch as the work it describes. A session that measured
+something and did not write it down has spent money to produce nothing, which is the
+failure mode this project exists to avoid.
 
 ## 7. Where things are
 

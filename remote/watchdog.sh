@@ -7,7 +7,7 @@
 # timer as a second line of defence, but that one *can* be defeated by the failure it
 # exists to catch, so it is the backup and this is the primary.
 #
-# This is a backstop, not a routine control. The 60-minute session gate is what should
+# This is a backstop, not a routine control. The 120-minute session gate is what should
 # normally end a session. If this watchdog ever fires, something went wrong and the
 # session must report that rather than treat it as a normal ending — hence the marker
 # line it writes.
@@ -19,7 +19,7 @@ DF_REPO_ROOT=$(cd -- "$(dirname -- "$0")/.." && pwd)
 export DF_REPO_ROOT
 . "$DF_REPO_ROOT/remote/lib.sh"
 
-DF_TIMEOUT_MINUTES="${DF_TIMEOUT_MINUTES:-90}"
+DF_TIMEOUT_MINUTES="${DF_TIMEOUT_MINUTES:-150}"
 DF_TIMEOUT_SECONDS=""
 DF_INSTANCE_ID=""
 DF_POLL_SECONDS="${DF_POLL_SECONDS:-15}"
@@ -34,7 +34,7 @@ usage() {
 Usage: remote/watchdog.sh --instance-id ID [options]
 
   --instance-id ID        Instance to destroy when the timer expires (required).
-  --timeout-minutes N     Wall-clock limit (default: 90).
+  --timeout-minutes N     Wall-clock limit (default: 150), above the 120-minute gate.
   --timeout-seconds N     Same, in seconds. Overrides --timeout-minutes; used by tests.
   --poll-seconds N        How often to check for cancellation (default: 15).
   --cancel-file PATH      If this file appears, the run finished normally: exit quietly
@@ -96,7 +96,7 @@ done
 
 ELAPSED_MIN=$(awk -v s="$(df_now_epoch)" -v t="$START" 'BEGIN { printf "%.2f", (s - t) / 60 }')
 df_warn "WATCHDOG FIRED after ${ELAPSED_MIN} minutes for instance $DF_INSTANCE_ID."
-df_warn "This is a fault, not a normal ending: the 60-minute session gate should have"
+df_warn "This is a fault, not a normal ending: the 120-minute session gate should have"
 df_warn "stopped the session first. Report it in the session writeup."
 df_vast_destroy "$DF_INSTANCE_ID"
 

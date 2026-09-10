@@ -219,9 +219,9 @@ def test_an_unreconciled_instance_counts_toward_the_gate(workdir):
 def test_run_remote_refuses_a_session_that_has_reached_its_gate(workdir):
     """The gate mechanism, with the limit passed explicitly.
 
-    The default moved from 60 to 90 when batches arrived; this test is about the gate
-    firing at whatever limit it is given, and
-    `test_the_session_gate_defaults_to_ninety_minutes_for_batches` covers the default.
+    The default moved 60 -> 90 when batches arrived and 90 -> 120 once a cold compile was
+    measured in tens of minutes; this test is about the gate firing at whatever limit it is
+    given, and `test_the_session_gate_defaults_to_two_hours` covers the default.
     """
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
@@ -448,8 +448,10 @@ def test_the_provision_row_is_written_before_the_instance_is_used(workdir):
     assert rows[0]["hypothesis"] == "001-fused-rmsnorm"
     assert rows[0]["gpu_model"] == "RTX 5090"
     assert rows[0]["hourly_rate_usd"] == 0.3240
-    # 90 minutes at $0.324/hr.
-    assert rows[0]["estimated_ceiling_usd"] == pytest.approx(0.486)
+    # The --max-minutes default, 150 minutes, at $0.324/hr. It tracks the hard watchdog
+    # rather than the session gate: the ceiling written to the ledger is what this rental
+    # could cost at worst, and the watchdog is what bounds that.
+    assert rows[0]["estimated_ceiling_usd"] == pytest.approx(0.81)
     assert rows[0]["actual_minutes"] is None, "not reconciled until destroy"
 
 
@@ -1386,7 +1388,7 @@ def test_the_batch_deadline_leaves_the_session_gate_room_for_teardown(workdir):
     assert 77.0 <= minutes <= 78.5, line
 
 
-def test_the_session_gate_defaults_to_ninety_minutes_for_batches(workdir):
+def test_the_session_gate_defaults_to_two_hours(workdir):
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
         [
@@ -1395,8 +1397,8 @@ def test_the_session_gate_defaults_to_ninety_minutes_for_batches(workdir):
                 event="destroy",
                 session_id="spent",
                 instance_id="a",
-                actual_minutes=90.0,
-                actual_cost_usd=0.534,
+                actual_minutes=120.0,
+                actual_cost_usd=0.712,
             ),
         ],
     )
@@ -1416,9 +1418,30 @@ def test_the_session_gate_defaults_to_ninety_minutes_for_batches(workdir):
     assert "REFUSED by the session GPU-time gate" in result.stderr
 
 
-def test_sixty_billed_minutes_no_longer_refuses_a_run(workdir):
-    """The gate moved from 60 to 90 so a nine-slot batch fits. Pinned so a silent revert
-    to 60 shows up as a failing test rather than as a batch cut short on the box."""
+def test_the_hard_watchdog_stays_above_the_session_gate():
+    """The gate ends a run; the watchdog only catches a hang.
+
+    A watchdog firing is a reportable fault (AGENT.md §5), so its default must sit above
+    the session gate's. Raising the gate to 120 without moving the watchdog would have
+    made the backstop the routine control and turned every long batch into a fault.
+    """
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+
+    def default_of(name):
+        line = next(ln for ln in script.splitlines() if ln.startswith(f"{name}="))
+        return float(line.split(":-")[1].split("}")[0])
+
+    gate = default_of("DF_SESSION_LIMIT_MINUTES")
+    watchdog = default_of("DF_WATCHDOG_MINUTES")
+
+    assert gate == 120.0
+    assert watchdog > gate
+
+
+def test_ninety_billed_minutes_no_longer_refuses_a_run(workdir):
+    """The gate moved 60 -> 90 so a nine-slot batch fits, then 90 -> 120 once a cold
+    `max-autotune` compile was seen to cost ~40 minutes of it. Pinned so a silent revert
+    shows up as a failing test rather than as a batch cut short on the box."""
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
         [
@@ -1427,8 +1450,8 @@ def test_sixty_billed_minutes_no_longer_refuses_a_run(workdir):
                 event="destroy",
                 session_id="sixty",
                 instance_id="a",
-                actual_minutes=60.0,
-                actual_cost_usd=0.324,
+                actual_minutes=90.0,
+                actual_cost_usd=0.534,
             ),
         ],
     )

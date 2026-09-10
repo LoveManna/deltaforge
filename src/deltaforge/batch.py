@@ -123,7 +123,8 @@ class Batch:
     """An ordered run of hypotheses on one rental.
 
     Order is load-bearing and is not sorted here. A manifest puts the calibration slot
-    first so a broken harness is discovered in three minutes rather than ninety, and puts
+    first so a broken harness is discovered in three minutes rather than at the end of the
+    rental, and puts
     the riskiest kernels last so everything cheap is already on disk when one of them
     fails.
     """

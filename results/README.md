@@ -17,6 +17,13 @@ the reasoning, not as a result.
 | `baseline/<gpu>-<date>.json` | The reference under `torch.compile(max-autotune)`, re-recorded each session. |
 | `hypotheses/NNN-slug.json` | One record per hypothesis run, **win or lose**. |
 | `hypotheses/NNN-slug/` | Longhand writeups: the kernel as written, its tests, a review. |
+| `batches/NNN-slug/` | One directory per batch: a `.json` per slot, `summary.json`, and a `README.md` written by the session that ran it. |
+
+The batch `README.md` is where a *session* writes itself down — what is settled, where it
+died, what is still open, what it cost — and it is written **whether or not the batch
+produced a ratio**. `batches/001-calibration/` is a void batch that still records a fixed
+blocker, a kernel bug, and a compile cost that broke the arithmetic behind the batch size.
+`AGENT.md` §6.1 lists what else a session updates before it ends.
 
 ## Record format
 

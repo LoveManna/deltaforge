@@ -8,7 +8,7 @@ prediction written after seeing the number is not a prediction.
 Order within a batch is deliberate and is never sorted:
 
 * the **calibration slot first**, so a broken harness is discovered in three minutes
-  rather than at minute ninety;
+  rather than at the end of the rental;
 * then cheapest and most diagnostic;
 * the **riskiest kernels last**, so everything already measured is on disk before one of
   them fails.

@@ -45,10 +45,14 @@ DF_BATCH="${DF_BATCH:-}"
 # diagnostic columns is the cheapest way to fit a 32 GB card.
 DF_COLUMNS="${DF_COLUMNS:-}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
-# 90 rather than 60: a nine-slot batch does not fit an hour. At the $0.356/hr RTX 5090
-# these rentals have been landing on, a full 90 minutes is about $0.53.
-DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-90}"
-DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-120}"
+# 120 rather than 90: rental 22 spent ~40 minutes in one cold `max-autotune` compile, so
+# an hour and a half was ending runs on the gate rather than on the science. At the
+# $0.356/hr RTX 5090 these rentals have been landing on, a full 120 minutes is about $0.71.
+DF_SESSION_LIMIT_MINUTES="${DF_SESSION_LIMIT_MINUTES:-120}"
+# Always above the session gate: the gate is what should end a run, and a watchdog firing
+# is a reportable fault. Raising the gate without raising this would make the backstop the
+# routine control.
+DF_WATCHDOG_MINUTES="${DF_WATCHDOG_MINUTES:-150}"
 # How much of the session gate the batch may spend on slots, leaving the rest for setup
 # and teardown. The batch stops itself before a slot it cannot finish, so the watchdog
 # never has to — AGENT.md treats a watchdog firing as a reportable fault.
@@ -72,15 +76,17 @@ DF_SSH_READY_TIMEOUT="${DF_SSH_READY_TIMEOUT:-1200}"
 # 20-minute loss into a 5-minute one and makes testing another image cheap.
 DF_PULL_STALL_SECONDS="${DF_PULL_STALL_SECONDS:-300}"
 # Ceiling on the single longest remote step. `max-autotune` compiles three columns and
-# can run away on a large graph; without a bound the run would sit there until the
-# 90-minute watchdog fired, and a watchdog firing is a reportable fault rather than a
-# normal ending. Exceeding this fails the step cleanly, with teardown and the results
-# already pulled.
+# can run away on a large graph; without a bound the run would sit there until the hard
+# watchdog fired, and a watchdog firing is a reportable fault rather than a normal ending.
+# Exceeding this fails the step cleanly, with teardown and the results already pulled.
 DF_BENCH_TIMEOUT="${DF_BENCH_TIMEOUT:-2400}"
 # A batch's single remote step is the entire measurement run, not one benchmark, so it
 # gets its own ceiling. The batch stops itself at its deadline long before this; this is
-# the backstop for a step that has stopped making progress at all.
-DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-6000}"
+# the backstop for a step that has stopped making progress at all. It has to stay clear of
+# the largest deadline the gate can hand out — a 120-minute gate minus a few minutes of
+# setup and the 12-minute reserve is already ~98 — or this backstop would become the thing
+# that ends healthy batches.
+DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-6600}"
 DF_PROVISION_ARGS=""
 
 usage() {
@@ -100,8 +106,8 @@ Usage: remote/run_remote.sh [options]
                             is compiled,candidate_compiled.
   --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
-  --session-limit N         Session GPU-time soft gate, in minutes (default: 90).
-  --watchdog-minutes N      Hard watchdog timeout (default: 120).
+  --session-limit N         Session GPU-time soft gate, in minutes (default: 120).
+  --watchdog-minutes N      Hard watchdog timeout (default: 150). Keep it above the gate.
   --max-rate USD            Hourly rate ceiling, passed to provision.sh.
   --image REF               Container image. Use a non-Docker-Hub registry to test
                             whether a stalled pull is a Docker Hub rate limit.
@@ -204,7 +210,7 @@ df_teardown() {
     #
     # The trap could only ever destroy, so a failure after the last successful sync took
     # every measurement with it — survivable when a run was 10 minutes and one hypothesis,
-    # not when it is 90 minutes and nine. Batch mode writes each slot's record the moment
+    # not when it is two hours and nine. Batch mode writes each slot's record the moment
     # that slot finishes, which is only worth anything if something fetches them.
     #
     # Best-effort and fully guarded: this must never be able to prevent the destroy below.

@@ -212,25 +212,25 @@ def test_a_still_running_instance_counts_at_wall_clock_elapsed():
     assert session_minutes(rows, "s1", now_epoch=EPOCH + 1800) == pytest.approx(30.0)
 
 
-def test_session_gate_refuses_at_sixty_minutes(tmp_path):
+def test_session_gate_refuses_at_two_hours(tmp_path):
     path = tmp_path / "spend.jsonl"
-    write_fixture(path, [provision("i1"), destroy("i1", minutes=60.0)])
+    write_fixture(path, [provision("i1"), destroy("i1", minutes=120.0)])
 
     allowed, minutes = session_gate(path, "s1", now_epoch=EPOCH + 99999)
 
     assert not allowed
-    assert minutes == pytest.approx(60.0)
-    assert SESSION_MINUTES_LIMIT == 60.0
+    assert minutes == pytest.approx(120.0)
+    assert SESSION_MINUTES_LIMIT == 120.0
 
 
 def test_session_gate_allows_a_session_just_under_the_limit(tmp_path):
     path = tmp_path / "spend.jsonl"
-    write_fixture(path, [provision("i1"), destroy("i1", minutes=59.0)])
+    write_fixture(path, [provision("i1"), destroy("i1", minutes=119.0)])
 
     allowed, minutes = session_gate(path, "s1", now_epoch=EPOCH + 99999)
 
     assert allowed
-    assert minutes == pytest.approx(59.0)
+    assert minutes == pytest.approx(119.0)
 
 
 def test_an_unknown_session_has_used_nothing(tmp_path):

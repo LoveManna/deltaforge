@@ -148,10 +148,12 @@ Failures are recorded, not discarded. A candidate that was fast but wrong goes i
 Budget is **$50/month**, enforced by code rather than by discipline:
 
 - Month-to-date gate: provisioning refuses at ≥ $45.
-- Session GPU-time soft gate: 90 cumulative billed minutes, checked *before* a run starts
-  and never during one.
-- Hard watchdog: a local-side process destroys the instance at 120 minutes regardless of
-  what the remote is doing. A remote that hangs cannot defeat its own kill switch.
+- Session GPU-time soft gate: 120 cumulative billed minutes, checked *before* a run starts
+  and never during one. Two hours because a single cold `max-autotune` compile has been
+  observed to take ~40 of them; a shorter gate ended runs on the clock, not the science.
+- Hard watchdog: a local-side process destroys the instance at 150 minutes regardless of
+  what the remote is doing — always above the gate, so the routine control is the gate and
+  a watchdog firing stays a fault. A remote that hangs cannot defeat its own kill switch.
 - A batch stops *itself* before a hypothesis it cannot finish before the session deadline,
   so the watchdog never has to. A watchdog firing is treated as a reportable fault.
 - Teardown pulls results back **before** destroying the instance, so a failure late in a

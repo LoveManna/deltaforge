@@ -22,3 +22,7 @@ remote/run_remote.sh --dry-run --session-id smoke   # cost machinery, spends not
 Keep `AGENT.md` for knowledge useful to almost every future session. Do not repeat what the
 codebase already shows; point to the authoritative file or command instead. Prefer rewriting
 or pruning existing entries over appending new ones, and keep entries concise.
+
+**Every session ends with a docs pass** — what it did, what it found, and what it proved
+wrong. `AGENT.md` §6.1 says which docs to consider, and how to tell an entry worth writing
+from a changelog nobody needs.
