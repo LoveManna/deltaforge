@@ -24,6 +24,7 @@ this, so `_slot_metadata` records it in every result.
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import time
 import traceback
@@ -41,13 +42,47 @@ from .batch import (
     score_predictions,
 )
 
-__all__ = ["BatchRunner", "SlotResult", "run_batch"]
+__all__ = ["BatchRunner", "SlotResult", "release_compiled_state", "run_batch"]
 
 
 #: The scoring comparison, and the reason a batch is worth running at all: identical
 #: `max-autotune` treatment on both sides, the only difference being who wrote the kernel.
 BASELINE_COLUMN = "compiled"
 CANDIDATE_COLUMN = "candidate_compiled"
+
+
+def release_compiled_state(torch_module, cudagraph_module=None, log=print) -> list[str]:
+    """Free what a finished slot leaves on the card, and say what was freed.
+
+    `del candidate; gc.collect(); empty_cache()` frees the module and its KV cache but
+    **not** the CUDA-graph pool inductor recorded for `candidate_compiled`. Those pools are
+    held by inductor's graph trees, so slot N was resident on N of them — which is where
+    rental 21's ~22 GiB went, given that rental 22 measured construction at 0.11 GiB.
+
+    Deliberately **not** `torch._dynamo.reset()`, which would discard the reference's
+    compilation as well. That is the batch's entire saving. Resetting the graph trees costs
+    the reference a graph re-record on the next slot's first warmup call — seconds, not a
+    recompile.
+
+    `reset_cudagraph_trees` is private API, so its absence costs the reclaim and not the
+    batch.
+    """
+    if not torch_module.cuda.is_available():
+        return []
+
+    steps: list[str] = []
+    reset = getattr(cudagraph_module, "reset_cudagraph_trees", None)
+    if reset is not None:
+        reset()
+        steps.append("reset_cudagraph_trees")
+    else:
+        log("[batch] this torch has no reset_cudagraph_trees; graph pools stay resident")
+
+    torch_module.cuda.synchronize()
+    steps.append("synchronize")
+    torch_module.cuda.empty_cache()
+    steps.append("empty_cache")
+    return steps
 
 
 @dataclass
@@ -330,7 +365,13 @@ class BatchRunner:
         finally:
             del candidate
             gc.collect()
-            torch.cuda.empty_cache()
+            cudagraphs = None
+            # Private API, and absent on some builds. Its absence costs the reclaim, not
+            # the batch — `release_compiled_state` handles `None`.
+            with contextlib.suppress(ImportError):
+                from torch._inductor import cudagraph_trees as cudagraphs
+            release_compiled_state(torch, cudagraphs, log=self.log)
+            self._log_memory(f"{hypothesis.slug} released")
 
 
 def run_batch(

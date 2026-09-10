@@ -9,8 +9,10 @@ rented box.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from .batch import Batch, Hypothesis, SlotBudget
-from .batch_run import SlotResult, run_batch
+from .batch_run import SlotResult, release_compiled_state, run_batch
 
 
 def hyp(slug: str, prediction: str = "inconclusive", kernels=("k",)) -> Hypothesis:
@@ -285,3 +287,50 @@ def test_slot_dict_carries_the_prediction_and_its_rationale():
     assert slot["rationale"]
     assert slot["mechanism"]
     assert slot["byte_share"] == 0.01
+
+
+# -- releasing what a finished slot leaves on the card ------------------------------------
+
+
+def _fake_torch(calls: list[str], cuda: bool = True):
+    return SimpleNamespace(
+        cuda=SimpleNamespace(
+            is_available=lambda: cuda,
+            empty_cache=lambda: calls.append("empty_cache"),
+            synchronize=lambda: calls.append("synchronize"),
+        )
+    )
+
+
+def test_releasing_compiled_state_resets_the_cudagraph_pools():
+    """Slot N was resident on N graph pools.
+
+    `del candidate; empty_cache()` frees the module and its KV cache but not the pool
+    inductor recorded for `candidate_compiled`, which is where rental 21's missing ~22 GiB
+    went — rental 22 measured construction itself at 0.11 GiB.
+    """
+    calls: list[str] = []
+    cudagraphs = SimpleNamespace(reset_cudagraph_trees=lambda: calls.append("reset_cudagraph_trees"))
+
+    steps = release_compiled_state(_fake_torch(calls), cudagraphs, log=silent)
+
+    assert "reset_cudagraph_trees" in steps
+    assert calls.index("reset_cudagraph_trees") < calls.index("empty_cache")
+
+
+def test_releasing_compiled_state_survives_a_torch_without_the_private_api():
+    """`reset_cudagraph_trees` is private API. A torch that lacks it must cost us the
+    reclaim, not the batch."""
+    calls: list[str] = []
+
+    steps = release_compiled_state(_fake_torch(calls), SimpleNamespace(), log=silent)
+
+    assert "empty_cache" in calls
+    assert "reset_cudagraph_trees" not in steps
+
+
+def test_releasing_compiled_state_does_nothing_without_cuda():
+    calls: list[str] = []
+
+    assert release_compiled_state(_fake_torch(calls, cuda=False), None, log=silent) == []
+    assert calls == []
