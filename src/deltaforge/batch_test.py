@@ -327,3 +327,41 @@ def test_budget_rejects_a_negative_duration():
     budget = SlotBudget(deadline_epoch=1.0, clock=FakeClock())
     with pytest.raises(ValueError, match="cannot take"):
         budget.record(-1.0)
+
+
+def test_the_first_two_slots_are_never_capped_below_the_remaining_budget():
+    """The cap exists to stop slot 7 eating slot 8.
+
+    Applying it to the first two slots would defeat the guarantee it protects: the
+    identity slot plus one kernel slot is the least a rental may produce and still have
+    scored a hypothesis.
+    """
+    budget = SlotBudget(deadline_epoch=1000.0, clock=lambda: 0.0, slot_cap_s=60.0)
+
+    assert budget.cap_for(0) == pytest.approx(1000.0)
+    assert budget.cap_for(1) == pytest.approx(1000.0)
+    assert budget.cap_for(2) == pytest.approx(60.0)
+
+
+def test_a_capped_slot_never_outlives_the_deadline():
+    """A cap larger than what is left is not a licence to overrun the session."""
+    budget = SlotBudget(deadline_epoch=100.0, clock=lambda: 0.0, slot_cap_s=600.0)
+
+    assert budget.cap_for(5) == pytest.approx(100.0)
+
+
+def test_a_starved_prediction_is_untested_not_wrong():
+    """A slot the clock killed tested nothing. Counting it wrong understates the record
+    exactly as counting it right would flatter it."""
+    batch = Batch(
+        batch_id="b",
+        hypotheses=(
+            make_hypothesis(slug="000-identity", kernels=(), prediction="identity"),
+            make_hypothesis(slug="001-x"),
+        ),
+    )
+
+    scores = score_predictions(batch, {"000-identity": "win", "001-x": "starved"}, calibrated=True)
+
+    assert scores[1].correct is None
+    assert scores[1].outcome == "starved"

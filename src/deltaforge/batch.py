@@ -67,7 +67,11 @@ PREDICTIONS = ("win", "loss", "inconclusive", "identity")
 #: `not_run` — the deadline arrived first. Explicitly recorded, never silently omitted:
 #:           a hypothesis missing from a batch record must be distinguishable from one
 #:           that ran and produced nothing.
-BATCH_OUTCOMES = ("win", "loss", "inconclusive", "incorrect", "error", "not_run")
+#: `starved` — the clock ended the rental before any slot scored. Distinct from `not_run`
+#:           on purpose: `not_run` means the batch stopped early having already measured
+#:           something, `starved` means the rental produced nothing and the session gate
+#:           is the reason. It is the evidence for raising that gate.
+BATCH_OUTCOMES = ("win", "loss", "inconclusive", "incorrect", "error", "not_run", "starved")
 
 
 @dataclass(frozen=True)
@@ -287,7 +291,7 @@ def score_predictions(
     scores = []
     for hyp in batch:
         outcome = outcomes.get(hyp.slug, "not_run")
-        if outcome in ("error", "not_run"):
+        if outcome in ("error", "not_run", "starved"):
             correct: bool | None = None
         elif hyp.prediction == "identity":
             correct = calibrated
@@ -319,6 +323,14 @@ class SlotBudget:
     #: Slots overrun; a batch that stops one slot early has lost 3 minutes, and one that
     #: stops one slot late has lost the whole slot plus a fault in the writeup.
     safety_factor: float = 1.2
+    #: Ceiling on a single slot once it has started. `can_start` bounds what a slot may
+    #: *begin*; nothing bounded what it could then do, and rental 22 spent ~40 minutes
+    #: inside one slot's cold compile before the session gate ended the run.
+    slot_cap_s: float = 1800.0
+    #: How many leading slots are exempt from that ceiling. The identity champion plus one
+    #: kernel slot is the least a rental may produce and still have scored a hypothesis,
+    #: so capping those two would defeat the guarantee the cap exists to protect.
+    uncapped_slots: int = 2
     durations_s: list[float] = field(default_factory=list)
 
     def record(self, duration_s: float) -> None:
@@ -340,6 +352,13 @@ class SlotBudget:
 
     def can_start(self) -> bool:
         return self.remaining_s() >= self.estimate_s() * self.safety_factor
+
+    def cap_for(self, index: int) -> float:
+        """Seconds slot ``index`` may take. Never longer than the session has left."""
+        remaining = self.remaining_s()
+        if index < self.uncapped_slots:
+            return remaining
+        return min(self.slot_cap_s, remaining)
 
     def why_not(self) -> str:
         return (
