@@ -420,6 +420,7 @@ wait_for_ssh() {
     _dumped=0
     _last_msg=""
     _msg_changed_at=$(df_now_epoch)
+    _settled_logged=0
     while [ "$(df_now_epoch)" -lt "$_deadline" ]; do
         _listing=$(df_api_v1 GET "/instances/" 2>/dev/null || true)
         _row=$(df_instance_row "$_listing" "$DF_INSTANCE_ID")
@@ -540,6 +541,14 @@ wait_for_ssh() {
             _msg_changed_at=$(df_now_epoch)
         elif [ -z "$_msg" ]; then
             : # no progress signal from this host; bounded by DF_SSH_READY_TIMEOUT alone
+        elif df_pull_settled "$_msg"; then
+            # The download finished; verification, extraction and container start emit no
+            # status_msg updates, so this message freezes because the pull SUCCEEDED. Same
+            # bounding as the empty case: DF_SSH_READY_TIMEOUT, not the stall budget.
+            if [ "$_settled_logged" = "0" ]; then
+                df_log "pull has finished downloading; extraction reports no progress, so the readiness timeout bounds it from here"
+                _settled_logged=1
+            fi
         elif [ $(( $(df_now_epoch) - _msg_changed_at )) -ge "$DF_PULL_STALL_SECONDS" ]; then
             df_die "instance $DF_INSTANCE_ID has not progressed in ${DF_PULL_STALL_SECONDS}s (status: ${_status:-unknown} | ${_msg:-no status_msg}). Image pull is stuck, not slow: destroying rather than paying out the ${DF_SSH_READY_TIMEOUT}s timeout. Try --image on another registry, or add DOCKER_LOGIN_USER/DOCKER_LOGIN_TOKEN to .env."
         fi

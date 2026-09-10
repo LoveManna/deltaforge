@@ -1733,3 +1733,46 @@ def test_a_fresh_session_passes_the_pre_flight_check(workdir):
 
     assert "pre-flight:" in result.stderr
     assert "REFUSED" not in result.stderr
+
+
+def test_a_finished_download_is_not_a_stall():
+    """Rental 24 was destroyed at 300s on `2741c81b500d: Verifying Checksum ... Download
+    complete` -- a message that had stopped changing *because the pull succeeded*.
+
+    The stall budget's premise is that a live pull keeps rewriting status_msg with new
+    byte counts. That premise expires the moment the last layer finishes downloading:
+    checksum verification, extraction and container start emit no further updates, so a
+    healthy instance goes quiet in exactly the window before it becomes reachable. This is
+    the same reasoning the loop already applies to an empty status_msg."""
+    for msg in (
+        "2741c81b500d: Verifying Checksum2741c81b500d: Download complete",
+        "4117260ffdf2: Download complete",
+        "a1b2c3: Extracting [====>   ]  1.2GB/2.5GB",
+        "a1b2c3: Pull complete",
+        "a1b2c3: Already exists",
+    ):
+        assert _shell(f'df_pull_settled "{msg}" && echo settled || echo moving') == "settled", (
+            f"a finished/extracting layer must not be read as a stall: {msg!r}"
+        )
+
+
+def test_a_transferring_or_stuck_pull_is_still_subject_to_the_stall_budget():
+    """The carve-out must not swallow the case it was built for. `Pulling fs layer`
+    repeated forever is what eight rentals were billed for, and a live byte count is the
+    signal the budget is meant to reset on -- neither is 'settled'."""
+    for msg in (
+        "2741c81b500d: Pulling fs layer",
+        "2741c81b500d: Downloading [===>     ]  512MB/2.5GB",
+        'Error response from daemon: failed to resolve reference "docker.io/vastai/base-image"',
+    ):
+        assert _shell(f"df_pull_settled '{msg}' && echo settled || echo moving") == "moving", (
+            f"this message must still be bounded by the stall budget: {msg!r}"
+        )
+
+
+def test_the_outer_poll_exempts_a_settled_pull_from_the_stall_budget():
+    """The classifier is only worth anything if the poll loop consults it."""
+    source = (REMOTE / "run_remote.sh").read_text()
+    loop = source[source.index("_progress=") : source.index("Image pull is stuck")]
+
+    assert "df_pull_settled" in loop, "the outer poll must exempt a settled pull"

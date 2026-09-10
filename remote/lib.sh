@@ -67,6 +67,27 @@ df_now_epoch() { date -u +%s; }
 df_now_iso()   { date -u +%Y-%m-%dT%H:%M:%SZ; }
 df_this_month(){ date -u +%Y-%m; }
 
+# Has this `status_msg` stopped carrying a byte-moving progress signal?
+#
+# The stall budget's premise is that a live pull keeps rewriting status_msg with new byte
+# counts, so a frozen message means a stuck one. That premise expires the moment the last
+# layer finishes downloading: checksum verification, extraction and container start emit
+# no further updates, and the message freezes *because the pull succeeded*. Rental 24 was
+# destroyed at 300s on "Verifying Checksum ... Download complete" -- the guard firing at
+# precisely the point where the thing it guards had stopped being possible.
+#
+# Same reasoning the poll already applies to an empty status_msg: where the signal cannot
+# mean anything, say so and let DF_SSH_READY_TIMEOUT do the bounding instead of inventing
+# a verdict. A genuinely stuck extraction then costs the readiness timeout rather than the
+# stall budget, which is the price of not destroying healthy rentals.
+df_pull_settled() {
+    case "$1" in
+        *"Download complete"*|*"Verifying Checksum"*|*Extracting*|*"Pull complete"*|*"Already exists"*)
+            return 0 ;;
+    esac
+    return 1
+}
+
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------
