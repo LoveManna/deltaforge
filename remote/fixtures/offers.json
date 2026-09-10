@@ -7,7 +7,8 @@
     "just the happy path: 9001 is bid-only (interruptible), 9002 has two GPUs, 9003 has",
     "reliability below 0.98, 9004 is over the rate ceiling, 9005 is not rentable, and 9006",
     "is a fallback-generation card. Only 9007 and 9008 should survive, and 9008 is cheaper,",
-    "so provision.sh must select 9008."
+    "so provision.sh must select 9008.",
+    "9011 is the cheapest offer here and passes every other filter, but its driver tops out at CUDA 12.2 -- too old for the cu128 wheels run_remote.sh installs. Rental 25 died on such a host with 'Error 804: forward compatibility was attempted on non supported HW', so it must be rejected and 9008 must still win."
   ],
   "offers": [
     {
@@ -169,6 +170,22 @@
       "inet_down": 900.0,
       "static_ip": true,
       "machine_id": 100010
+    },
+    {
+      "id": 9011,
+      "gpu_name": "RTX 5090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.995,
+      "dph_total": 0.215,
+      "gpu_ram": 32607,
+      "cuda_max_good": 12.2,
+      "geolocation": "Sweden",
+      "verified": true,
+      "inet_down": 900.0,
+      "static_ip": true,
+      "machine_id": 100011
     }
   ]
 }

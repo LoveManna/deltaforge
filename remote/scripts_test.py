@@ -1813,3 +1813,37 @@ def test_a_rejected_create_reports_what_the_api_said():
     assert "no_such_ask" in combined or "ask 48657232 is gone" in combined, (
         f"the API's explanation must reach the log; got: {combined!r}"
     )
+
+
+def test_a_host_whose_driver_predates_our_torch_build_is_never_selected(workdir):
+    """run_remote.sh installs torch from the cu128 index, and CUDA forward-compat packages
+    only work on data-centre cards -- never on the consumer GeForce parts this project
+    rents. Rental 25 reached the box, installed everything, and died at the first CUDA
+    call with `Error 804: forward compatibility was attempted on non supported HW`,
+    because the offer's driver topped out at CUDA 12.2.
+
+    Nothing in the filter compared the host's driver against the wheels we install, so the
+    price-ordered search walked straight into it."""
+    offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())
+    stale = [o for o in offers["offers"] if (o.get("cuda_max_good") or 0) < 12.8]
+    assert stale, "the fixture must contain an offer with a driver too old for cu128"
+    stale_ids = {s["id"] for s in stale}
+    assert min(o["dph_total"] for o in stale) < min(
+        o["dph_total"] for o in offers["offers"] if not o.get("is_bid_only") and o["id"] not in stale_ids
+    ), "and it must be the cheapest, so selecting on price alone would pick it"
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "cuda",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    for o in stale:
+        assert f"selected offer {o['id']}" not in result.stderr, (
+            f"offer {o['id']} has CUDA {o['cuda_max_good']}, too old for the cu128 wheels"
+        )

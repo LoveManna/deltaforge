@@ -42,6 +42,14 @@ DF_GPU="${DF_GPU:-RTX 5090}"
 DF_FALLBACK_GPU="${DF_FALLBACK_GPU:-RTX 4090}"
 DF_MIN_RELIABILITY="${DF_MIN_RELIABILITY:-0.98}"
 DF_MIN_GPU_RAM="${DF_MIN_GPU_RAM:-24000}"
+# The host driver must be able to run the wheels run_remote.sh installs, which come from
+# PyTorch's cu128 index. CUDA's forward-compatibility packages exist for exactly this gap
+# but are supported only on data-centre cards, never on the consumer GeForce parts this
+# project rents -- so on a 4090 an older driver is a hard stop, not a slow path. Rental 25
+# reached the box, installed torch, and died at the first CUDA call with "Error 804:
+# forward compatibility was attempted on non supported HW". Keep this in step with the
+# --index-url in run_remote.sh.
+DF_MIN_CUDA="${DF_MIN_CUDA:-12.8}"
 # Two filters bought with rented time rather than reasoning. The cheapest single RTX 5090
 # on the market was an unverified consumer host that never finished pulling the container
 # image across three provisioning attempts, and whose ssh proxy was unreachable from
@@ -156,6 +164,7 @@ select_offer() {
         --argjson maxrate "$DF_MAX_RATE" \
         --argjson minrel "$DF_MIN_RELIABILITY" \
         --argjson minram "$DF_MIN_GPU_RAM" \
+        --argjson mincuda "$DF_MIN_CUDA" \
         --argjson mindown "$DF_MIN_INET_DOWN" \
         --argjson wantverified "$DF_REQUIRE_VERIFIED" \
         --arg excluded "$DF_EXCLUDE_MACHINES" '
@@ -168,6 +177,9 @@ select_offer() {
             and (.reliability2 // 0) > $minrel
             and (.dph_total // 1e9) <= $maxrate
             and (.gpu_ram // 0) >= $minram
+            # A driver older than the torch build cannot run it: forward compatibility is
+            # a data-centre-only feature and these are GeForce cards.
+            and (((.cuda_max_good // 0) | tonumber? // 0) >= $mincuda)
             and (.inet_down // 0) > $mindown
             # The query filters on `verified`, but the offer objects come back with the
             # field null, so a client-side `== true` rejects the entire market. Reject an
