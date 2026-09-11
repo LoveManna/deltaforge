@@ -1,8 +1,8 @@
-# GPU access: three blockers, each hiding behind the last
+# GPU access: a chain of blockers, each hiding behind the last
 
-Ten rentals have been billed on this project. **None has yet produced a benchmark number**,
-and each one that got further than its predecessor did so by exposing the next problem in
-the chain:
+Twenty-seven rentals have been billed on this project. **None has yet produced a benchmark
+number**, and each one that got further than its predecessor did so by exposing the next
+problem in the chain:
 
 | | Blocker | Found by | Fixed by | Proven? |
 |---|---|---|---|---|
@@ -14,11 +14,23 @@ the chain:
 | 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | yes |
 | 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
 | 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
+| 9 | **The stall guard destroys instances whose pull has just finished** | rental 24 | `df_pull_settled`: a settled pull is bounded by the readiness timeout, not the stall budget | yes |
+| 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | `--exclude-machines` by hand (**real fix not written**) | **no** |
+| 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | yes |
+| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | **no** |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | **unexplained** — see below | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
-Blockers 1-7 are fixed and proven on a GPU. **Blocker 8's fix is untested**: rental 22
-was stopped by the session gate before its warmup completed. That, and the ~40-minute cold
-`max-autotune` compile behind it, is where the next session starts.
+Blockers 1-7, 9 and 11 are fixed and proven on a GPU. **Blocker 8's fix is still untested**
+— no rental has reached a benchmark since. **Blocker 12's fix is untested** for the same
+reason. **Blocker 10 has no fix**, only a manual escape. **Blocker 13 is not understood at
+all** and is the first thing to resolve, because it invalidates the precondition every
+number downstream depends on.
+
+**Blocker 9 is the one to internalise, because it was self-inflicted.** The guard fired on
+a healthy box at the exact moment its pull *succeeded*. See
+`results/batches/002-compile-cost/README.md` for the full account: it is blocker 7's lesson
+inverted, and the loop already contained the correct reasoning one branch lower.
 
 This file records each one so a future session spends its money on kernels rather than
 rediscovering them.
@@ -210,6 +222,22 @@ you happened to imagine is not a guard.
    Pick a different image rather than fighting it.
 4. Record the machine id in `--exclude-machines` so the deterministic, price-ordered offer
    search does not hand you the same host again.
+5. **`no_such_ask` / HTTP 400 from the create endpoint:** the offer was listed but is not
+   rentable, usually because someone took it between the search and the create. Nothing was
+   billed. Retrying alone does **not** help — the search is deterministic and re-picks the
+   same dead ask — so exclude the machine and run again (blocker 10).
+6. **`Error 804: forward compatibility was attempted on non supported HW`:** the host's
+   driver is older than the torch build we install. Forward-compat packages are
+   data-centre-only and these are GeForce cards. `DF_MIN_CUDA` now filters these hosts out;
+   if this appears again, that floor and the `--index-url` in `run_remote.sh` have drifted
+   apart (blocker 11).
+7. **`fatal error: Python.h: No such file or directory`:** the image ships no Python
+   headers and Triton cannot build its JIT shim. `python3-dev` is now installed beside
+   `g++`; if this recurs, that step failed or ran too late (blocker 12).
+8. **The run says it pulled a compile cache — check that one arrived.** `sync.sh` exits 0
+   on a failed pull by design, so teardown now decides from what is on disk. A log claiming
+   warmth when the directory is empty would misattribute a cold compile, which is the one
+   number batch 002 exists to measure.
 
 ## What a successful run costs, once it gets through
 
@@ -301,9 +329,26 @@ project have not been the loud ones.
 | 20 | 2026-09-08 | blocker 7, now logged as `status: loading` | 5.90 min | $0.0382 |
 | 21 | 2026-09-08 | **batch ran** — candidates built, 8 OOM at bench, 1 ImportError | 25.14 min | $0.1548 |
 | 22 | 2026-09-08 | 2-column batch; ~40 min in one cold max-autotune compile | 56.68 min | $0.3492 |
+| 23 | 2026-09-10 | Docker Hub pull refused — blocker 1 recurred on the default image | 8.17 min | $0.0402 |
+| 24 | 2026-09-10 | **healthy, and destroyed by our own stall guard** — blocker 9 | 5.65 min | $0.0310 |
+| 25 | 2026-09-10 | host reported `GPU error, unable to start instance` | 11.78 min | $0.0687 |
+| 26 | 2026-09-10 | **past sshd and torch**, CUDA `Error 804` — blocker 11 | 6.08 min | $0.0353 |
+| 27 | 2026-09-10 | **GPU suite ran** — 11 fail on `Python.h`, oracle diverges | 88.55 min | $0.6242 |
 
-Twenty-two rentals, $1.514, **zero leaked instances** — every one destroyed cleanly by the
+Twenty-seven rentals, $2.314, **zero leaked instances** — every one destroyed cleanly by the
 trap, including two cancelled mid-flight with SIGTERM.
+
+Three further attempts on 2026-09-10 were refused by the API before an instance existed
+(`no_such_ask`) and cost nothing. They are not rentals and are not counted here, but they
+are blocker 10: the price-ordered search is deterministic, so it re-selected the same dead
+ask every time until the machine was excluded by hand.
+
+**Rental 27 is the most expensive single rental this project has run**, and worth reading
+as a cost lesson rather than a failure: 88 billed minutes bought the image, torch, a 9.32 GB
+checkpoint and a full GPU suite, and the thing that stopped it — a missing `python3-dev` —
+would have cost a minute had it been checked before the checkpoint download rather than
+after. Toolchain checks belong in front of the expensive downloads. `g++` already was;
+the headers now are too.
 
 The "some hosts never answer sshd" rate this table used to report was **blocker 7**, not the
 market. Rentals 11, 17, 18, 19 and 20 all died to it. `--exclude-machines` is still worth

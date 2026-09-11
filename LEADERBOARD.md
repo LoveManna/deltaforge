@@ -16,12 +16,13 @@
 **No benchmark has ever run.** Nothing here is estimated, projected, or placeheld. The
 first session to get a working GPU records the baseline; until then this table stays empty.
 
-**The reference is now proven to interpret the weight *values* correctly** — see below —
-which was the outstanding precondition. What is still missing is a *calibrated harness*: an
-identity champion that measures 1.00 ± noise. Until that exists there is no baseline, and
-`AGENT.md` §4 still governs what to do about it.
+**The reference's reading of the weight *values* is no longer settled** — it matched
+HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10; see below. That was
+the outstanding precondition, so it is now the outstanding *question*. Also still missing
+is a *calibrated harness*: an identity champion that measures 1.00 ± noise. Until both
+exist there is no baseline, and `AGENT.md` §4 still governs what to do about it.
 
-### The reference is validated. The harness is not.
+### The reference was validated on 2026-09-07, and disagreed on 2026-09-10.
 
 **2026-09-07 — the weight-value oracle passed for the first time.**
 
@@ -29,12 +30,33 @@ identity champion that measures 1.00 ± noise. Until that exists there is no bas
 test_reference_greedy_decode_matches_the_oracle_token_for_token  PASSED
 ```
 
-Our from-scratch `reference.py` greedy-decodes 32 tokens **identically to HuggingFace's own
+Our from-scratch `reference.py` greedy-decoded 32 tokens **identically to HuggingFace's own
 Qwen3.5-4B**, on the real checkpoint, on an RTX 5090. `AGENT.md` §4 calls this the
 precondition for every number downstream of it, and it had never run in nine previous
 rentals. It means `head_dim` 256 (not 160), the `1 + weight` RMSNorm convention, the
 sigmoid output gate, partial mRoPE, the fp32 recurrent state and the GatedDeltaNet
-projection layout are all correct.
+projection layout were all corroborated.
+
+**2026-09-10 — the same test failed on rental 27.**
+
+```
+assert ours == theirs
+At index 2 diff: 11540 != 1528
+```
+
+**This claim is therefore no longer settled, and nothing should be built on it until it
+is.** What did *not* change: in the same run the logits oracle passed (`relative < 1e-2`
+against the tensor's own scale) and so did the mRoPE reduction test, so the architecture
+facts above are still corroborated. The disagreement is one argmax at token 2 of 32, with
+logits inside the bf16 bound — the exact failure the test's docstring anticipates, since
+"small drifts change argmax".
+
+The leading suspect is that **`transformers` moved under us**: the install is
+`>=5.16,<6`, a floor rather than a pin, and rental 27 resolved it to 5.17.0 where the
+2026-09-07 run predates that release. The assertion compares our tokens to *theirs*, so a
+change on their side fails it with nothing in this repo changing. **That is a hypothesis,
+not a finding** — one GPU minute settles it. Full account in
+`results/batches/002-compile-cost/README.md`.
 
 **No benchmark ratio exists yet.** Batch 001 has now been attempted on two more rentals and
 is still void: the identity champion has never returned a number, so nothing else it reports
@@ -46,7 +68,11 @@ at 30.71 GiB of 31.36 with the default four columns. A cold `max-autotune` compi
 turns out to cost ~40 minutes rather than the 3-4 the batch cost model assumes, which is now
 the binding constraint on how many hypotheses fit a rental.
 
-Twenty-two rentals have now been billed across the project, $1.514 lifetime, **zero leaked**.
+Twenty-seven rentals have now been billed across the project, $2.314 lifetime, **zero
+leaked**. Five of those were 2026-09-10, which measured no hypothesis and instead found
+five defects between renting a box and running one — including a stall guard that destroyed
+a healthy rental at the moment its container pull succeeded. See
+`results/batches/002-compile-cost/README.md`.
 
 ### The chain of blockers, and where it stands
 
@@ -62,14 +88,21 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 6 | Candidate construction double-allocates the 8.4 GB of weights | fixed, **proven** — every slot on rental 21 built and passed correctness |
 | 7 | Readiness waited on `cur_state` (the rental contract), not `actual_status` (the container) | fixed, proven |
 | 8 | The benchmark OOMs at warmup with the default four columns | fix written, **untested** |
+| 9 | **The stall guard destroyed a healthy rental** the moment its pull finished | fixed, **proven** — three instances have since passed through that state |
+| 10 | A phantom ask traps the deterministic, price-ordered offer search | manual `--exclude-machines` only, **no real fix** |
+| 11 | Host driver older than our torch build → CUDA `Error 804` | fixed, **proven** — `DF_MIN_CUDA` placed rental 27 on a working card |
+| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | fix written, **untested** |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | **unexplained** |
 
 Blocker 7 is worth reading even though it is closed: it had been costing rentals since 11
 while wearing a convincing disguise as flaky hosts, and the "2 in 17 rentals go to hosts
 that never answer sshd" line this file used to carry has been withdrawn.
 
-**The next session starts on blocker 8, and on the compile time behind it.** Both are
-questions about the benchmark rather than about access, which is a different — and better —
-place to be stuck. See `docs/GPU-ACCESS.md` and
+**The next session starts on blocker 13**, because an unvalidated reference makes every
+number downstream of it meaningless, and the cheapest test — pin `transformers==5.16.*`
+and re-run one test — costs about a GPU minute. Then blockers 8 and 12, and the compile
+time behind them. See `docs/GPU-ACCESS.md`,
+`results/batches/002-compile-cost/README.md`, and
 `results/batches/001-calibration/README.md`.
 
 ## Baseline

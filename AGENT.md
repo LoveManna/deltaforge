@@ -152,13 +152,23 @@ front of a batch to "get a result faster" — an uncalibrated result is not a re
 
 ## 5. Money and safety
 
-**Before filling a batch, know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot
-split in §4 and `docs/BATCHES.md` is an *estimate that has never been measured*, and the
-only evidence so far contradicts it: rental 22 spent ~40 minutes in one slot's cold
-`max-autotune` compile and the session gate ended the run. Until that number is known, a
-batch's size is a guess. See `results/batches/001-calibration/README.md`, and run
-`002-compile-cost` — three slots whose product is the clock — before filling another
-full batch.
+**Start by re-validating the reference, before anything else costs money.** On 2026-09-10
+`test_reference_greedy_decode_matches_the_oracle_token_for_token` **failed** — it had
+passed on 2026-09-07. The logits oracle and the mRoPE test still pass, so the architecture
+facts in §8 are still corroborated and the disagreement is a single argmax at token 2. The
+leading suspect is that `transformers` is pinned by a *floor* (`>=5.16,<6`) and resolved to
+5.17.0, moving the oracle rather than the reference. **Untested.** One GPU minute settles
+it, and until it is settled every number downstream is inadmissible. See
+`results/batches/002-compile-cost/README.md`.
+
+**Then know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot split in §4 and
+`docs/BATCHES.md` is an *estimate that has never been measured*, and the only evidence so
+far contradicts it: rental 22 spent ~40 minutes in one slot's cold `max-autotune` compile
+and the session gate ended the run. Until that number is known, a batch's size is a guess.
+`002-compile-cost` — three slots whose product is the clock — is written and has **never
+started**: five rentals on 2026-09-10 all died before the batch loop. See
+`results/batches/001-calibration/README.md` and
+`results/batches/002-compile-cost/README.md`.
 
 **The compile cache now comes home.** Torch's fx-graph and autotune caches are on by
 default but write to `/tmp` on a box that gets destroyed, so every rental this project has
@@ -327,6 +337,28 @@ rebound explicitly or the first forward dies on a meta tensor.
 
 **The general point: adding a hypothesis to a batch adds resident state, not just time.**
 Before widening a batch, check the memory headroom, not only the clock.
+
+### A guard's premise can expire (2026-09-10)
+
+The stall guard destroyed a **healthy** rental at the moment its container pull *succeeded*.
+It watches `status_msg` and treats a frozen message as a stuck pull — sound, but only while
+bytes are still moving. Once the last layer reports `Download complete`, verification and
+extraction emit no updates, so a healthy box necessarily goes quiet in exactly the window
+before it becomes reachable.
+
+Blocker 7 was a guard firing *before* the thing it guarded was ever reached. This is the
+same error inverted: a guard firing *after* that thing had already succeeded. So the
+question to ask of any guard is not only "did the thing it protects get reached?" but
+**"is the signal it reads still meaningful at the moment it fires?"** The loop already
+encoded that reasoning one branch lower — an empty `status_msg` was exempted because
+punishing a quiet host "would destroy healthy instances at 300s for the crime of being
+quiet" — and the settled-pull case is the same argument with a different cause.
+
+**And put toolchain checks in front of the expensive downloads.** Rental 27 spent 88 billed
+minutes — image, torch, a 9.32 GB checkpoint, a full GPU suite — to discover a missing
+`python3-dev` that a one-second probe catches. `g++` was already checked early; the headers
+now are too. Anything that can fail after a gigabyte has been paid for should be tested
+before it.
 
 ## 8. Things that will bite you
 
