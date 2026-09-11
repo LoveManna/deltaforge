@@ -266,7 +266,15 @@ df_teardown() {
             sh "$DF_REPO_ROOT/remote/sync.sh" cache-down \
             --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
             --remote-dir "$DF_REMOTE_CACHE" --cache-key "${DF_CACHE_KEY:-unknown}" 2>&1; then
-            df_log "[teardown] compile cache pulled; the next rental on this card starts warm"
+            # sync.sh exits 0 even when nothing came back, so ask the disk rather than the
+            # exit status: claiming warmth that is not there misreports the one number
+            # this batch exists to measure.
+            if df_cache_is_warm "$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}"; then
+                df_log "[teardown] compile cache pulled; the next rental on this card starts warm"
+            else
+                df_log "[teardown] no compile cache came back; the next rental on this card compiles cold"
+                rmdir "$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}" 2>/dev/null || true
+            fi
         else
             df_warn "[teardown] could not pull the compile cache (exit $?); destroying anyway"
         fi
@@ -597,7 +605,15 @@ remote_capture() {
 }
 
 df_log "preparing the remote environment"
+# g++ AND the Python headers, for the same reason: Triton JIT-compiles a small C shim
+# (`cuda_utils.c`) the first time a kernel runs, and that shim does `#include <Python.h>`.
+# The vastai image ships the headers, the ghcr ai-dock image does not, and the difference
+# is invisible until a kernel actually runs -- rental 26 paid 88 billed minutes to reach a
+# GPU suite where every Triton test died on `fatal error: Python.h: No such file or
+# directory`. Installed here, before the checkpoint download and the suite, so an
+# incomplete toolchain costs a minute rather than a rental.
 remote_sh "command -v g++ >/dev/null 2>&1 || (apt-get update -qq && apt-get install -y -qq g++)"
+remote_sh "python3 -c 'import sysconfig, os, sys; sys.exit(0 if os.path.exists(os.path.join(sysconfig.get_paths()[\"include\"], \"Python.h\")) else 1)' || (apt-get update -qq && apt-get install -y -qq python3-dev)"
 # Guarantee a `python` on PATH before anything tries to use one.
 #
 # Cost one rental (50119910, 9.38 min, $0.0557, 2026-09-07): the ai-dock/vast images ship

@@ -88,6 +88,20 @@ df_pull_settled() {
     return 1
 }
 
+# Did a compile cache actually land in this directory?
+#
+# sync.sh exits 0 on a failed cache pull deliberately: an empty remote cache is not an
+# error, because the first rental on a card has nothing to send. That makes the exit
+# status useless for deciding what to *claim*, and rental 26's teardown printed "compile
+# cache pull failed" and "the next rental on this card starts warm" one line apart.
+#
+# A warm cache changes how long compilation takes, and compile time is the number batch
+# 002 exists to measure -- so a log that overstates warmth corrupts the measurement it is
+# reporting on. Decide from what is on disk instead.
+df_cache_is_warm() {
+    [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
+}
+
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------

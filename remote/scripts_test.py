@@ -1847,3 +1847,53 @@ def test_a_host_whose_driver_predates_our_torch_build_is_never_selected(workdir)
         assert f"selected offer {o['id']}" not in result.stderr, (
             f"offer {o['id']} has CUDA {o['cuda_max_good']}, too old for the cu128 wheels"
         )
+
+
+def test_the_python_headers_are_installed_before_anything_uses_triton():
+    """Triton JIT-compiles a small C shim (`cuda_utils.c`) at import-and-run time and that
+    shim does `#include <Python.h>`. The vastai image ships the headers; the ghcr ai-dock
+    image does not, and rental 26 spent 88 billed minutes reaching a GPU suite where every
+    Triton test died with `fatal error: Python.h: No such file or directory`.
+
+    g++ is already installed for the same reason. The headers belong beside it, and both
+    must land before the GPU suite runs, or the run pays for the checkpoint first and
+    discovers the toolchain is incomplete afterwards."""
+    script = (REMOTE / "run_remote.sh").read_text()
+
+    assert "python3-dev" in script, "the Python headers are never installed"
+    assert script.index("python3-dev") < script.index("-m pytest -m gpu"), (
+        "the headers must be installed before the GPU suite runs"
+    )
+
+
+def test_a_warm_cache_is_claimed_only_when_one_actually_arrived(workdir):
+    """Teardown printed these two lines in succession on rental 26:
+
+        WARNING: compile cache pull failed; the next rental compiles cold
+        [teardown] compile cache pulled; the next rental on this card starts warm
+
+    sync.sh exits 0 on a failed pull on purpose -- an empty remote cache is not an error,
+    the first rental has nothing to send -- so the caller's `if` sees success and claims a
+    warm cache that is not there.
+
+    That claim is not cosmetic. A warm cache changes how long compilation takes, and
+    compile time is the single number batch 002 exists to measure; a session reading this
+    log would attribute a cold compile to a warm one. Decide from what landed, not from an
+    exit status."""
+    empty = workdir / "empty-cache"
+    empty.mkdir()
+    filled = workdir / "filled-cache"
+    filled.mkdir()
+    (filled / "entry.bin").write_text("x")
+
+    assert _shell(f'df_cache_is_warm "{filled}" && echo warm || echo cold') == "warm"
+    assert _shell(f'df_cache_is_warm "{empty}" && echo warm || echo cold') == "cold"
+    assert _shell(f'df_cache_is_warm "{workdir}/absent" && echo warm || echo cold') == "cold"
+
+
+def test_teardown_consults_the_cache_before_claiming_it_is_warm():
+    """The classifier is only worth anything if teardown uses it."""
+    source = (REMOTE / "run_remote.sh").read_text()
+    block = source[source.index("pulling the compile cache") : source.index("[teardown] complete")]
+
+    assert "df_cache_is_warm" in block, "teardown must check what landed before claiming warmth"
