@@ -180,10 +180,22 @@ _df_api_call() {
         # can carry a registry token, and argv is world-readable through `ps`.
         _body_file=$(umask 077; mktemp "${TMPDIR:-/tmp}/df-body.XXXXXX") || df_die "mktemp failed"
         printf '%s' "$_body" > "$_body_file"
-        printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' \
-            "$DF_API_KEY" \
-        | curl --silent --show-error --fail-with-body --max-time 60 \
-               --config - --request "$_method" --data "@$_body_file" "$_df_api_base$_path"
+        # The request runs in its own subshell so the removal can be armed *before* curl
+        # and still fire on every way out: normal return, a `set -e` abort on a failed
+        # request, or a signal. The bare `rm` this replaces sat on the line after curl,
+        # which `set -e` skips -- so a failing create left its registry token in /tmp,
+        # which is how thirty-five of them accumulated there.
+        #
+        # The subshell is load-bearing, not decoration: an EXIT trap set in this function
+        # directly would replace `run_remote.sh`'s `trap 'df_teardown' EXIT` and silently
+        # disarm teardown, turning a leaked temp file into a leaked GPU.
+        (
+            trap 'rm -f "$_body_file"' EXIT HUP INT TERM
+            printf 'header = "Authorization: Bearer %s"\nheader = "Content-Type: application/json"\n' \
+                "$DF_API_KEY" \
+            | curl --silent --show-error --fail-with-body --max-time 60 \
+                   --config - --request "$_method" --data "@$_body_file" "$_df_api_base$_path"
+        )
         _rc=$?
         rm -f "$_body_file"
         return $_rc

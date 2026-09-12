@@ -25,6 +25,7 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -2106,3 +2107,166 @@ def test_teardown_consults_the_cache_before_claiming_it_is_warm():
     block = source[source.index("pulling the compile cache") : source.index("[teardown] complete")]
 
     assert "df_cache_is_warm" in block, "teardown must check what landed before claiming warmth"
+
+
+# =====================================================================================
+# A launch leaves evidence, even when it fails faster than a monitor can attach
+# =====================================================================================
+#
+# Rental 29 (2026-09-11) is the case these cover. It launched, exited 4 three seconds
+# later because no offer met the filters, and reported nothing at all: the monitor was
+# attached with `tail -n 0 -f` six and a half seconds after the process had already
+# ended, so it waited forever on a file that would never grow again. Nothing was billed
+# and nothing was broken remotely -- the run was right and the observation was wrong.
+
+
+def fake_target(workdir, body: str):
+    """A stand-in for run_remote.sh, so the launcher is testable without renting."""
+    script = workdir / "fake_run.sh"
+    script.write_text(f"#!/bin/sh\n{body}\n")
+    script.chmod(0o755)
+    return script
+
+
+def launch(workdir, *args, target=None, expect: int | None = 0):
+    env = dict(os.environ)
+    if target is not None:
+        env["DF_LAUNCH_TARGET"] = str(target)
+    return run("launch.sh", *args, expect=expect, env=env)
+
+
+def wait_for_exit(log, timeout: float = 30.0):
+    """Wait for the launcher's status file -- never for a fixed number of seconds."""
+    status = log.with_name(log.name + ".status")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if status.exists():
+            return status.read_text().strip()
+        time.sleep(0.02)
+    raise AssertionError(f"no status file at {status} after {timeout}s; log:\n{log.read_text()}")
+
+
+def test_a_run_that_ends_before_a_monitor_attaches_still_ends_the_log(workdir):
+    """The rental 29 regression, stated directly.
+
+    The launcher must append a terminal marker to the log whatever happened, so that a
+    reader arriving *after* the run is over still learns that it is over. This is the
+    property `tail -n 0 -f` cannot supply and no amount of care at the call site can
+    add after the fact."""
+    log = workdir / "rental.log"
+    target = fake_target(workdir, "echo '[deltaforge] no offer met the filters'; exit 4")
+
+    launch(workdir, "--log", str(log), target=target)
+    assert wait_for_exit(log) == "4"
+
+    assert "[deltaforge] [launch] run exited 4" in log.read_text()
+
+
+def test_the_terminal_marker_is_visible_to_the_usual_monitor_filter(workdir):
+    """Monitors grep for `^\\[deltaforge\\]`. The ending has to match that, or it is
+    written for nobody."""
+    log = workdir / "rental.log"
+    launch(workdir, "--log", str(log), target=fake_target(workdir, "exit 7"))
+    wait_for_exit(log)
+
+    endings = [ln for ln in log.read_text().splitlines() if re.match(r"^\[deltaforge\]", ln)]
+    assert any("run exited 7" in ln for ln in endings)
+
+
+def test_status_reports_a_run_that_is_still_in_flight(workdir):
+    log = workdir / "rental.log"
+    launch(workdir, "--log", str(log), target=fake_target(workdir, "sleep 30"))
+
+    result = launch(workdir, "--status", "--log", str(log), expect=2)
+    assert "still running" in result.stderr
+
+    pid = int(log.with_name(log.name + ".pid").read_text().strip())
+    os.kill(pid, 9)
+
+
+def test_status_reports_the_exit_code_of_a_finished_run(workdir):
+    """`--status` is the question rental 29 had no way to ask."""
+    log = workdir / "rental.log"
+    launch(workdir, "--log", str(log), target=fake_target(workdir, "exit 4"))
+    wait_for_exit(log)
+
+    result = launch(workdir, "--status", "--log", str(log), expect=1)
+    assert "exit status 4" in result.stderr
+
+
+def test_status_reports_a_launch_that_was_killed_without_recording_anything(workdir):
+    """The other half of the same class: a detached run the harness kills leaves a pid
+    that is gone and no status. Silence must not read as success."""
+    log = workdir / "rental.log"
+    launch(workdir, "--log", str(log), target=fake_target(workdir, "sleep 30"))
+
+    pid = int(log.with_name(log.name + ".pid").read_text().strip())
+    os.kill(pid, 9)
+
+    result = launch(workdir, "--status", "--log", str(log), expect=1)
+    assert "never recorded an exit status" in result.stderr
+
+
+def test_status_refuses_a_log_nothing_was_launched_with(workdir):
+    result = launch(workdir, "--status", "--log", str(workdir / "absent.log"), expect=1)
+    assert "nothing was launched" in result.stderr
+
+
+# =====================================================================================
+# A request body never outlives its request
+# =====================================================================================
+
+
+def api_call_script(body: str) -> str:
+    """Force the failure path: port 9 is discard, so curl fails to connect at once."""
+    return (
+        f'DF_REPO_ROOT="{REPO_ROOT}"; export DF_REPO_ROOT\n'
+        f'. "$DF_REPO_ROOT/remote/lib.sh"\n'
+        f'DF_API_KEY="test-key"\n'
+        f'DF_API_BASE="http://127.0.0.1:9"\n'
+        f"set -e\n"
+        f"df_api POST \"/asks/1/\" '{body}'\n"
+    )
+
+
+def test_a_failed_api_call_leaves_no_request_body_behind(workdir):
+    """A create body carries the registry token in plaintext.
+
+    `df_api` writes it to a 0600 temp file so it never appears in argv, where `ps` would
+    show it -- but the cleanup used to be a bare `rm` after curl, which `set -e` walks
+    straight past when the request fails. Thirty-five of these accumulated in /tmp before
+    anyone looked. A secret that outlives the request it was written for is a leak, and
+    the failure path is exactly when it happens."""
+    tmpdir = workdir / "tmp"
+    tmpdir.mkdir()
+    env = dict(os.environ)
+    env["TMPDIR"] = str(tmpdir)
+
+    subprocess.run(
+        ["sh", "-c", api_call_script('{"image_login":"dckr_pat_SECRET"}')],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=str(REPO_ROOT),
+        env=env,
+    )
+
+    leaked = list(tmpdir.glob("df-body.*"))
+    assert leaked == [], f"request body survived a failed call: {[p.name for p in leaked]}"
+
+
+def test_body_cleanup_is_registered_before_the_request_not_after(workdir):
+    """Guard against the shape that caused the leak.
+
+    The old code removed the body with a bare `rm` on the line after curl. That line is
+    unreachable whenever `set -e` aborts on a failed request -- which is precisely when
+    a create body, registry token and all, is most likely to be sitting in /tmp. The
+    removal has to be armed *before* the request runs, so no exit path can skip it."""
+    source = (REMOTE / "lib.sh").read_text()
+    block = source[source.index("_df_api_call()") : source.index("# Ledger")]
+    # Comments in here discuss both, so read the code alone.
+    code = "\n".join(ln for ln in block.splitlines() if not ln.lstrip().startswith("#"))
+
+    assert "umask 077" in code, "the body file must not be world-readable"
+    assert re.search(r"trap\s+'rm -f \"\$_body_file\"'", code), "removal must be armed by a trap"
+    assert code.index("trap") < code.index("curl"), "arm cleanup before the request, not after"

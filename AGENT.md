@@ -105,10 +105,21 @@ that way without producing a number. `docs/BATCHES.md` has the arithmetic and th
    ```sh
    remote/run_remote.sh --dry-run --session-id smoke --batch NNN-slug
    ```
-7. **Run it.**
+7. **Run it.** In the foreground, if you can sit with it:
    ```sh
    remote/run_remote.sh --session-id "$SESSION" --batch "NNN-slug"
    ```
+   In the background — which is what an agent session actually does — go through the
+   launcher, never a hand-rolled `nohup ... &`:
+   ```sh
+   remote/launch.sh --log "$LOG" --session-id "$SESSION" --batch "NNN-slug"
+   tail -n +1 -F "$LOG"                      # attach a monitor: +1, never -n 0
+   remote/launch.sh --status --log "$LOG"    # 0 finished, 1 failed or killed, 2 running
+   ```
+   `launch.sh` guarantees the log ends with one `[deltaforge] [launch] run exited N`
+   line and that the exit status lands in `$LOG.status`, so a run that ends before
+   anyone is watching still says so. **A launch is not a rental**: `--status` and a
+   non-empty instance list are what say a rental is up. See §8.
 8. **Record the outcome** (§6). Every slot, win, loss or error.
 9. **Update the docs before you finish** (§6.1). The writeup is part of the session, not a
    follow-up to it.
@@ -379,6 +390,36 @@ now are too. Anything that can fail after a gigabyte has been paid for should be
 before it.
 
 ## 8. Things that will bite you
+
+**A launch is not a rental, and silence is not health.** Rental 29 (2026-09-11) was
+announced as "up and monitored" and then reported nothing for a day. It had exited 4
+three seconds after launch — no RTX 5090 or 4090 met the filters, so `provision.sh`
+refused correctly, created nothing and billed nothing. The report never came because the
+monitor was attached with `tail -n 0 -f` *six and a half seconds after the process had
+already ended*: `-n 0` discards the backlog, so it waited forever on a file that would
+never grow again. Nothing was wrong remotely and nothing was wrong in the scripts. The
+observation was wrong, and a correct refusal became a lost day.
+
+Three rules, all enforced by `remote/launch.sh` and its tests in `remote/scripts_test.py`:
+
+- **Launch through `remote/launch.sh`**, so the log always ends with a terminal
+  `[deltaforge] [launch] run exited N` marker and the status lands in a file.
+- **Attach with `tail -n +1 -F`, never `tail -n 0 -f`.** Replaying from line 1 costs
+  nothing and is the whole difference between seeing a fast failure and hanging on one.
+- **Never infer a rental from a launch.** "provisioning..." prints *before* the offer
+  search. Confirm with `--status` and a live instance before saying a rental is up.
+
+An exit-4 no-offer refusal is a market transient, not a fault: the fix is to widen
+`--max-rate` deliberately, or to try again later, not to route around the gate.
+
+**A bare `rm` after a command is not cleanup.** `df_api` writes request bodies to a 0600
+temp file so a registry token never reaches argv, where `ps` would show it — but the
+removal used to sit on the line *after* curl, which `set -e` walks straight past when the
+request fails. Forty of those accumulated in `/tmp`, each holding the Docker token. The
+removal is now armed by a trap *before* the request, inside its own subshell: an EXIT
+trap set in the function directly would replace `run_remote.sh`'s `trap 'df_teardown'
+EXIT` and disarm teardown, turning a leaked temp file into a leaked GPU. Cleanup for
+anything sensitive goes on a trap, armed before the thing that can fail.
 
 **Never modify `reference.py` to accommodate a kernel.** It is the definition of the
 baseline; changing it invalidates every stored result. `reference_purity_test.py` enforces
