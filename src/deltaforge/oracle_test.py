@@ -111,17 +111,140 @@ def test_reference_logits_match_the_oracle(reference, oracle, prompt_ids):
     )
 
 
+#: Steps of greedy decode the oracle gate compares.
+ORACLE_DECODE_STEPS = 32
+
+
+def classify_step(ours_row, theirs_row) -> tuple[str, dict]:
+    """Compare one decode step's logits. Returns ``(verdict, metrics)``.
+
+    ``verdict`` is ``"agree"`` when both models pick the same token, ``"tie"`` when they
+    pick different tokens but neither prefers its own pick by more than the two models'
+    logits disagree by on that row, and ``"disagree"`` otherwise.
+
+    Pure and device-agnostic, so `oracle_criterion_test.py` can exercise every branch on a
+    CPU with no checkpoint. The criterion this encodes was registered 2026-09-12, before
+    the rental that tested it.
+    """
+    ours_row = ours_row.float()
+    theirs_row = theirs_row.float()
+    ours_pick = int(ours_row.argmax().item())
+    theirs_pick = int(theirs_row.argmax().item())
+
+    noise = (ours_row - theirs_row).abs().max().item()
+    scale = theirs_row.abs().max().item()
+    our_margin = (ours_row[ours_pick] - ours_row[theirs_pick]).abs().item()
+    their_margin = (theirs_row[theirs_pick] - theirs_row[ours_pick]).abs().item()
+    metrics = {
+        "ours": ours_pick,
+        "theirs": theirs_pick,
+        "our_margin": our_margin,
+        "their_margin": their_margin,
+        "noise": noise,
+        "one_bf16_ulp": scale / 128 if scale else 0.0,
+    }
+
+    if ours_pick == theirs_pick:
+        return "agree", metrics
+    if our_margin < noise and their_margin < noise:
+        return "tie", metrics
+    return "disagree", metrics
+
+
 def test_reference_greedy_decode_matches_the_oracle_token_for_token(reference, oracle, prompt_ids):
-    """Logit closeness is necessary but not sufficient: small drifts change argmax. This
-    is the property the layer-2 gate depends on."""
-    from .model import greedy_decode
+    """The weight-value gate: our reference must choose the same tokens as HuggingFace.
 
-    ours = greedy_decode(reference, prompt_ids, 32)[0].tolist()
-    theirs = oracle.generate(prompt_ids, max_new_tokens=32, do_sample=False)[
-        0, prompt_ids.shape[1] :
-    ].tolist()
+    **Criterion registered 2026-09-12, before the measurement that tests it.** At each
+    step, both models see the same prefix and pick a token:
 
-    assert ours == theirs
+    * same token -> agree, continue;
+    * different tokens, but *neither model prefers its own pick by more than the two
+      models' logits disagree by anyway* -> a tie-break, not a disagreement. Record it,
+      continue on HuggingFace's token;
+    * different tokens with either margin above that noise -> **fail**. The models
+      genuinely disagree and the reference is reading the weights wrong.
+
+    Why not exact equality. That is what this test used to assert, and it is not a
+    property bf16 can carry. `test_reference_logits_match_the_oracle` measures our logits
+    against HuggingFace's at 1-2 ULP (0.28125 on 2026-09-07) -- an unavoidable consequence
+    of a different implementation, not a defect. Where two candidate tokens sit closer
+    together than that, which one wins is decided by rounding, and *no correct
+    implementation* can be relied upon to win it the same way. An exact-equality gate over
+    32 sequential argmaxes therefore tests luck as much as correctness: it passed on rental
+    50123509 (2026-09-06) and failed identically on rentals 27 and 28 with the model code,
+    the test, the prompt, the checkpoint revision, torch, triton and transformers all
+    unchanged, on two different cards. Commit `5722aaa` found three other fp32-era bounds
+    in this file that no correct bf16 implementation could meet and fixed all three; it
+    left this one alone until the oracle could adjudicate. It has now adjudicated twice,
+    in opposite directions, on an unchanged system.
+
+    What this still catches, and it is the point: a model with the wrong `head_dim`, the
+    wrong norm convention, the wrong gate type or the wrong RoPE section does not produce
+    near-ties. It diverges by orders of magnitude more than one ULP, and every such margin
+    fails here.
+
+    The comparison is teacher-forced -- both models are fed the same prefix at every step
+    -- because free-running generation conflates one tie-break into total divergence and
+    makes every token after the first incomparable. The incremental-decode path the
+    benchmark actually uses is pinned to a full forward by
+    `test_incremental_decode_matches_a_full_forward_on_real_weights`, so this gate reaches
+    it transitively.
+    """
+    import json
+
+    device = prompt_ids.device
+    prefix = prompt_ids
+    agreed: list[int] = []
+    ties: list[dict] = []
+
+    for step in range(ORACLE_DECODE_STEPS):
+        with torch.no_grad():
+            ours_logits, _ = reference(prefix)
+            theirs_logits = oracle(prefix).logits
+        ours_row = ours_logits[0, -1].float()
+        theirs_row = theirs_logits[0, -1].float()
+
+        verdict, metrics = classify_step(ours_row, theirs_row)
+        theirs_pick = metrics["theirs"]
+
+        assert verdict != "disagree", (
+            f"step {step}: the reference and HuggingFace genuinely disagree.\n"
+            f"  ours picked {metrics['ours']}, theirs picked {metrics['theirs']}\n"
+            f"  our margin between them:    {metrics['our_margin']:.6f}\n"
+            f"  their margin between them:  {metrics['their_margin']:.6f}\n"
+            f"  the two models' own logit disagreement on this row: {metrics['noise']:.6f}\n"
+            f"  one bf16 ULP at this scale is {metrics['one_bf16_ulp']:.6f}\n"
+            "A margin above the noise floor is not a rounding tie. Suspect the weight "
+            "interpretation: head_dim, the 1+weight norm convention, the q/gate split "
+            "in q_proj, the qkv split order in Gated DeltaNet, or the gating order in "
+            "the gated RMSNorm."
+        )
+        if verdict == "tie":
+            ties.append({"step": step, **metrics})
+
+        # Continue on HuggingFace's token: it is the oracle, and following our own would
+        # measure our trajectory rather than our agreement with it.
+        agreed.append(theirs_pick)
+        prefix = torch.cat([prefix, torch.tensor([[theirs_pick]], device=device)], dim=1)
+
+    # The record, written whether or not there were ties, because "32 steps, no tie-breaks
+    # needed" is itself the result worth having next time this is questioned.
+    try:
+        out_dir = Path(__file__).resolve().parents[2] / "results" / "diagnostics"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "oracle-gate.json").write_text(
+            json.dumps(
+                {
+                    "steps": ORACLE_DECODE_STEPS,
+                    "tokens": agreed,
+                    "tie_breaks": ties,
+                    "tie_break_count": len(ties),
+                },
+                indent=2,
+            )
+        )
+    except OSError:
+        pass
 
 
 def test_report_the_first_greedy_divergence(reference, oracle, prompt_ids):
