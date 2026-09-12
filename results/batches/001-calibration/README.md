@@ -77,7 +77,98 @@ carried between rentals, `torch.compiler` caching to disk) or re-cut the batch s
 what a compile actually costs. Either is a better use of the next rental than nine more
 slots that will not run.
 
-## What stands between this batch and a number — 2026-09-11
+## Rental 28, 2026-09-12 — the transformers hypothesis is dead
+
+**No slot ran. The batch loop was not reached.** The GPU suite refused it, which is what
+the suite is for. Session `batch001-20260912T021420Z`: instance 50682531, RTX 4090, machine
+5629, $0.4030/hr, **7.12 billed minutes, $0.0478**, destroyed cleanly, nothing leaked.
+
+**Two things worked for the first time.**
+
+*The authenticated Docker Hub pull.* Credentials went into `.env` and the create request
+carried `image_login`. The default `vastai/base-image` pulled and sshd answered in about a
+minute. Eight rentals never got one layer to "Pull complete" anonymously and rental 23 hit
+the same wall on 2026-09-10, so blocker 1 is now fixed *and proven*, not fixed and hoped.
+
+*The offer walk.* No RTX 5090 met the filters, the search fell through to the 4090, found
+one candidate, and created on the first try. Blocker 10's fix was exercised on a real
+market; it was not stressed, because nothing refused.
+
+**And the thing that was supposed to work did not.** With `transformers==5.16.1` installed
+and verified in the log (`accelerate 1.15.0 transformers 5.16.1`):
+
+```
+FAILED src/deltaforge/oracle_test.py::test_reference_greedy_decode_matches_the_oracle_token_for_token
+At index 2 diff: 11540 != 1528
+```
+
+**The same index. The same two token ids. As rental 27.** Rental 27 was an RTX 5090 running
+transformers 5.17.0; rental 28 was an RTX 4090 running 5.16.1. Neither the card nor the
+library version moved the result by a single token.
+
+### The hypothesis is refuted, and refuted cleanly
+
+The floor `>=5.16,<6` resolved to **5.16.1 on 2026-09-07 as well** — 5.17.0 did not exist
+until 2026-09-09. So the rental that passed and the rental that failed ran *the same
+transformers*. The release-date argument that made 5.17.0 look guilty was real but
+irrelevant: it established that the input *could* have moved, not that it *did* move on the
+day that mattered. Pinning was still correct — an unpinned oracle is a defect whatever the
+outcome — but it was not the cause, and blocker 13 is not fixed.
+
+### What is left, after everything checkable was checked
+
+| input | 2026-09-06 (passed) | 2026-09-12 (failed) |
+|---|---|---|
+| `reference.py`, `model.py`, `config.py`, `weights.py` | unchanged since 2026-09-06 | identical |
+| `oracle_test.py` and its prompt | unchanged since 2026-09-06 | identical |
+| `transformers` | 5.16.1 | 5.16.1 |
+| checkpoint `Qwen/Qwen3.5-4B` | last modified 2026-03-02 | identical |
+| torch / triton / python | 2.11.0+cu128 / 3.6.0 / 3.12.3 | identical |
+| GPU | RTX 5090 | RTX 4090 (and rental 27's 5090 diverged identically) |
+
+Every input anyone has named is constant. That reframes the question: not *what moved*, but
+**whether exact token equality was ever the right gate.**
+
+### The reading that now fits the evidence
+
+The test is an exact-equality check over 32 sequential argmaxes in bf16. The prompt is
+"The chunked delta-rule recurrence is a sequential scan with matrix-valued state." Both
+models emit `\nThe`; ours then continues by echoing the prompt (`chunked`), HuggingFace by
+picking `state` — token 14 of the same prompt. **Both are ordinary continuations**, and
+they are exactly the kind of pair a sub-ULP difference reorders.
+
+Note what commit `5722aaa` did on 2026-09-06. It found three fp32-era bounds in this very
+file that no correct bf16 implementation could meet, fixed all three to score relative to
+the logit scale, and left *this* test alone — deliberately, "until the oracle could
+adjudicate". The oracle adjudicated once, in its favour, and has now contradicted itself
+twice without a single input changing. A gate that flips on an unchanged system is
+measuring something other than what it claims to.
+
+**That is a reading, not a result, and it must not be promoted without the number.** A
+correct reference and a fragile gate look identical from here; so does a real bug in the
+reference that the logits test is too coarse to see.
+
+### The number that decides it, and what it costs
+
+`test_report_the_first_greedy_divergence` is now in `oracle_test.py`. It asserts nothing,
+fails nothing, and changes no gate. It replays both models to the diverging step and writes
+to `results/diagnostics/oracle-divergence.json` — which teardown pulls home before
+destroying the instance, as it did on this rental:
+
+* how decisively each model preferred its own token, in logits;
+* each model's own top-2 gap at that step;
+* the largest disagreement between the two models' logits anywhere in that row, and one
+  bf16 ULP at that scale.
+
+If the gap that separates `11540` from `1528` is smaller than the disagreement the two
+models show anyway — measured at 1-2 ULP (0.28125) on 2026-09-07 — they are splitting a
+tie and the gate is wrong. If it is much larger, the reference has a real bug and this
+gate has been right all along and rental 50123509 was the fluke.
+
+Rental 28 cost $0.0478 to reach the GPU suite. **The number costs about the same**, because
+the suite runs before the batch regardless and this test runs inside it.
+
+## What stood between this batch and a number — 2026-09-11
 
 No rental happened on this date; this is a bench session that cleared what it could clear
 without one. Four things were in the way, and two of them are now gone.
@@ -96,6 +187,11 @@ let the oracle move between rentals; it is now pinned to 5.16.1, the version tha
 2026-09-07. The GPU suite gate refuses to run a batch on an unvalidated reference, so until
 that test passes on a card, batch 001 cannot legally produce a number. **This is the one
 remaining hard blocker, and it is settled by the first rental that runs.**
+
+> **Rental 28 settled it, against the pin.** The floor had already resolved to 5.16.1 on
+> 2026-09-07, so the pin changed nothing about that day's stack and the test failed
+> identically. See the section above; this paragraph is kept as written because the
+> prediction it made is what the rental tested.
 
 **Untouched: the arithmetic.** A cold cache still needs ~131 minutes to reach the end of
 the *second* slot — 1500s setup, 2400s reference compile, two slots at 1980s — against a

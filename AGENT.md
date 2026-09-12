@@ -158,16 +158,26 @@ passed on 2026-09-07. The logits oracle and the mRoPE test still pass, so the ar
 facts in §8 are still corroborated and the disagreement is a single argmax at token 2.
 
 The suspect was that `transformers` was installed from a *floor* (`>=5.16,<6`) rather than
-a pin, so the oracle could move on its own. PyPI release dates confirm it moved: the floor
-resolved to 5.16.1 on 2026-09-07 and to 5.17.0 on 2026-09-10, and 5.17.0 was released
-2026-09-09, between the two runs. **The install is now `transformers==5.16.1`**, the
-version that passed.
+a pin, so the oracle could move on its own. It is now `transformers==5.16.1`, which is
+correct regardless — an unpinned oracle is a defect, because the oracle *is* HuggingFace and
+its version is an input to the experiment rather than a dependency of it.
 
-**That is a restored precondition, not a proven fix.** The next rental's oracle result is
-the experiment: pass means blocker 13 was a moving oracle, and a failure still at index 2
-means the cause is in this repo. Until that test passes on a GPU, every number downstream
-is inadmissible. See `docs/GPU-ACCESS.md` (blocker 13) and
-`results/batches/002-compile-cost/README.md`.
+**But it was not the cause, and rental 28 proved that.** 5.17.0 was released 2026-09-09, so
+the floor already resolved to 5.16.1 on 2026-09-07, the day the test passed. Rental 28
+installed 5.16.1 explicitly and failed *byte-identically* to rental 27 — same index, same
+two token ids — on different hardware. Model code, test, prompt, checkpoint revision, torch,
+triton and python are all unchanged between the passing and failing runs.
+
+**So the live question is whether the gate itself can hold**: exact equality over 32
+sequential bf16 argmaxes, where commit `5722aaa` already found and fixed three other bounds
+in the same file that no correct bf16 implementation could meet. The deciding number is the
+top-two logit gap at the diverging step against the 1-2 ULP the two models disagree by
+anyway; `test_report_the_first_greedy_divergence` measures it and writes
+`results/diagnostics/oracle-divergence.json` without asserting anything.
+
+Until that number exists, **do not promote either reading**, and every number downstream of
+the reference remains inadmissible. See `docs/GPU-ACCESS.md` (blocker 13) and
+`results/batches/001-calibration/README.md`.
 
 **Then know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot split in §4 and
 `docs/BATCHES.md` is an *estimate that has never been measured*, and the only evidence so

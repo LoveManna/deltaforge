@@ -17,10 +17,10 @@
 first session to get a working GPU records the baseline; until then this table stays empty.
 
 **The reference's reading of the weight *values* is no longer settled** — it matched
-HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10; see below. That was
-the outstanding precondition, so it is now the outstanding *question*. Since 2026-09-11 the
-oracle's own version is pinned rather than floored, which makes the question answerable by
-the next rental instead of drifting further. Also still missing
+HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10 and again on
+2026-09-12; see below. That was the outstanding precondition, so it is now the outstanding
+*question*. The oracle's version is pinned rather than floored since 2026-09-11, which was
+right on its own terms and ruled itself out as the cause on the next rental. Also still missing
 is a *calibrated harness*: an identity champion that measures 1.00 ± noise. Until both
 exist there is no baseline, and `AGENT.md` §4 still governs what to do about it.
 
@@ -94,20 +94,23 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 10 | A phantom ask traps the deterministic, price-ordered offer search | manual `--exclude-machines` only, **no real fix** |
 | 11 | Host driver older than our torch build → CUDA `Error 804` | fixed, **proven** — `DF_MIN_CUDA` placed rental 27 on a working card |
 | 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | fix written, **untested** |
-| 13 | The oracle's greedy decode no longer matches HuggingFace | `transformers` pinned to 5.16.1; **unproven** |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | **open** — the `transformers` explanation was refuted on rental 28 |
 
 Blocker 7 is worth reading even though it is closed: it had been costing rentals since 11
 while wearing a convincing disguise as flaky hosts, and the "2 in 17 rentals go to hosts
 that never answer sshd" line this file used to carry has been withdrawn.
 
 **The next session still starts on blocker 13**, because an unvalidated reference makes
-every number downstream of it meaningless — but it no longer starts by *guessing*. The
-install was a floor (`>=5.16,<6`) and PyPI release dates show it resolved to 5.16.1 on the
-day the test passed and to 5.17.0 on the day it failed, with 5.17.0 released in between. It
-is now pinned to `transformers==5.16.1` (2026-09-11), so the first rental's GPU suite is the
-experiment: passing says blocker 13 was a moving oracle, and failing at index 2 again says
-the cause is ours. Either way it costs no extra GPU time, because that suite runs before the
-batch regardless.
+every number downstream of it meaningless. The `transformers` explanation is dead: 5.17.0
+was released 2026-09-09, so the floor already resolved to 5.16.1 on the day the test
+*passed*, and rental 28 pinned 5.16.1 and failed byte-identically to rental 27 on different
+hardware. Every other input — model code, test, prompt, checkpoint revision, torch, triton,
+python — is unchanged between the two.
+
+What is left is the gate itself: exact equality over 32 sequential bf16 argmaxes.
+`test_report_the_first_greedy_divergence` measures the top-two logit gap at the diverging
+step and writes it to `results/diagnostics/`, asserting nothing. It runs inside the suite
+that already runs before every batch, so the number costs no extra GPU time.
 
 Then blockers 8 and 12, and the compile time behind them. See `docs/GPU-ACCESS.md`,
 `results/batches/002-compile-cost/README.md`, and

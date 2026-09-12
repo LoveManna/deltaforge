@@ -1,12 +1,12 @@
 # GPU access: a chain of blockers, each hiding behind the last
 
-Twenty-seven rentals have been billed on this project. **None has yet produced a benchmark
+Twenty-eight rentals have been billed on this project. **None has yet produced a benchmark
 number**, and each one that got further than its predecessor did so by exposing the next
 problem in the chain:
 
 | | Blocker | Found by | Fixed by | Proven? |
 |---|---|---|---|---|
-| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials (**now configured**, see below), or a non-Docker-Hub image | yes |
+| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials — **configured, and proven on rental 28** | yes |
 | 2 | The image refuses the account's ssh key | rental 9 | injecting the key via `PUBLIC_KEY` **and** `onstart` | yes |
 | 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` | yes |
 | 4 | `accelerate` absent, so the HF oracle cannot be constructed | rental 13 | installing it, and verifying the import out loud | yes |
@@ -15,10 +15,10 @@ problem in the chain:
 | 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
 | 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
 | 9 | **The stall guard destroys instances whose pull has just finished** | rental 24 | `df_pull_settled`: a settled pull is bounded by the readiness timeout, not the stall budget | yes |
-| 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | the create step walks the N cheapest candidates instead of dying on `.[0]` | tests, not a GPU |
+| 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | the create step walks the N cheapest candidates instead of dying on `.[0]` | tests; exercised on rental 28, not stressed |
 | 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | yes |
 | 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | **no** |
-| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | `transformers` pinned to 5.16.1, the version it was validated against | **no** |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | **unfixed** — the `transformers` explanation was refuted by rental 28 | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-7, 9 and 11 are fixed and proven on a GPU. **Blocker 8's fix is still untested**
@@ -34,22 +34,44 @@ API: one refuses the two cheapest asks and asserts the third is created and is t
 the ledger names; the other refuses everything and asserts exit 4, an explanation, and no
 ledger row. Neither needs a GPU, so "proven" here means proven in CI.
 
-**Blocker 13 now has a named suspect and a pin, but is still unproven.** `transformers` was
-installed as `>=5.16,<6` — a floor, not a pin. The oracle *is* HuggingFace, so its version
-is an input to the experiment rather than a dependency of it, and the floor let that input
-move between rentals with nothing in this repo changing. It did move:
+**Blocker 13's leading explanation was tested on rental 28 and refuted.**
 
-| version | released | resolved on | oracle |
-|---|---|---|---|
-| 5.16.1 | 2026-08-26 | 2026-09-07 | **passed** |
-| 5.17.0 | **2026-09-09** | 2026-09-10 | **failed**, one argmax at token 2 |
+`transformers` was installed as `>=5.16,<6` — a floor, not a pin — and the oracle *is*
+HuggingFace, so its version is an input to the experiment rather than a dependency of it.
+That is a real defect and it is now pinned. It was not the cause.
 
-5.17.0 landed between the two runs. That is motive and opportunity, not a conviction: it
-explains how the input changed without explaining that the change is *why* the argmax
-moved. The install is now `transformers==5.16.1`, which restores the exact stack that
-passed, and the next rental's oracle result is the test. If it passes, blocker 13 was a
-moving oracle. If it still fails at index 2, the cause is in this repo and the pin has
-narrowed rather than solved it.
+The arithmetic that looked damning does not survive contact with the dates. 5.17.0 was
+released **2026-09-09**, so the floor resolved to **5.16.1 on 2026-09-07** — the day the
+test passed — and to 5.17.0 only on 2026-09-10. Rental 28 installed 5.16.1 explicitly,
+verified it in the log, and got:
+
+```
+At index 2 diff: 11540 != 1528
+```
+
+**Byte-identical to rental 27**, which ran 5.17.0 on different hardware. Neither the
+library version nor the card moves the result by one token.
+
+What is left after that is a short list, and everything on it is constant:
+
+| input | 2026-09-06 (passed) | 2026-09-12 (failed) |
+|---|---|---|
+| `reference.py`, `model.py`, `config.py`, `weights.py` | unchanged since 2026-09-06 | identical |
+| `oracle_test.py` and its prompt | unchanged since 2026-09-06 | identical |
+| `transformers` | 5.16.1 | 5.16.1 |
+| checkpoint `Qwen/Qwen3.5-4B` | last modified 2026-03-02 | identical |
+| torch / triton / python | 2.11.0+cu128 / 3.6.0 / 3.12.3 | identical |
+| GPU | RTX 5090 | RTX 4090 (rental 27's 5090 diverged identically) |
+
+So the question is no longer what moved. It is **whether exact token equality over 32
+sequential bf16 argmaxes was ever a gate that could hold** — the same question commit
+`5722aaa` answered "no" for three other bounds in this same file on 2026-09-06, while
+deliberately leaving this one alone until the oracle could adjudicate.
+
+`test_report_the_first_greedy_divergence` now measures the deciding number and writes it to
+`results/diagnostics/oracle-divergence.json`, which teardown pulls home. It asserts nothing
+and changes no gate. See `results/batches/001-calibration/README.md` for what the number
+means either way. **Do not promote a reading before it arrives.**
 
 **Blocker 9 is the one to internalise, because it was self-inflicted.** The guard fired on
 a healthy box at the exact moment its pull *succeeded*. See
@@ -364,14 +386,25 @@ project have not been the loud ones.
 | 25 | 2026-09-10 | host reported `GPU error, unable to start instance` | 11.78 min | $0.0687 |
 | 26 | 2026-09-10 | **past sshd and torch**, CUDA `Error 804` — blocker 11 | 6.08 min | $0.0353 |
 | 27 | 2026-09-10 | **GPU suite ran** — 11 fail on `Python.h`, oracle diverges | 88.55 min | $0.6242 |
+| 28 | 2026-09-12 | **authenticated pull worked**; oracle diverges *identically* on a 4090 with the pin | 7.12 min | $0.0478 |
 
-Twenty-seven rentals, $2.314, **zero leaked instances** — every one destroyed cleanly by the
-trap, including two cancelled mid-flight with SIGTERM.
+Twenty-eight rentals, $2.361, **zero leaked instances** — every one destroyed cleanly by
+the trap, including two cancelled mid-flight with SIGTERM.
+
+**Rental 28 is the cheapest informative rental yet**, and worth reading against rental 27.
+Both reached the GPU suite and died at the same assertion; 27 cost $0.6242 and 28 cost
+$0.0478. The difference is not luck — 27 paid the full readiness timeout and a cold
+checkpoint fetch behind a blocker that had not been diagnosed, while 28 pulled an
+authenticated image in about a minute and failed fast on a question it had been sent to
+ask. A rental that knows what it is testing is an order of magnitude cheaper than one that
+is finding out.
 
 Three further attempts on 2026-09-10 were refused by the API before an instance existed
 (`no_such_ask`) and cost nothing. They are not rentals and are not counted here, but they
-are blocker 10: the price-ordered search is deterministic, so it re-selected the same dead
-ask every time until the machine was excluded by hand.
+were blocker 10: the price-ordered search was deterministic, so it re-selected the same
+dead ask every time until the machine was excluded by hand. Since 2026-09-11 the create
+step walks the next candidate instead; rental 28 created on its first candidate, so the
+walk has been exercised but never yet stressed by a refusal on a live market.
 
 **Rental 27 is the most expensive single rental this project has run**, and worth reading
 as a cost lesson rather than a failure: 88 billed minutes bought the image, torch, a 9.32 GB

@@ -124,6 +124,93 @@ def test_reference_greedy_decode_matches_the_oracle_token_for_token(reference, o
     assert ours == theirs
 
 
+def test_report_the_first_greedy_divergence(reference, oracle, prompt_ids):
+    """Diagnostic. **Never fails, asserts nothing, changes no gate.**
+
+    The test above is an exact-equality check over 32 sequential argmaxes in bf16. It
+    passed on rental 50123509 (2026-09-06) and has failed identically on rentals 27 and 28
+    -- same index, same two token ids, on an RTX 5090 and an RTX 4090, against transformers
+    5.17.0 and 5.16.1, with `reference.py`, `model.py`, the prompt and the checkpoint
+    revision all unchanged between the runs. Every input anyone has been able to name is
+    constant, so the question is no longer *what moved* but *whether the equality was ever
+    the right gate*.
+
+    That question has one number behind it: at the first step where the two disagree, how
+    far apart are the two candidate tokens' logits, compared with how far apart our logits
+    and HuggingFace's are anyway? `test_reference_logits_match_the_oracle` measures the
+    second quantity at 1-2 ULP (0.28125 on 2026-09-07). If the top-two gap at the diverging
+    step is smaller than that, the two models are not disagreeing about the answer -- they
+    are splitting a tie, and no correct bf16 implementation could be relied on to split it
+    the same way. If the gap is much larger, the reference has a real bug and this file's
+    exact-equality gate has been right all along.
+
+    This writes the numbers to `results/diagnostics/` rather than asserting, because
+    teardown pulls that directory home before destroying the instance. One cheap rental
+    buys the number; nothing here decides what to do with it.
+    """
+    import json
+    import traceback
+
+    out_dir = Path(__file__).resolve().parents[2] / "results" / "diagnostics"
+    report: dict = {"status": "unknown"}
+    try:
+        from .model import greedy_decode
+
+        with torch.no_grad():
+            ours = greedy_decode(reference, prompt_ids, 32)[0].tolist()
+            theirs = oracle.generate(prompt_ids, max_new_tokens=32, do_sample=False)[
+                0, prompt_ids.shape[1] :
+            ].tolist()
+
+        first = next((i for i, (a, b) in enumerate(zip(ours, theirs)) if a != b), None)
+        report = {
+            "status": "agree" if first is None else "diverge",
+            "prompt_ids": prompt_ids[0].tolist(),
+            "ours": ours,
+            "theirs": theirs,
+            "first_divergence_index": first,
+        }
+
+        if first is not None:
+            # Replay both models up to the diverging step and read the logits that chose
+            # the token, rather than inferring them. The prefix is identical by definition
+            # of `first`, so feeding our own prefix to both is not begging the question.
+            prefix = torch.tensor([prompt_ids[0].tolist() + ours[:first]], device=prompt_ids.device)
+            with torch.no_grad():
+                ours_logits, _ = reference(prefix)
+                theirs_logits = oracle(prefix).logits
+            ours_row = ours_logits[0, -1].float()
+            theirs_row = theirs_logits[0, -1].float()
+
+            a, b = ours[first], theirs[first]
+            our_top2 = torch.topk(ours_row, 2)
+            their_top2 = torch.topk(theirs_row, 2)
+            scale = theirs_row.abs().max().item()
+            report.update(
+                {
+                    "candidate_ours": a,
+                    "candidate_theirs": b,
+                    # How decisively each model preferred its own pick.
+                    "our_gap_between_the_two_candidates": (ours_row[a] - ours_row[b]).item(),
+                    "their_gap_between_the_two_candidates": (theirs_row[b] - theirs_row[a]).item(),
+                    "our_top2_gap": (our_top2.values[0] - our_top2.values[1]).item(),
+                    "their_top2_gap": (their_top2.values[0] - their_top2.values[1]).item(),
+                    # The yardstick: disagreement between the two models everywhere else.
+                    "max_abs_logit_difference": (ours_row - theirs_row).abs().max().item(),
+                    "logit_scale": scale,
+                    "one_bf16_ulp_at_this_scale": scale / 128.0,
+                }
+            )
+    except Exception:  # noqa: BLE001 - a diagnostic must never fail the suite
+        report = {"status": "error", "traceback": traceback.format_exc()}
+
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "oracle-divergence.json").write_text(json.dumps(report, indent=2))
+    except OSError:
+        pass
+
+
 def test_mrope_reduction_holds_against_the_oracle(reference, oracle, prompt_ids):
     """`reference_test.py` proves our own mRoPE collapses to standard RoPE for text-only
     input. This proves HuggingFace agrees — that it really does expand one row of text

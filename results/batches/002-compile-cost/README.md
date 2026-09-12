@@ -43,6 +43,12 @@ architecture disappearing mid-run, not to hold behaviour fixed. Rental 27 resolv
 compares our tokens against *HuggingFace's*, a change on their side moves `theirs` and
 fails the test without anything in this repo changing.
 
+> **Refuted on rental 28 (2026-09-12).** "The run that passed predates that release" is
+> true and was the trap: it means the floor resolved to 5.16.1 *on that day too*, so
+> pinning 5.16.1 reproduces the passing day's stack exactly — and the test still failed,
+> identically, on different hardware. The suspect had an alibi the whole time and nobody
+> checked the release date against the passing run, only against the failing one.
+
 **This is a hypothesis and it has not been tested.** Ruling it in or out costs one GPU
 minute — pin `transformers==5.16.*`, re-run the one test — and until someone does, the
 honest statement is that the reference is validated **against transformers 5.16 on
@@ -108,11 +114,12 @@ identical message and reached sshd.
 
 ## What is still open
 
-1. **The oracle divergence** above. Still open, but no longer unexplained: PyPI release
-   dates show the floor resolved to 5.16.1 on 2026-09-07 and to 5.17.0 on 2026-09-10, with
-   5.17.0 released 2026-09-09 — between the two runs. The install is now pinned to
-   `transformers==5.16.1` (2026-09-11). That restores the validated stack; it does not
-   prove the pin is the cure, and the next rental's oracle result is what does.
+1. **The oracle divergence** above. Still open, and the explanation this file proposed is
+   **wrong**. 5.17.0 was released 2026-09-09, so the floor already resolved to 5.16.1 on
+   2026-09-07 — the day the test passed. Rental 28 (2026-09-12) pinned 5.16.1, verified it
+   in the log, and failed byte-identically to rental 27 on different hardware. The pin was
+   still the right change; it was not the cause. See
+   `results/batches/001-calibration/README.md` for where the question goes next.
 2. ~~**Blocker 10 — a phantom ask traps the offer search.**~~ **Fixed 2026-09-11.**
    `select_offers` emits the `DF_OFFER_CANDIDATES` cheapest offers and the create step
    walks them, treating a refusal as "try the next". `try_create_instance` returns a status
