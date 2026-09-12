@@ -21,7 +21,12 @@ dependencies = [
 # to avoid resolving a second, conflicting torch.
 gpu = [
     "triton>=3.0",
-    "transformers>=4.57",
+    # Held at the exact version the reference was validated against, and for the same
+    # reason `remote/run_remote.sh` pins it: the oracle IS HuggingFace, so its version is
+    # an input to the experiment rather than a dependency of it. A floor here said
+    # `>=4.57` while the rented box installed `>=5.16` -- two different numbers for one
+    # decision. Change both together or neither.
+    "transformers==5.16.1",
     "tokenizers>=0.20",
 ]
 dev = [

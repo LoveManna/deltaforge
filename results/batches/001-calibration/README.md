@@ -77,6 +77,46 @@ carried between rentals, `torch.compiler` caching to disk) or re-cut the batch s
 what a compile actually costs. Either is a better use of the next rental than nine more
 slots that will not run.
 
+## What stands between this batch and a number — 2026-09-11
+
+No rental happened on this date; this is a bench session that cleared what it could clear
+without one. Four things were in the way, and two of them are now gone.
+
+**Cleared: the pull.** Docker Hub credentials are in `.env`, so the create request carries
+`image_login` and the default `vastai/*` image is pulled authenticated. Blocker 1 recurred
+as recently as rental 23, on the default image, so this was live and not historical.
+
+**Cleared: the trap in the offer search.** Blocker 10 had no fix, only `--exclude-machines`
+applied by a human who knew to reach for it. The search now emits the five cheapest offers
+and the create step walks them, so a listed-but-unrentable ask costs one warning instead of
+a run. Proven by tests against a stub API, not by a GPU.
+
+**Restored, not proven: the reference.** `transformers` was installed from a floor, which
+let the oracle move between rentals; it is now pinned to 5.16.1, the version that passed on
+2026-09-07. The GPU suite gate refuses to run a batch on an unvalidated reference, so until
+that test passes on a card, batch 001 cannot legally produce a number. **This is the one
+remaining hard blocker, and it is settled by the first rental that runs.**
+
+**Untouched: the arithmetic.** A cold cache still needs ~131 minutes to reach the end of
+the *second* slot — 1500s setup, 2400s reference compile, two slots at 1980s — against a
+180-minute gate. Batch 001 has nine slots. **It will not finish in one rental and should
+not be expected to.**
+
+That is not a reason to re-cut it. The batch stops itself before a slot it cannot finish,
+records each slot as it completes, and the compile cache now comes home, so the honest
+shape of this batch is:
+
+* **Rental A (cold).** Oracle result settles blocker 13. Slot 0 calibrates. Slot 1 is the
+  first measured hypothesis this project has ever produced. The batch stops itself, and
+  `phases.env` comes home carrying the first *measured* compile cost — which replaces the
+  pessimistic cold estimates in `batch.COLD_PHASE_ESTIMATES` for every rental after it.
+* **Rental B (warm, same card).** The pre-flight gate now reasons from measured numbers
+  instead of guesses, and the batch resumes into the slots A could not reach.
+
+Two rentals to finish batch 001 is the plan, not a failure of one. The alternative —
+shrinking the batch to fit a cold cache — throws away the only thing that makes the
+remaining slots cheap.
+
 ## Cost
 
 Five rentals, 91.39 billed minutes, $0.567 — session `batch001-20260908T211825Z`, which

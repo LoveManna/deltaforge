@@ -643,9 +643,23 @@ remote_sh "python -m pip install --quiet torch --index-url https://download.pyto
 # 10.70 min and a full checkpoint download to reach an error that says "pip install
 # accelerate".
 #
-# `transformers` is pinned because the oracle runs through it, and an unpinned version that
-# drops the Qwen3.5 architecture would kill a run after every gigabyte had been paid for.
-remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers>=5.16,<6' tokenizers pytest huggingface_hub hf_transfer accelerate"
+# `transformers` is pinned EXACTLY, and the exactness is the point.
+#
+# It used to be `>=5.16,<6`, a floor chosen to stop the Qwen3.5 architecture disappearing
+# mid-run. A floor cannot do that job, because the oracle is HuggingFace: the assertion
+# compares our tokens to *theirs*, so their version is an input to the experiment and a
+# floor lets that input move between rentals without anything in this repo changing.
+#
+# It did move. `test_reference_greedy_decode_matches_the_oracle_token_for_token` passed on
+# 2026-09-07 and failed on 2026-09-10 at a single argmax (`index 2: 11540 != 1528`), with
+# the logits oracle and the mRoPE test still passing. The floor resolved to 5.16.1 on the
+# first date and to 5.17.0 on the second -- 5.17.0 was released 2026-09-09, between the two
+# runs. Pinning to the version that was actually validated is what makes the reference a
+# fixed thing to measure against.
+#
+# Raising this pin is a deliberate act that re-opens the validation question: bump it, and
+# the next rental's oracle result is what says whether the reference still holds.
+remote_sh "python -m pip install --quiet --no-deps -e . && python -m pip install --quiet safetensors 'transformers==5.16.1' tokenizers pytest huggingface_hub hf_transfer accelerate"
 remote_sh "python -c 'import accelerate, transformers; print(\"accelerate\", accelerate.__version__, \"transformers\", transformers.__version__)'"
 remote_sh "python -c \"import torch, triton; print('torch', torch.__version__, 'triton', triton.__version__, 'cuda', torch.version.cuda, torch.cuda.get_device_name(0))\""
 

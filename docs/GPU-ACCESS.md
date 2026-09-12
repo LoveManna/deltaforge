@@ -6,7 +6,7 @@ problem in the chain:
 
 | | Blocker | Found by | Fixed by | Proven? |
 |---|---|---|---|---|
-| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials, or a non-Docker-Hub image | yes |
+| 1 | Anonymous Docker Hub pulls stall from vast egress ranges | rentals 1-8 | registry credentials (**now configured**, see below), or a non-Docker-Hub image | yes |
 | 2 | The image refuses the account's ssh key | rental 9 | injecting the key via `PUBLIC_KEY` **and** `onstart` | yes |
 | 3 | The image has `python3` but no `python` | rental 10 | establishing the interpreter first, and `python -m pip` | yes |
 | 4 | `accelerate` absent, so the HF oracle cannot be constructed | rental 13 | installing it, and verifying the import out loud | yes |
@@ -15,17 +15,41 @@ problem in the chain:
 | 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
 | 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
 | 9 | **The stall guard destroys instances whose pull has just finished** | rental 24 | `df_pull_settled`: a settled pull is bounded by the readiness timeout, not the stall budget | yes |
-| 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | `--exclude-machines` by hand (**real fix not written**) | **no** |
+| 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | the create step walks the N cheapest candidates instead of dying on `.[0]` | tests, not a GPU |
 | 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | yes |
 | 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | **no** |
-| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | **unexplained** — see below | **no** |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | `transformers` pinned to 5.16.1, the version it was validated against | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-7, 9 and 11 are fixed and proven on a GPU. **Blocker 8's fix is still untested**
-— no rental has reached a benchmark since. **Blocker 12's fix is untested** for the same
-reason. **Blocker 10 has no fix**, only a manual escape. **Blocker 13 is not understood at
-all** and is the first thing to resolve, because it invalidates the precondition every
-number downstream depends on.
+— no rental has reached a benchmark since — and **blocker 12's fix is untested** for the
+same reason.
+
+**Blocker 10 now has a real fix rather than a manual escape.** `select_offers` emits the
+`DF_OFFER_CANDIDATES` cheapest offers (default 5) instead of only `.[0]`, and the create
+step walks them, treating a refusal as "try the next" rather than as fatal. A refusal costs
+nothing — no instance exists, so nothing is billed — which is what makes walking strictly
+better than dying and making a human pass `--exclude-machines`. Two tests stand up a stub
+API: one refuses the two cheapest asks and asserts the third is created and is the offer
+the ledger names; the other refuses everything and asserts exit 4, an explanation, and no
+ledger row. Neither needs a GPU, so "proven" here means proven in CI.
+
+**Blocker 13 now has a named suspect and a pin, but is still unproven.** `transformers` was
+installed as `>=5.16,<6` — a floor, not a pin. The oracle *is* HuggingFace, so its version
+is an input to the experiment rather than a dependency of it, and the floor let that input
+move between rentals with nothing in this repo changing. It did move:
+
+| version | released | resolved on | oracle |
+|---|---|---|---|
+| 5.16.1 | 2026-08-26 | 2026-09-07 | **passed** |
+| 5.17.0 | **2026-09-09** | 2026-09-10 | **failed**, one argmax at token 2 |
+
+5.17.0 landed between the two runs. That is motive and opportunity, not a conviction: it
+explains how the input changed without explaining that the change is *why* the argmax
+moved. The install is now `transformers==5.16.1`, which restores the exact stack that
+passed, and the next rental's oracle result is the test. If it passes, blocker 13 was a
+moving oracle. If it still fails at index 2, the cause is in this repo and the pin has
+narrowed rather than solved it.
 
 **Blocker 9 is the one to internalise, because it was self-inflicted.** The guard fired on
 a healthy box at the exact moment its pull *succeeded*. See
@@ -216,16 +240,22 @@ you happened to imagine is not a guard.
 ## What to do next time this happens
 
 1. Read `status_msg` in the log line — it is the only thing that distinguishes the cases.
-2. **Stuck on a Docker Hub pull:** add `DOCKER_LOGIN_USER` / `DOCKER_LOGIN_TOKEN` to `.env`,
-   or `--image` something on `ghcr.io` or `nvcr.io`. The latter is proven to work.
+2. **Stuck on a Docker Hub pull:** credentials are now in `.env` (since 2026-09-11), so
+   check the provision log says `registry credentials loaded for user …` before assuming
+   the pull was anonymous. If it did and the pull still stalls, `--image` something on
+   `ghcr.io` or `nvcr.io`; that path is proven to work.
 3. **`refused the ssh key`:** the image honours neither `PUBLIC_KEY` nor `authorized_keys`.
    Pick a different image rather than fighting it.
-4. Record the machine id in `--exclude-machines` so the deterministic, price-ordered offer
-   search does not hand you the same host again.
+4. Record the machine id in `--exclude-machines` so the offer search does not hand you the
+   same host again. This is for a host that *rents and then misbehaves* — a dead ask is
+   handled automatically now (blocker 10).
 5. **`no_such_ask` / HTTP 400 from the create endpoint:** the offer was listed but is not
    rentable, usually because someone took it between the search and the create. Nothing was
-   billed. Retrying alone does **not** help — the search is deterministic and re-picks the
-   same dead ask — so exclude the machine and run again (blocker 10).
+   billed, and **this now resolves itself**: the create step walks up to
+   `DF_OFFER_CANDIDATES` offers in price order and only gives up when every one of them
+   refuses. A single `offer … refused` warning followed by a successful create is the
+   system working, not a fault. If you see the walk exhaust itself, the market is tight —
+   raise `--offer-candidates` or widen `--max-rate` (blocker 10).
 6. **`Error 804: forward compatibility was attempted on non supported HW`:** the host's
    driver is older than the torch build we install. Forward-compat packages are
    data-centre-only and these are GeForce cards. `DF_MIN_CUDA` now filters these hosts out;

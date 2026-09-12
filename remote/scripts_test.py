@@ -1613,6 +1613,45 @@ def test_accelerate_is_installed_because_the_oracle_cannot_load_without_it():
     assert "import accelerate" in script
 
 
+def test_transformers_is_pinned_exactly_because_the_oracle_is_the_dependency():
+    """A floor let the oracle move between rentals and cost a validated reference.
+
+    `test_reference_greedy_decode_matches_the_oracle_token_for_token` compares our tokens
+    against HuggingFace's, so `transformers` is not a dependency of the experiment -- it is
+    an *input* to it. Under `>=5.16,<6` that input resolved to 5.16.1 on 2026-09-07, when
+    the test passed, and to 5.17.0 on 2026-09-10, when it failed at a single argmax. 5.17.0
+    was released 2026-09-09, between the two runs.
+
+    So this asserts the constraint is an equality, not a bound. Bumping the version is
+    fine; bumping it back to a range silently re-arms the same failure."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+
+    specs = re.findall(r"'(transformers[^']*)'", script)
+    assert specs, "run_remote.sh installs no transformers at all"
+    for spec in specs:
+        assert "==" in spec, f"transformers must be pinned exactly, got {spec!r}"
+        assert ">=" not in spec and "<" not in spec, (
+            f"{spec!r} is a range: a moving oracle is how the reference was invalidated"
+        )
+
+
+def test_the_pin_is_the_same_number_in_both_places_that_declare_it():
+    """`pyproject.toml`'s gpu extra said `>=4.57` while the box installed `>=5.16`. Two
+    numbers for one decision means the next person to raise one of them will not know the
+    other exists."""
+    script = (REPO_ROOT / "remote" / "run_remote.sh").read_text()
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+
+    from_script = set(re.findall(r"'transformers==([^']+)'", script))
+    from_pyproject = set(re.findall(r'"transformers==([^"]+)"', pyproject))
+
+    assert from_script, "no exact transformers pin in run_remote.sh"
+    assert from_pyproject, "no exact transformers pin in pyproject.toml"
+    assert from_script == from_pyproject, (
+        f"run_remote.sh pins {from_script} but pyproject.toml pins {from_pyproject}"
+    )
+
+
 # =====================================================================================
 # The compile cache
 # =====================================================================================
@@ -1803,15 +1842,185 @@ def test_a_rejected_create_reports_what_the_api_said():
     curl runs with --fail-with-body precisely so the body survives an HTTP error. Losing
     it to `set -e` wastes the one thing that says why the offer was refused."""
     result = _run_provision_func(
-        ["create_instance"],
+        ["try_create_instance"],
         'df_api() { printf \'{"error":"no_such_ask","msg":"ask 48657232 is gone"}\'; return 22; }\n'
-        "create_instance 48657232",
+        "try_create_instance 48657232",
     )
 
-    assert result.returncode != 0, "a refused create must still fail the run"
+    assert result.returncode != 0, "a refused create must report failure to its caller"
     combined = result.stdout + result.stderr
     assert "no_such_ask" in combined or "ask 48657232 is gone" in combined, (
         f"the API's explanation must reach the log; got: {combined!r}"
+    )
+    assert result.stdout.strip() == "", (
+        "a refused create must print no instance id on stdout, or the caller would treat "
+        f"the error text as a contract; got: {result.stdout!r}"
+    )
+
+
+def _passing_offer() -> dict:
+    """One fixture offer that clears every client-side filter in provision.sh.
+
+    Picked by running the filter rather than by eye: the fixture deliberately contains
+    offers that fail on reliability, price, link speed and verification, and choosing a
+    cheap-looking one that provision rejects makes a test that proves nothing."""
+    offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())
+    passing = [
+        o
+        for o in offers["offers"]
+        if o.get("gpu_name") == "RTX 5090"
+        and (o.get("num_gpus") or 0) == 1
+        and o.get("rentable")
+        and not o.get("is_bid_only")
+        and (o.get("reliability2") or 0) > 0.98
+        and (o.get("dph_total") or 1e9) <= 0.45
+        and (o.get("gpu_ram") or 0) >= 24000
+        and float(o.get("cuda_max_good") or 0) >= 12.8
+        and (o.get("inet_down") or 0) > 300
+        and o.get("verified") is not False
+    ]
+    assert passing, "the fixture must contain at least one fully-passing RTX 5090 offer"
+    return sorted(passing, key=lambda o: o["dph_total"])[0]
+
+
+def _offer_ladder(n: int) -> list[dict]:
+    """`n` distinct offers that all pass, in a known price order."""
+    base = _passing_offer()
+    ladder = []
+    for i in range(n):
+        clone = dict(base)
+        clone["id"] = base["id"] + 100 + i
+        clone["machine_id"] = (base.get("machine_id") or 0) + 100 + i
+        clone["dph_total"] = round(base["dph_total"] + 0.001 * i, 6)
+        ladder.append(clone)
+    return ladder
+
+
+class _RefusingCreates:
+    """A stub Vast API that refuses the first `refuse_first` creates, then accepts.
+
+    Refusing by *attempt order* rather than by offer id keeps the test independent of
+    which fixture offers provision's filter happens to accept."""
+
+    def __init__(self, refuse_first: int, contract: int = 987654):
+        self.refuse_first = refuse_first
+        self.contract = contract
+        self.attempts: list[str] = []
+
+    def __enter__(self):
+        import http.server
+        import threading
+
+        stub = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_PUT(self):
+                stub.attempts.append(self.path)
+                self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if len(stub.attempts) <= stub.refuse_first:
+                    body = b'{"success":false,"error":"no_such_ask","msg":"ask is gone"}'
+                    self.send_response(400)
+                else:
+                    body = b'{"success":true,"new_contract":%d}' % stub.contract
+                    self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self._server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self._server.shutdown()
+        return False
+
+    def env(self) -> dict:
+        return {
+            **os.environ,
+            "DF_API_BASE": f"http://127.0.0.1:{self._server.server_port}/api/v0",
+            "VAST_API_KEY": "test-key-not-a-real-one",
+            # Dummies, so the developer's real .env credentials are never read and never
+            # sent anywhere -- not even to a loopback stub.
+            "DOCKER_LOGIN_USER": "test-user",
+            "DOCKER_LOGIN_TOKEN": "test-token-not-a-real-one",
+        }
+
+
+def test_a_phantom_ask_no_longer_traps_the_search(workdir):
+    """Blocker 10. The offer search is price-ordered, deterministic, and used to return
+    only `.[0]`, so an ask that is *listed but unrentable* was selected, refused with
+    `no_such_ask`, and then selected again on the next run, forever. `--exclude-machines`
+    was the manual escape, and a human had to know to reach for it.
+
+    A refusal costs nothing -- no instance exists, so nothing is billed -- which is what
+    makes walking on strictly better than dying."""
+    offers_file = workdir / "offers.json"
+    ladder = _offer_ladder(3)
+    offers_file.write_text(json.dumps({"offers": ladder}))
+
+    with _RefusingCreates(refuse_first=2) as api:
+        result = run(
+            "provision.sh",
+            "--session-id",
+            "phantom",
+            "--offers-file",
+            str(offers_file),
+            "--ledger",
+            str(workdir / "ledger" / "spend.jsonl"),
+            "--state-file",
+            str(workdir / "state"),
+            env=api.env(),
+        )
+
+    assert len(api.attempts) == 3, (
+        f"the create step must walk past both phantom asks; attempted {api.attempts}"
+    )
+    # Price order decides who is tried first, and the survivor is the third-cheapest.
+    assert str(ladder[2]["id"]) in api.attempts[-1], (
+        f"the third candidate should be the one that wins; attempted {api.attempts}"
+    )
+    combined = result.stdout + result.stderr
+    assert "987654" in combined, f"the created instance id must be reported; got {combined!r}"
+
+    # The ledger must name the offer that actually produced an instance, not the first one
+    # tried -- a row naming a phantom ask misattributes the spend.
+    row = json.loads((workdir / "ledger" / "spend.jsonl").read_text().strip().splitlines()[-1])
+    assert row["instance_id"] == "987654"
+    assert str(ladder[2]["id"]) in row["note"]
+
+
+def test_every_candidate_refusing_bills_nothing_and_says_so(workdir):
+    """The other end of the same walk. If every candidate is unrentable there is still no
+    instance and nothing billed, so this exits on the documented "no offer" code with an
+    explanation, rather than dying on the last curl status."""
+    offers_file = workdir / "offers.json"
+    offers_file.write_text(json.dumps({"offers": _offer_ladder(3)}))
+
+    with _RefusingCreates(refuse_first=99) as api:
+        result = run(
+            "provision.sh",
+            "--session-id",
+            "all-phantom",
+            "--offers-file",
+            str(offers_file),
+            "--ledger",
+            str(workdir / "ledger" / "spend.jsonl"),
+            "--state-file",
+            str(workdir / "state"),
+            expect=4,
+            env=api.env(),
+        )
+
+    assert len(api.attempts) == 3, f"every candidate must be tried; attempted {api.attempts}"
+    assert "refused the create" in result.stderr, f"the exhausted walk must say so; got {result.stderr!r}"
+    ledger = workdir / "ledger" / "spend.jsonl"
+    assert not ledger.exists() or ledger.read_text().strip() == "", (
+        "a walk that created no instance must write no ledger row"
     )
 
 

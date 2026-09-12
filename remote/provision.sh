@@ -65,6 +65,10 @@ DF_SESSION_ID="${DF_SESSION_ID:-}"
 DF_HYPOTHESIS="${DF_HYPOTHESIS:-}"
 DF_STATE_FILE="${DF_STATE_FILE:-$DF_REPO_ROOT/.deltaforge-instance}"
 DF_OFFERS_FILE="${DF_OFFERS_FILE:-}"
+# How many offers the create step may walk before giving up. A listed-but-unrentable ask
+# is refused instantly and costs nothing, so trying a few is cheap; the ceiling exists so
+# a market-wide outage fails fast instead of grinding through every offer on the platform.
+DF_OFFER_CANDIDATES="${DF_OFFER_CANDIDATES:-5}"
 
 usage() {
     cat <<'EOF'
@@ -83,11 +87,14 @@ Usage: remote/provision.sh [options]
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --mtd-limit USD           Month-to-date refusal threshold (default: 45).
   --offers-file PATH        Read offers from a file instead of the API.
+  --offer-candidates N      How many offers the create step may try, in price order,
+                            before giving up (default: 5). A listed-but-unrentable ask
+                            is refused instantly, so walking a few costs nothing.
   --state-file PATH         Where to write the created instance's details.
   -h, --help                This message.
 
 Exit codes: 0 ok, 1 error, 3 refused by the month-to-date budget gate,
-            4 no offer met the filters.
+            4 no offer met the filters, or every candidate refused the create.
 EOF
 }
 
@@ -106,6 +113,7 @@ while [ $# -gt 0 ]; do
         --state-file)    DF_STATE_FILE="$2"; shift ;;
         --image)         DF_IMAGE="$2"; shift ;;
         --exclude-machines) DF_EXCLUDE_MACHINES="$2"; shift ;;
+        --offer-candidates) DF_OFFER_CANDIDATES="$2"; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)               df_die "unknown option: $1 (try --help)" ;;
     esac
@@ -158,7 +166,13 @@ fetch_offers() {
 
 # Re-apply every filter client-side. The server is asked for the right thing, but a
 # budget control that trusts a remote filter is not a control.
-select_offer() {
+#
+# Emits up to `DF_OFFER_CANDIDATES` rows in price order, not one. Returning only the
+# cheapest made the search a trap: it is deterministic and price-ordered, so an ask that is
+# listed but unrentable was selected, refused with `no_such_ask`, and then selected again
+# on the next attempt, forever. `--exclude-machines` was the manual escape. Walking the
+# list is the automatic one.
+select_offers() {
     _gpu="$1"
     fetch_offers "$_gpu" | jq -r --arg gpu "$_gpu" \
         --argjson maxrate "$DF_MAX_RATE" \
@@ -167,7 +181,8 @@ select_offer() {
         --argjson mincuda "$DF_MIN_CUDA" \
         --argjson mindown "$DF_MIN_INET_DOWN" \
         --argjson wantverified "$DF_REQUIRE_VERIFIED" \
-        --arg excluded "$DF_EXCLUDE_MACHINES" '
+        --arg excluded "$DF_EXCLUDE_MACHINES" \
+        --argjson limit "$DF_OFFER_CANDIDATES" '
         .offers // []
         | map(select(
             .gpu_name == $gpu
@@ -189,12 +204,11 @@ select_offer() {
                  | ($excluded | split(",") | map(select(length > 0)) | index($m | tostring)) == null)
           ))
         | sort_by(.dph_total)
-        | .[0]
-        | if . == null then empty
-          else [.id, .gpu_name, .dph_total, .reliability2, .gpu_ram, (.cuda_max_good // "?"),
-                (.machine_id // "?")]
-               | @tsv
-          end'
+        | .[0:$limit]
+        | .[]
+        | [.id, .gpu_name, .dph_total, .reliability2, .gpu_ram, (.cuda_max_good // "?"),
+           (.machine_id // "?")]
+        | @tsv'
 }
 
 df_require_cmd jq
@@ -211,39 +225,27 @@ fi
 # Optional, and inert when absent.
 df_load_registry_login || true
 
-OFFER=""
+DF_CANDIDATES_FILE=$(umask 077; mktemp "${TMPDIR:-/tmp}/df-offers.XXXXXX") || df_die "mktemp failed"
+trap 'rm -f "$DF_CANDIDATES_FILE"' EXIT INT TERM
+
 for gpu in "$DF_GPU" "$DF_FALLBACK_GPU"; do
     [ -n "$gpu" ] || continue
     df_log "searching for on-demand $gpu, 1 GPU, reliability > $DF_MIN_RELIABILITY, <= \$$DF_MAX_RATE/hr"
-    OFFER=$(select_offer "$gpu" || true)
-    [ -n "$OFFER" ] && break
+    # stderr is deliberately NOT suppressed: it carries the dry-run fixture notice and
+    # whatever the API said when a search fails, and a silent search is how you spend a
+    # session wondering why the market looks empty.
+    select_offers "$gpu" > "$DF_CANDIDATES_FILE" || true
+    [ -s "$DF_CANDIDATES_FILE" ] && break
     df_warn "no $gpu offer met the filters"
 done
 
-if [ -z "$OFFER" ]; then
+if [ ! -s "$DF_CANDIDATES_FILE" ]; then
     df_log "no offer met the filters for any of: $DF_GPU, $DF_FALLBACK_GPU"
     exit 4
 fi
 
-OFFER_ID=$(printf '%s' "$OFFER" | cut -f1)
-OFFER_GPU=$(printf '%s' "$OFFER" | cut -f2)
-OFFER_RATE=$(printf '%s' "$OFFER" | cut -f3)
-OFFER_REL=$(printf '%s' "$OFFER" | cut -f4)
-OFFER_RAM=$(printf '%s' "$OFFER" | cut -f5)
-OFFER_CUDA=$(printf '%s' "$OFFER" | cut -f6)
-# The machine id, not the offer id, is what --exclude-machines takes. Logging only the
-# offer id made the documented remedy for a host that burns a rental — "record the machine
-# id in --exclude-machines so the deterministic, price-ordered search does not hand you the
-# same host again" — impossible to actually carry out.
-OFFER_MACHINE=$(printf '%s' "$OFFER" | cut -f7)
-df_log "selected offer $OFFER_ID on machine $OFFER_MACHINE: $OFFER_GPU, \$$OFFER_RATE/hr, reliability $OFFER_REL, ${OFFER_RAM}MB, CUDA $OFFER_CUDA"
-df_log "if this host burns the rental: re-run with --exclude-machines $OFFER_MACHINE"
-
-# Belt and braces: the ceiling is re-checked after selection, in case a filter was
-# loosened upstream by an edit that looked harmless.
-if df_ge "$OFFER_RATE" "$(awk -v r="$DF_MAX_RATE" 'BEGIN { printf "%.6f", r + 0.000001 }')"; then
-    df_die "selected offer rate \$$OFFER_RATE exceeds the ceiling \$$DF_MAX_RATE; refusing"
-fi
+DF_CANDIDATE_COUNT=$(wc -l < "$DF_CANDIDATES_FILE" | tr -d ' ')
+df_log "$DF_CANDIDATE_COUNT candidate offer(s) in price order; trying each until one is created"
 
 # ---------------------------------------------------------------------------
 # Create, then record. The ledger row is written before the instance is used.
@@ -282,28 +284,90 @@ create_body() {
     fi
 }
 
-# Create the instance for an offer, and make a refusal explain itself.
+# Attempt one create. Prints the instance id on stdout and returns 0, or explains the
+# refusal on stderr and returns non-zero so the caller can try the next candidate.
 #
 # curl runs with --fail-with-body so the API's reason survives an error status -- but a
 # plain `RESPONSE=$(df_api ...)` assignment hands that status straight to `set -e`, and
 # the run dies on a bare `curl: (22)` one line before the message written to explain it.
 # A create was refused with HTTP 400 and the log said nothing about why. Taking the status
 # in a `||` list keeps `set -e` out of it, so the body reaches the log.
-create_instance() {
+#
+# This used to `df_die` on a refusal, which is what made a phantom ask fatal: the search is
+# price-ordered and deterministic, so the next run picked the same unrentable offer and
+# died the same way. Returning a status instead is what lets the caller walk on.
+try_create_instance() {
     _offer_id="$1"
-    _resp=$(df_api PUT "/asks/$_offer_id/" "$(create_body)") || df_die \
-        "the API refused to create an instance on offer $_offer_id: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+    if ! _resp=$(df_api PUT "/asks/$_offer_id/" "$(create_body)"); then
+        df_warn "offer $_offer_id refused: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+        return 1
+    fi
     _iid=$(printf '%s' "$_resp" | jq -r '.new_contract // empty')
-    [ -n "$_iid" ] || df_die "instance creation failed: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+    if [ -z "$_iid" ]; then
+        df_warn "offer $_offer_id returned no contract: $(printf '%s' "$_resp" | jq -c '.' 2>/dev/null || printf '%s' "$_resp")"
+        return 1
+    fi
     printf '%s' "$_iid"
 }
 
-if df_dry "would PUT /asks/$OFFER_ID/ with image $DF_IMAGE, disk ${DF_DISK_GB}GB"; then
-    INSTANCE_ID="dryrun-$(df_now_epoch)"
-else
-    INSTANCE_ID=$(create_instance "$OFFER_ID")
-    df_log "created instance $INSTANCE_ID"
+# Walk the candidates in price order. A refusal costs nothing -- no instance exists, so
+# nothing is billed -- which is why trying the next one is strictly better than dying and
+# making a human pass --exclude-machines.
+#
+# `while read ... done < file` rather than a pipeline: a pipeline runs the loop in a
+# subshell and the chosen OFFER_* values would not survive it.
+INSTANCE_ID=""
+DF_ATTEMPT=0
+while IFS= read -r _row; do
+    [ -n "$_row" ] || continue
+    DF_ATTEMPT=$((DF_ATTEMPT + 1))
+
+    OFFER_ID=$(printf '%s' "$_row" | cut -f1)
+    OFFER_GPU=$(printf '%s' "$_row" | cut -f2)
+    OFFER_RATE=$(printf '%s' "$_row" | cut -f3)
+    OFFER_REL=$(printf '%s' "$_row" | cut -f4)
+    OFFER_RAM=$(printf '%s' "$_row" | cut -f5)
+    OFFER_CUDA=$(printf '%s' "$_row" | cut -f6)
+    # The machine id, not the offer id, is what --exclude-machines takes. Logging only the
+    # offer id made the documented remedy for a host that burns a rental — "record the
+    # machine id in --exclude-machines so the deterministic, price-ordered search does not
+    # hand you the same host again" — impossible to actually carry out.
+    OFFER_MACHINE=$(printf '%s' "$_row" | cut -f7)
+
+    df_log "candidate $DF_ATTEMPT/$DF_CANDIDATE_COUNT: trying offer $OFFER_ID on machine $OFFER_MACHINE (\$$OFFER_RATE/hr)"
+
+    # Belt and braces: the ceiling is re-checked after selection, in case a filter was
+    # loosened upstream by an edit that looked harmless. Still fatal rather than skipped —
+    # an over-ceiling offer here means the filter is broken, and walking past it would hide
+    # a budget control that has stopped working.
+    if df_ge "$OFFER_RATE" "$(awk -v r="$DF_MAX_RATE" 'BEGIN { printf "%.6f", r + 0.000001 }')"; then
+        df_die "selected offer rate \$$OFFER_RATE exceeds the ceiling \$$DF_MAX_RATE; refusing"
+    fi
+
+    if df_dry "would PUT /asks/$OFFER_ID/ with image $DF_IMAGE, disk ${DF_DISK_GB}GB"; then
+        INSTANCE_ID="dryrun-$(df_now_epoch)"
+        break
+    fi
+
+    if INSTANCE_ID=$(try_create_instance "$OFFER_ID"); then
+        df_log "created instance $INSTANCE_ID"
+        break
+    fi
+    INSTANCE_ID=""
+done < "$DF_CANDIDATES_FILE"
+
+if [ -z "$INSTANCE_ID" ]; then
+    df_warn "all $DF_CANDIDATE_COUNT candidate offer(s) refused the create."
+    df_warn "No instance exists and nothing was billed. Raise --offer-candidates, widen"
+    df_warn "--max-rate, or wait for the market to move."
+    exit 4
 fi
+
+# "selected offer N" is the canonical line, and it belongs to the offer that actually
+# produced an instance -- never to one we merely tried. A candidate that was refused was
+# not selected, and a log that says otherwise would make the walk unreadable.
+df_log "selected offer $OFFER_ID on machine $OFFER_MACHINE: $OFFER_GPU, \$$OFFER_RATE/hr, reliability $OFFER_REL, ${OFFER_RAM}MB, CUDA $OFFER_CUDA"
+df_log "if this host burns the rental: re-run with --exclude-machines $OFFER_MACHINE"
 
 df_ledger_append_provision "$DF_LEDGER" "$DF_SESSION_ID" "$INSTANCE_ID" \
     "$OFFER_GPU" "$OFFER_RATE" "$DF_MAX_MINUTES" "$DF_HYPOTHESIS" \

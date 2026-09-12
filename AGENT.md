@@ -155,10 +155,18 @@ front of a batch to "get a result faster" — an uncalibrated result is not a re
 **Start by re-validating the reference, before anything else costs money.** On 2026-09-10
 `test_reference_greedy_decode_matches_the_oracle_token_for_token` **failed** — it had
 passed on 2026-09-07. The logits oracle and the mRoPE test still pass, so the architecture
-facts in §8 are still corroborated and the disagreement is a single argmax at token 2. The
-leading suspect is that `transformers` is pinned by a *floor* (`>=5.16,<6`) and resolved to
-5.17.0, moving the oracle rather than the reference. **Untested.** One GPU minute settles
-it, and until it is settled every number downstream is inadmissible. See
+facts in §8 are still corroborated and the disagreement is a single argmax at token 2.
+
+The suspect was that `transformers` was installed from a *floor* (`>=5.16,<6`) rather than
+a pin, so the oracle could move on its own. PyPI release dates confirm it moved: the floor
+resolved to 5.16.1 on 2026-09-07 and to 5.17.0 on 2026-09-10, and 5.17.0 was released
+2026-09-09, between the two runs. **The install is now `transformers==5.16.1`**, the
+version that passed.
+
+**That is a restored precondition, not a proven fix.** The next rental's oracle result is
+the experiment: pass means blocker 13 was a moving oracle, and a failure still at index 2
+means the cause is in this repo. Until that test passes on a GPU, every number downstream
+is inadmissible. See `docs/GPU-ACCESS.md` (blocker 13) and
 `results/batches/002-compile-cost/README.md`.
 
 **Then know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot split in §4 and

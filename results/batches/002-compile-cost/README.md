@@ -108,13 +108,18 @@ identical message and reached sshd.
 
 ## What is still open
 
-1. **The oracle divergence** above. One GPU minute to test the `transformers` hypothesis.
-2. **Blocker 10 — a phantom ask traps the offer search.** The search is price-ordered,
-   deterministic, and returns only `.[0]`, so an ask that is listed but unrentable is
-   selected, refused, and selected again forever. `--exclude-machines` is the manual
-   escape and it works; the real fix is to emit the top N candidates and let the create
-   step walk them, treating `no_such_ask` as "try the next" rather than fatal.
-   `create_instance()` now isolates the call, so it can return a status instead of dying.
+1. **The oracle divergence** above. Still open, but no longer unexplained: PyPI release
+   dates show the floor resolved to 5.16.1 on 2026-09-07 and to 5.17.0 on 2026-09-10, with
+   5.17.0 released 2026-09-09 — between the two runs. The install is now pinned to
+   `transformers==5.16.1` (2026-09-11). That restores the validated stack; it does not
+   prove the pin is the cure, and the next rental's oracle result is what does.
+2. ~~**Blocker 10 — a phantom ask traps the offer search.**~~ **Fixed 2026-09-11.**
+   `select_offers` emits the `DF_OFFER_CANDIDATES` cheapest offers and the create step
+   walks them, treating a refusal as "try the next". `try_create_instance` returns a status
+   where `create_instance` used to `df_die`. Two tests drive provision.sh against a stub
+   API — one refuses the two cheapest asks and asserts the third is created and is the
+   offer the ledger names, the other refuses all of them and asserts exit 4 with no ledger
+   row.
 3. **Everything batch 002 was for.** Compile cost, warm vs cold, and whether two scoring
    columns survive the benchmark — none of it has been observed. Rental 27 reported
    `compile workers: 96 cores`, which kills the leading theory for rental 22's ~40-minute
