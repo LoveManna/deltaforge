@@ -210,6 +210,27 @@ class BenchResult:
         }
 
 
+def _inference_context():
+    """Autograd off for every model call a benchmark makes.
+
+    The benchmark measures inference, so nothing it calls needs a graph. With autograd
+    live, inductor compiles the backward as well as the forward, and the fp32 recurrent
+    state's in-place update trips autograd's version counter, so the compile fails
+    outright. Batch 001 slot 0 spent 3162s there and died with `BackendCompilerFailed`;
+    the same model under the correctness gate's `no_grad` took 17.1s and passed.
+
+    Imported lazily, and degrading to a null context, because this module stays
+    importable without torch for the CPU smoke path.
+    """
+    try:
+        import torch  # noqa: PLC0415 - keeps this module importable without torch
+    except ModuleNotFoundError:
+        from contextlib import nullcontext  # noqa: PLC0415
+
+        return nullcontext()
+    return torch.no_grad()
+
+
 def run_interleaved(
     columns: Mapping[str, Callable[[], object]],
     config: BenchConfig | None = None,
@@ -245,18 +266,22 @@ def run_interleaved(
         if setup is not None:
             setup()
 
-    for label in labels:
-        for _ in range(config.untimed_warmup_calls):
-            _setup(label)
-            columns[label]()
-
     timings: dict[str, list[float]] = {label: [] for label in labels}
     call_order: list[str] = []
-    for _round in range(config.rounds):
+    # Every model call the benchmark makes -- warmup, setup and timed alike -- runs with
+    # autograd off. A setup that builds a decode cache under autograd makes those tensors
+    # graph-tracked, which is how the in-place state update becomes an error later.
+    with _inference_context():
         for label in labels:
-            _setup(label)
-            call_order.append(label)
-            timings[label].append(timer.time_ms(columns[label]))
+            for _ in range(config.untimed_warmup_calls):
+                _setup(label)
+                columns[label]()
+
+        for _round in range(config.rounds):
+            for label in labels:
+                _setup(label)
+                call_order.append(label)
+                timings[label].append(timer.time_ms(columns[label]))
 
     return BenchResult(
         labels=labels,

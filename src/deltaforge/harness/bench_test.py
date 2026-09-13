@@ -331,3 +331,77 @@ def test_to_dict_carries_raw_per_round_timings_for_provenance():
     assert data["median_ratio"]["candidate"] == pytest.approx(2.0)
     assert data["call_order"] == list(LABELS) * 7
     assert isinstance(result, BenchResult)
+
+
+# -- autograd must be off for every model call ----------------------------------------
+#
+# Batch 001 slot 0 (000-identity) spent 3162s in the benchmark and then died with
+# `BackendCompilerFailed`: autograd was live, so inductor compiled the backward graph as
+# well as the forward, and the fp32 recurrent state's in-place update tripped autograd's
+# version counter. The same model under the correctness gate's `torch.no_grad()` took
+# 17.1s and passed. The benchmark measures inference; nothing it calls needs a graph.
+
+
+def grad_probe_columns(labels, record):
+    """Columns that record whether autograd was enabled when they were called."""
+    import torch
+
+    columns = {}
+    for label in labels:
+        columns[label] = (lambda name: lambda: record.append((name, torch.is_grad_enabled())))(label)
+    return columns
+
+
+def test_every_timed_call_runs_with_autograd_disabled():
+    import torch
+
+    record: list[tuple[str, bool]] = []
+    columns = grad_probe_columns(LABELS, record)
+    timer = ScriptedTimer(constant_durations({label: 1.0 for label in LABELS}))
+    timer.bind(columns)
+
+    assert torch.is_grad_enabled(), "this test is meaningless if grad is already off"
+    run_interleaved(columns, BenchConfig(), timer=timer)
+
+    assert record, "no column was ever called"
+    enabled = [name for name, grad_on in record if grad_on]
+    assert enabled == [], f"these timed calls ran with autograd live: {sorted(set(enabled))}"
+
+
+def test_untimed_warmup_calls_also_run_with_autograd_disabled():
+    """The warmup calls are where `torch.compile` does its work, so they are exactly
+    where a backward graph would get compiled."""
+    import torch
+
+    record: list[tuple[str, bool]] = []
+    columns = grad_probe_columns(LABELS, record)
+    timer = ScriptedTimer(constant_durations({label: 1.0 for label in LABELS}))
+    timer.bind(columns)
+
+    run_interleaved(columns, BenchConfig(untimed_warmup_calls=2), timer=timer)
+
+    assert any(True for _ in record)
+    assert [name for name, grad_on in record if grad_on] == []
+    assert torch.is_grad_enabled(), "run_interleaved must not leak its grad mode to the caller"
+
+
+def test_setups_run_with_autograd_disabled():
+    """A setup restores a decode cache. Building that under autograd makes the cache
+    tensors graph-tracked, which is how the in-place state update becomes an error."""
+    import torch
+
+    record: list[tuple[str, bool]] = []
+    columns = grad_probe_columns(LABELS, record)
+    setup_grad: list[bool] = []
+    timer = ScriptedTimer(constant_durations({label: 1.0 for label in LABELS}))
+    timer.bind(columns)
+
+    run_interleaved(
+        columns,
+        BenchConfig(),
+        timer=timer,
+        setups={"candidate": lambda: setup_grad.append(torch.is_grad_enabled())},
+    )
+
+    assert setup_grad, "the setup never ran"
+    assert not any(setup_grad), "setups ran with autograd live"
