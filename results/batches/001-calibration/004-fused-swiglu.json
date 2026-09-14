@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "hypothesis",
   "outcome": "error",
-  "timestamp": "2026-09-08T22:19:34.961953+00:00",
+  "timestamp": "2026-09-14T21:32:22.753534+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": {
     "slug": "004-fused-swiglu",
@@ -21,6 +21,11 @@
     "context_length": 2048,
     "decode_tokens": 128
   },
+  "phases": {
+    "candidate_build": 0.09248451399616897,
+    "correctness": 16.154615177074447,
+    "compile_candidate_compiled": 0.005895103793591261
+  },
   "git": {
     "sha": null,
     "branch": null,
@@ -28,20 +33,20 @@
   },
   "environment": {
     "python_version": "3.12.3",
-    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
-    "hostname": "5b9e4aa71760",
+    "platform": "Linux-5.15.0-119-generic-x86_64-with-glibc2.39",
+    "hostname": "061ccef78571",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
     "cuda_version": "12.8",
     "gpu_name": "NVIDIA GeForce RTX 5090",
     "gpu_count": 1,
-    "driver_version": "580.159.03",
+    "driver_version": "580.173.02",
     "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2925,
+      "sm": 2565,
       "memory": 13801,
-      "observed_at": "2026-09-08T22:19:35.221890+00:00"
+      "observed_at": "2026-09-14T21:32:22.916758+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0"
@@ -49,5 +54,5 @@
   "bench": null,
   "correctness": null,
   "cost": null,
-  "notes": "OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 13.88 MiB is free. Including non-PyTorch memory, this process has 31.33 GiB memory in use. Of the allocated memory 30.71 GiB is allocated by PyTorch, and 42.49 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 275, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 257, in run_interleaved\n    _setup(label)\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 246, in _setup\n    setup()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 133, in setup\n    runnable(prompt, cache, num_logits_to_keep=1)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 715, in forward\n    hidden_states = layer(hidden_states, cos, sin, cache, cache_offset)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward\n    hidden_states = self.linear_attn(hidden_states, layer_cache)\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 462, in forward\n    core_out, final_state = recurrent_gated_delta_rule(\n                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 379, in recurrent_gated_delta_rule\n    state = state + k_t.unsqueeze(-1) * delta.unsqueeze(-2)\n            ~~~~~~^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\ntorch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 31.36 GiB of which 13.88 MiB is free. Including non-PyTorch memory, this process has 31.33 GiB memory in use. Of the allocated memory 30.71 GiB is allocated by PyTorch, and 42.49 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://docs.pytorch.org/docs/stable/notes/cuda.html#optimizing-memory-usage-with-pytorch-cuda-alloc-conf)\n"
+  "notes": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n"
 }

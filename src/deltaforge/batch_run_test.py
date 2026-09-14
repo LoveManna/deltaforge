@@ -304,20 +304,33 @@ def _fake_torch(calls: list[str], cuda: bool = True):
     )
 
 
-def test_releasing_compiled_state_resets_the_cudagraph_pools():
-    """Slot N was resident on N graph pools.
+def test_releasing_compiled_state_leaves_the_cudagraph_trees_alone():
+    """Resetting the trees invalidates the reference columns, which is fatal to the batch.
 
-    `del candidate; empty_cache()` frees the module and its KV cache but not the pool
-    inductor recorded for `candidate_compiled`, which is where rental 21's missing ~22 GiB
-    went — rental 22 measured construction itself at 0.11 GiB.
+    This used to call `reset_cudagraph_trees` to give back the graph pool a finished slot
+    was holding, on the stated premise that the reference would "re-record on the next
+    slot's first warmup call". It does not. The shutdown is permanent for a callable that
+    has already been recorded, and inductor's cudagraph trees are per *device*, not per
+    model -- so releasing the candidate tore down the reference's graphs too.
+
+    Rental 34 is the proof, and it could only appear once a slot finally completed: slot 0
+    calibrated at ratio 1.0009, and then all eight scoring slots died in 23s each on
+    `AssertionError: Running CUDAGraph after shutdown`, before any of them timed anything.
+
+    The reclaim it bought is also smaller than it looks. Slot 0 recorded CUDA graphs for
+    both columns and measured 8.07 GiB allocated / 8.08 reserved of 31.36 both before and
+    after the release — at two columns with autograd off, the reset gave back less than the
+    logged number resolves. Losing that to a measured bound beats keeping a guarantee that
+    empties the batch.
     """
     calls: list[str] = []
     cudagraphs = SimpleNamespace(reset_cudagraph_trees=lambda: calls.append("reset_cudagraph_trees"))
 
     steps = release_compiled_state(_fake_torch(calls), cudagraphs, log=silent)
 
-    assert "reset_cudagraph_trees" in steps
-    assert calls.index("reset_cudagraph_trees") < calls.index("empty_cache")
+    assert "reset_cudagraph_trees" not in calls
+    assert "reset_cudagraph_trees" not in steps
+    assert "empty_cache" in calls
 
 
 def test_releasing_compiled_state_survives_a_torch_without_the_private_api():

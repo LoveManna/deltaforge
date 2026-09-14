@@ -56,28 +56,33 @@ def release_compiled_state(torch_module, cudagraph_module=None, log=print) -> li
 
     `del candidate; gc.collect(); empty_cache()` frees the module and its KV cache but
     **not** the CUDA-graph pool inductor recorded for `candidate_compiled`. Those pools are
-    held by inductor's graph trees, so slot N was resident on N of them — which is where
-    rental 21's ~22 GiB went, given that rental 22 measured construction at 0.11 GiB.
+    held by inductor's graph trees, so slot N stays resident on N of them.
 
-    Deliberately **not** `torch._dynamo.reset()`, which would discard the reference's
-    compilation as well. That is the batch's entire saving. Resetting the graph trees costs
-    the reference a graph re-record on the next slot's first warmup call — seconds, not a
-    recompile.
+    This used to reclaim them with `reset_cudagraph_trees`, on the stated premise that the
+    reference would "re-record on the next slot's first warmup call". **That premise was
+    false, and it emptied the batch.** The shutdown is permanent for a callable that has
+    already been recorded, and the trees are per *device*, not per model — so releasing the
+    candidate tore down the reference columns with it.
 
-    `reset_cudagraph_trees` is private API, so its absence costs the reclaim and not the
-    batch.
+    It could only show up once a slot actually finished, which took until rental 34: slot 0
+    calibrated at ratio 1.0009, and then all eight scoring slots died in 23s each on
+    `AssertionError: Running CUDAGraph after shutdown`, none of them reaching a timing.
+
+    The reclaim is also worth less than it looks. On rental 34, slot 0 recorded CUDA graphs
+    for both columns and sat at **8.07 GiB allocated / 8.08 reserved of 31.36, before and
+    after the release alike** — at two columns with autograd off, what the tree reset gave
+    back was below the resolution of the number being logged. (The 8.85 GiB reserved seen
+    later was slot 1's transient, and `empty_cache` is what returned it.) So the pools now
+    stay. `_log_memory` prints allocated and reserved after every slot, so if they do
+    accumulate the record will say so, rather than a slot dying to prevent it.
+
+    `cudagraph_module` is still accepted so the call site keeps saying what it is choosing
+    not to do.
     """
     if not torch_module.cuda.is_available():
         return []
 
     steps: list[str] = []
-    reset = getattr(cudagraph_module, "reset_cudagraph_trees", None)
-    if reset is not None:
-        reset()
-        steps.append("reset_cudagraph_trees")
-    else:
-        log("[batch] this torch has no reset_cudagraph_trees; graph pools stay resident")
-
     torch_module.cuda.synchronize()
     steps.append("synchronize")
     torch_module.cuda.empty_cache()

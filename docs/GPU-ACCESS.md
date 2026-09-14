@@ -16,7 +16,7 @@ problem in the chain:
 | 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
 | 9 | **The stall guard destroys instances whose pull has just finished** | rental 24 | `df_pull_settled`: a settled pull is bounded by the readiness timeout, not the stall budget | yes |
 | 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | the create step walks the N cheapest candidates instead of dying on `.[0]` | tests; exercised on rental 28, not stressed |
-| 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | yes |
+| 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | **no — recurred on rental 33** |
 | 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | **no** |
 | 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | **unfixed** — the `transformers` explanation was refuted by rental 28 | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
@@ -280,9 +280,15 @@ you happened to imagine is not a guard.
    raise `--offer-candidates` or widen `--max-rate` (blocker 10).
 6. **`Error 804: forward compatibility was attempted on non supported HW`:** the host's
    driver is older than the torch build we install. Forward-compat packages are
-   data-centre-only and these are GeForce cards. `DF_MIN_CUDA` now filters these hosts out;
-   if this appears again, that floor and the `--index-url` in `run_remote.sh` have drifted
-   apart (blocker 11).
+   data-centre-only and these are GeForce cards. `DF_MIN_CUDA` filters on the offer's
+   advertised `cuda_max_good`, which **is not the same thing as what the driver can run**:
+   rental 33 (machine 44927) advertised exactly 12.8, passed the filter, and died on 804
+   anyway, while rental 34 advertised 13.0 and was fine. So the floor is a filter on a
+   *claim*, and a host sitting exactly on it is the risky case rather than the safe one.
+   The cheap response is `--exclude-machines <id>` and move on — the log prints that line
+   with the machine id at selection time for exactly this. A real fix would probe the
+   driver before paying for torch and a 9.32 GB checkpoint, which is the same lesson
+   rental 27 taught about `python3-dev` (blocker 11).
 7. **`fatal error: Python.h: No such file or directory`:** the image ships no Python
    headers and Triton cannot build its JIT shim. `python3-dev` is now installed beside
    `g++`; if this recurs, that step failed or ran too late (blocker 12).
