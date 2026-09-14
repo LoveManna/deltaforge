@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "hypothesis",
   "outcome": "inconclusive",
-  "timestamp": "2026-09-14T21:30:43.942664+00:00",
+  "timestamp": "2026-09-14T22:10:24.375993+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": {
     "slug": "000-identity",
@@ -20,10 +20,10 @@
     "decode_tokens": 128
   },
   "phases": {
-    "candidate_build": 0.05440858588553965,
-    "correctness": 15.352904974017292,
-    "compile_candidate_compiled": 0.006576573941856623,
-    "bench": 387.82243624608964
+    "candidate_build": 0.05417599808424711,
+    "correctness": 15.310637725051492,
+    "compile_candidate_compiled": 0.006610828917473555,
+    "bench": 178.15532314800657
   },
   "git": {
     "sha": null,
@@ -33,7 +33,7 @@
   "environment": {
     "python_version": "3.12.3",
     "platform": "Linux-5.15.0-119-generic-x86_64-with-glibc2.39",
-    "hostname": "061ccef78571",
+    "hostname": "f3296422b256",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
@@ -43,9 +43,9 @@
     "driver_version": "580.173.02",
     "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2955,
+      "sm": 2985,
       "memory": 13801,
-      "observed_at": "2026-09-14T21:30:44.113126+00:00"
+      "observed_at": "2026-09-14T22:10:24.577698+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0"
@@ -60,58 +60,58 @@
     "baseline": "compiled",
     "timings_ms": {
       "compiled": [
-        267479.25,
-        910.081298828125,
-        901.7584838867188,
-        902.7376708984375,
-        904.3162231445312,
-        906.6318969726562,
-        911.1048583984375
+        57404.8046875,
+        900.9505004882812,
+        903.35498046875,
+        878.9107055664062,
+        880.045654296875,
+        894.4075927734375,
+        893.2061157226562
       ],
       "candidate_compiled": [
-        912.3335571289062,
-        901.2294311523438,
-        899.3778076171875,
-        905.6437377929688,
-        902.6422729492188,
-        906.5809936523438,
-        910.3211669921875
+        906.8933715820312,
+        884.5232543945312,
+        876.7722778320312,
+        874.3653564453125,
+        896.0502319335938,
+        892.782958984375,
+        892.4246826171875
       ]
     },
     "scoring_timings_ms": {
       "compiled": [
-        901.7584838867188,
-        902.7376708984375,
-        904.3162231445312,
-        906.6318969726562,
-        911.1048583984375
+        903.35498046875,
+        878.9107055664062,
+        880.045654296875,
+        894.4075927734375,
+        893.2061157226562
       ],
       "candidate_compiled": [
-        899.3778076171875,
-        905.6437377929688,
-        902.6422729492188,
-        906.5809936523438,
-        910.3211669921875
+        876.7722778320312,
+        874.3653564453125,
+        896.0502319335938,
+        892.782958984375,
+        892.4246826171875
       ]
     },
     "median_ms": {
-      "compiled": 904.3162231445312,
-      "candidate_compiled": 905.6437377929688
+      "compiled": 893.2061157226562,
+      "candidate_compiled": 892.4246826171875
     },
     "ratios": {
       "candidate_compiled": [
-        1.002647025809808,
-        0.9967911588483864,
-        1.0018545001109278,
-        1.0000561486736088,
-        1.0008608955110199
+        1.030318822012084,
+        1.0051984551853388,
+        0.9821387495183364,
+        1.0018197410386402,
+        1.0008756291939136
       ]
     },
     "median_ratio": {
-      "candidate_compiled": 1.0008608955110199
+      "candidate_compiled": 1.0018197410386402
     },
     "iqr_ratio": {
-      "candidate_compiled": 0.0017983514373189902
+      "candidate_compiled": 0.004322825991425194
     },
     "call_order": [
       "compiled",

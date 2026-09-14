@@ -12,43 +12,44 @@ A rental's cost splits in two:
 
 | | Cost | Paid |
 |---|---:|---|
-| Container image, torch, 9.32 GB checkpoint, GPU suite | ~10-15 min | **once per rental** |
-| Reference `max-autotune` compile | ~3-4 min *(estimated — see below)* | **once per rental** |
-| Candidate compile + correctness gate + benchmark | ~2-4 min *(estimated — see below)* | **per hypothesis** |
+| Container image, torch, 9.32 GB checkpoint, GPU suite | ~19 min *(measured, rentals 34-35)* | **once per rental** |
+| Reference `max-autotune` compile | **57 s warm / 268 s off a 47 MB cache** *(measured)* | **once per rental** |
+| Candidate compile + correctness gate + benchmark | **173-376 s** *(measured, rental 35)* | **per hypothesis** |
 
-> **These two estimates are contradicted, and the arithmetic below does not hold.**
-> Rental 22 (2026-09-08) spent ~40 minutes in a single slot without finishing it. Rentals
-> 30-32 (2026-09-13) settled what that was and made it worse:
+> **Measured at last, on 2026-09-14, and the original estimates were not far wrong.** The
+> ~40-minute compile that dominated this file for six days was never the cost of compiling
+> this model. `gated_delta_rule` unrolls its sequence scan into the graph, so the benchmark's
+> 2048-token prefill handed inductor ~1.08M FX nodes — and `run_interleaved` excludes every
+> `setup` from the timed region, so none of it was ever measured. The prefill now runs eager.
 >
-> | Rental | Cores | Slot 0 (`000-identity`, installs nothing) |
+> | Rental | Cores | Slot 0 reference compile |
 > |---|---:|---|
 > | 30 | 64 | ~52 min, host dropped before it finished |
-> | 31 | 256 | **3162 s, then `BackendCompilerFailed`** |
-> | 32 | 256 | **6983 s — hit its cap without completing** |
+> | 31 | 256 | 3162 s, then `BackendCompilerFailed` (live autograd) |
+> | 32 | 256 | 6983 s — hit its cap without completing |
+> | 34 | 96 | **267.5 s** — first cold compile ever to finish |
+> | 35 | 96 | **57.4 s** — off the 298 MB cache rental 34 brought home |
 >
-> Rental 31's crash was live autograd: the benchmark had no `no_grad`, so inductor
-> compiled the backward graph too (`f461025`, and `docs/GPU-ACCESS.md` blocker 13). **Its
-> 3162 s was time-until-crash, not a completed compile** — so no run has ever finished a
-> cold `max-autotune` on this model. Rental 32, with the crash fixed, did not finish one
-> in 6980.9 s.
->
-> Worker count is not the lever: 4x the cores changed nothing. **Do not re-cut batch sizes
-> off the 40-minute figure** — it measured a backward pass nothing needed, and the real
-> forward-only cost is still unmeasured. The open levers are `mode="reduce-overhead"`,
-> fewer columns, and the warm cache: rental 32 brought home 47 MB / 1800 inductor and
-> triton entries compiled *without* autograd (rental 31's 312 KB were compiled with it and
-> are expected to miss). Inductor caches per kernel, so a timed-out compile still banks
-> progress. **Measure one compile to completion off that warm cache before filling another
-> batch.**
+> Rental 35 ran a full nine-slot batch in **44 minutes** of batch time, inside a 52.65-minute
+> rental. Every timed round is ~900 ms at an IQR under 0.005.
+
+> **The real ceiling on batch size is not the clock.** Dynamo caches compiled code per code
+> object, and each slot's candidate is a new cache entry, so at the default `recompile_limit`
+> of 8 a batch stops compiling candidates part-way through and **silently times eager ones**.
+> Rental 35 tripped it inside slot 2 and lost six of nine slots to plausible-looking ratios
+> that measured nothing. `recompile_limit_for` in `batch_run.py` raises the limit to cover
+> every slot, and each slot record now carries `graphs_compiled` so a candidate that did not
+> compile says so. **Neither has run on a GPU yet.** If you widen a batch, widen that too.
 
 One hypothesis per rental pays fifteen minutes of fixed cost to buy three minutes of
 science. Nine rentals were billed that way and none produced a number. A batch pays the
 same fifteen minutes and buys 7-12 measurements.
 
 **7 is the floor** — fewer does not justify the fixed cost. **12 is the ceiling** — more
-does not fit the 180-minute session gate. Both numbers assume the per-slot cost above, and
-that estimate is the thing rental 22 contradicted: re-cut them the moment a compile has
-actually been timed.
+does not fit the 180-minute session gate. Both now rest on measured numbers rather than
+guesses, and the measurement is kinder than the guess: at ~200 s a slot and ~19 min of
+fixed cost, twelve slots fit comfortably. The binding constraint is the recompile limit
+above, not the clock.
 
 **A calibration batch is exempt from the floor.** `Batch(is_calibration=True)` says so, and
 `002-compile-cost` is one: three slots whose product is the clock rather than the ratios.

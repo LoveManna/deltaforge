@@ -1448,6 +1448,12 @@ def test_the_two_refusals_are_distinguishable(workdir):
     The two refusals mean different things and a session must be able to tell them apart:
     the gate says "this session is spent", the pre-flight says "what is left cannot buy a
     measurement". Reporting either as the other sends the next session after the wrong fix.
+
+    `DF_LOCAL_CACHE` points at an empty directory so "cold" is a property of the test
+    rather than of whatever the repo's own cache happens to hold. It was not, and once
+    `df_phase_estimates` started actually finding measured numbers this test began reading
+    rental 35's 376.3s slot out of the working tree and passing the pre-flight by half a
+    minute.
     """
     ledger = write_ledger(
         workdir / "ledger" / "spend.jsonl",
@@ -1463,6 +1469,9 @@ def test_the_two_refusals_are_distinguishable(workdir):
         ],
     )
 
+    cold = workdir / "cold-cache"
+    cold.mkdir(parents=True, exist_ok=True)
+
     result = run(
         "run_remote.sh",
         "--dry-run",
@@ -1475,6 +1484,7 @@ def test_the_two_refusals_are_distinguishable(workdir):
         "--state-file",
         str(workdir / "state"),
         expect=5,
+        env={**os.environ, "DF_LOCAL_CACHE": str(cold)},
     )
 
     assert "REFUSED by the session GPU-time gate" not in result.stderr
@@ -2281,8 +2291,7 @@ def _phase_estimates(cache_root: Path, key: str = "") -> dict[str, float]:
         [
             "sh",
             "-c",
-            f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; '
-            f'df_phase_estimates "{cache_root}" "{key}"',
+            f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; df_phase_estimates "{cache_root}" "{key}"',
         ],
         capture_output=True,
         text=True,

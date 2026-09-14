@@ -1,8 +1,10 @@
 # GPU access: a chain of blockers, each hiding behind the last
 
-Twenty-eight rentals have been billed on this project. **None has yet produced a benchmark
-number**, and each one that got further than its predecessor did so by exposing the next
-problem in the chain:
+Thirty-five rentals have been billed on this project. **The harness is calibrated as of
+rental 34** — an identity champion measuring 1.00 within noise — and rental 35 ran all nine
+slots of batch 001 to completion. No hypothesis has an admissible ratio yet; blocker 16 is
+why. Each rental that got further than its predecessor did so by exposing the next problem
+in the chain:
 
 | | Blocker | Found by | Fixed by | Proven? |
 |---|---|---|---|---|
@@ -13,17 +15,26 @@ problem in the chain:
 | 5 | Four `oracle_test.py` bounds were fp32 absolutes on bf16 tensors | rental 14 | scoring relative to the tensor's own scale | yes |
 | 6 | Candidate construction double-allocates 8.4 GB of weights | rental 16 | building candidates on `torch.device("meta")` | yes |
 | 7 | Readiness read `cur_state` (the rental contract) instead of `actual_status` (the container) | rentals 18-20 | gating on `actual_status` alone | yes |
-| 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` (**untested**) | **no** |
+| 8 | The benchmark OOMs at warmup with the default four columns | rental 21 | `--columns compiled,candidate_compiled` | yes — nine slots on rental 35 never passed 8.07 GiB of 31.36 |
 | 9 | **The stall guard destroys instances whose pull has just finished** | rental 24 | `df_pull_settled`: a settled pull is bounded by the readiness timeout, not the stall budget | yes |
 | 10 | A phantom ask traps the deterministic offer search | 3 refused creates, 2026-09-10 | the create step walks the N cheapest candidates instead of dying on `.[0]` | tests; exercised on rental 28, not stressed |
 | 11 | Host driver older than the torch build → CUDA `Error 804` | rental 26 | `DF_MIN_CUDA` (12.8), matching the cu128 index | **no — recurred on rental 33** |
-| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | **no** |
-| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | **unfixed** — the `transformers` explanation was refuted by rental 28 | **no** |
+| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | rental 27 | installing `python3-dev` beside `g++` | yes — the GPU suite passed on rentals 34 and 35 |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | resolved without a named cause — agrees on rentals 30-32, 34, 35 | yes, five hosts, zero tie-breaks |
+| 14 | A cold `max-autotune` compile never finishes inside a session | rentals 22, 30-32 | the unrolled prefill scan is not compiled; it is untimed setup | yes — 6980.9s unfinished → 267.5s → 57.4s warm |
+| 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
+| 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **no** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
-Blockers 1-7, 9 and 11 are fixed and proven on a GPU. **Blocker 8's fix is still untested**
-— no rental has reached a benchmark since — and **blocker 12's fix is untested** for the
-same reason.
+Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
+recorded as proven on rental 27 and rental 33 disproved it. **Blocker 16's fix has never
+run on a GPU**, and it is the only thing between this project and its first admissible
+ratio.
+
+Blockers 14, 15 and 16 arrived in that order on one day, and could not have arrived in any
+other: 14 stopped any slot from finishing, which hid 15 (it only fires *between* two slots),
+and 15 emptied the batch after slot 0, which hid 16 (it only fires once several candidates
+have compiled). Each rental bought exactly one layer.
 
 **Blocker 10 now has a real fix rather than a manual escape.** `select_offers` emits the
 `DF_OFFER_CANDIDATES` cheapest offers (default 5) instead of only `.[0]`, and the create
@@ -33,6 +44,11 @@ better than dying and making a human pass `--exclude-machines`. Two tests stand 
 API: one refuses the two cheapest asks and asserts the third is created and is the offer
 the ledger names; the other refuses everything and asserts exit 4, an explanation, and no
 ledger row. Neither needs a GPU, so "proven" here means proven in CI.
+
+**Blocker 13 is closed, and its cause was never found.** The oracle has agreed
+token-for-token on five independent hosts since (rentals 30, 31, 32, 34, 35) with
+`tie_break_count: 0`. What follows is the investigation as it stood, kept because the
+refutation in it is the part worth reading.
 
 **Blocker 13's leading explanation was tested on rental 28 and refuted.**
 
@@ -397,8 +413,11 @@ project have not been the loud ones.
 | 30 | 2026-09-13 | **oracle gate passes**; host dropped ssh mid-slot-0 (exit 255) | 69.72 min | $0.5448 |
 | 31 | 2026-09-13 | **root cause found**: 2 slots, `BackendCompilerFailed` from live autograd — blocker 13 | 131.03 min | $0.8069 |
 | 32 | 2026-09-13 | crash fixed; slot 0 hit its 6980.9s cap. 47 MB of compile cache came home | 176.80 min | $1.3878 |
+| 33 | 2026-09-14 | CUDA `Error 804` on a host advertising exactly 12.8 — blocker 11 recurred | 8.90 min | $0.0602 |
+| 34 | 2026-09-14 | **the compile finished (267.5s) and the harness calibrated (1.0009)**; 8 slots lost to blocker 15 | 30.15 min | $0.2192 |
+| 35 | 2026-09-14 | **all nine slots ran**; calibrated 1.0018; 6 slots void to blocker 16 | 52.65 min | $0.3829 |
 
-Twenty-eight rentals, $2.361, **zero leaked instances** — every one destroyed cleanly by
+Thirty-five rentals, $5.764, **zero leaked instances** — every one destroyed cleanly by
 the trap, including two cancelled mid-flight with SIGTERM.
 
 **Rental 28 is the cheapest informative rental yet**, and worth reading against rental 27.

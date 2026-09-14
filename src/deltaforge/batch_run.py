@@ -42,7 +42,41 @@ from .batch import (
     score_predictions,
 )
 
-__all__ = ["BatchRunner", "SlotResult", "release_compiled_state", "run_batch"]
+__all__ = [
+    "BatchRunner",
+    "SlotResult",
+    "graphs_compiled_during",
+    "recompile_limit_for",
+    "release_compiled_state",
+    "run_batch",
+]
+
+
+#: Dynamo's default: after this many cache entries on one code object it stops compiling
+#: that code object and runs it **eagerly**, for the rest of the process, with a warning.
+DEFAULT_RECOMPILE_LIMIT = 8
+
+
+def recompile_limit_for(slots: int) -> int:
+    """How many dynamo cache entries a batch of ``slots`` hypotheses legitimately needs.
+
+    Every slot builds a fresh candidate module and compiles it, and dynamo caches per
+    *code object* with guards — so slot N is cache entry N against the same
+    `ReferenceModel.forward`. At the default of 8, a batch longer than a handful of slots
+    silently stops compiling candidates and times eager ones instead.
+
+    Rental 35 is what that looks like from the outside. The limit tripped inside slot 2;
+    from slot 3 on the candidate's first round fell from ~170s of compiling to ~6s of not
+    compiling, and six hypotheses attacking six different operations all returned ratios
+    between 0.146 and 0.157, because every one of them was measuring eager against
+    compiled rather than a kernel against inductor.
+
+    Two entries per slot covers the candidate and its dynamic-shape variant, plus the
+    default for the reference and whatever else shares those code objects. Still bounded,
+    and deliberately: a limit that grew without end would hide the runaway recompilation
+    this setting exists to catch.
+    """
+    return min(64, max(DEFAULT_RECOMPILE_LIMIT, 2 * slots + DEFAULT_RECOMPILE_LIMIT))
 
 
 #: The scoring comparison, and the reason a batch is worth running at all: identical
@@ -103,6 +137,9 @@ class SlotResult:
     error: str | None = None
     duration_s: float | None = None
     peak_memory_mb: int | None = None
+    #: How many graphs dynamo compiled during this slot's benchmark. `0` means the ratio
+    #: compares eager against compiled; `None` means the counter could not be read.
+    graphs_compiled: int | None = None
     #: Wall-clock seconds per phase. Recorded even when the slot failed, because a slot
     #: that died 40 minutes into a compile is itself the measurement worth having.
     phases_s: dict[str, float] = field(default_factory=dict)
@@ -123,6 +160,7 @@ class SlotResult:
             "error": self.error,
             "duration_s": self.duration_s,
             "peak_memory_mb": self.peak_memory_mb,
+            "graphs_compiled": self.graphs_compiled,
             "phases_s": self.phases_s,
         }
 
@@ -380,15 +418,23 @@ class BatchRunner:
                         f"{elapsed_ms:.1f} ms ({since:.0f}s into the benchmark)"
                     )
 
-                result = run_interleaved(
-                    columns,
-                    self.bench_config,
-                    timer=CudaEventTimer(),
-                    setups=setups,
-                    metadata=self._slot_metadata(hypothesis),
-                    progress=say,
-                )
+                with graphs_compiled_during() as graphs:
+                    result = run_interleaved(
+                        columns,
+                        self.bench_config,
+                        timer=CudaEventTimer(),
+                        setups=setups,
+                        metadata=self._slot_metadata(hypothesis),
+                        progress=say,
+                    )
                 phase("bench", mark)
+                self.log(f"[batch] {hypothesis.slug}: dynamo compiled {graphs.compiled} graph(s)")
+                if graphs.compiled == 0:
+                    self.log(
+                        f"[batch] {hypothesis.slug}: WARNING nothing compiled during this "
+                        "benchmark -- the ratio below compares eager against compiled, not a "
+                        "kernel against inductor. See recompile_limit_for()."
+                    )
 
             ratio = result.median_ratio.get(CANDIDATE_COLUMN)
             iqr = result.iqr_ratio.get(CANDIDATE_COLUMN, 0.0)
@@ -403,6 +449,7 @@ class BatchRunner:
                 bench=result.to_dict(),
                 duration_s=time.monotonic() - started,
                 peak_memory_mb=int(torch.cuda.max_memory_allocated() // (1024 * 1024)),
+                graphs_compiled=graphs.compiled,
                 phases_s=phases,
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
@@ -427,6 +474,64 @@ class BatchRunner:
             self._log_memory(f"{hypothesis.slug} released")
 
 
+@dataclass
+class GraphCount:
+    """How many graphs dynamo compiled inside a region. ``None`` when it could not be read."""
+
+    compiled: int | None = None
+
+
+@contextlib.contextmanager
+def graphs_compiled_during(counters=None):
+    """Count dynamo's compilations across a region, so a record can prove one happened.
+
+    A candidate that dynamo has stopped compiling still produces a median, an IQR and a
+    ratio, and nothing about them looks wrong. Rental 35 reported six such ratios, clustered
+    between 0.146 and 0.157 across six unrelated kernels, and the only evidence that they
+    measured eager rather than a kernel was a warning buried in the rental log.
+
+    `torch._dynamo.utils.counters` is private, so failing to read it costs the evidence and
+    not the slot — hence ``None`` rather than an exception or a misleading zero.
+    """
+    if counters is None:  # pragma: no cover - exercised on the GPU path
+        try:
+            from torch._dynamo.utils import counters as counters  # noqa: PLC0415
+        except ImportError:
+            yield GraphCount()
+            return
+
+    count = GraphCount()
+    try:
+        before = counters["stats"]["unique_graphs"]
+    except (KeyError, TypeError):
+        yield count
+        return
+
+    yield count
+    try:
+        count.compiled = counters["stats"]["unique_graphs"] - before
+    except (KeyError, TypeError):  # pragma: no cover - defensive
+        count.compiled = None
+
+
+def _raise_recompile_limit(slots: int, log=print) -> None:
+    """Give dynamo room for one candidate per slot, and say so in the log.
+
+    Torch renamed `cache_size_limit` to `recompile_limit`; both names are set where they
+    exist so this works either side of that. Imported lazily and suppressed, because
+    `run_batch` is driven by a fake runner in the CPU tests and must not require torch.
+    """
+    wanted = recompile_limit_for(slots)
+    try:
+        from torch._dynamo import config as dynamo_config  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - CPU test path has torch, the smoke path may not
+        return
+    for name in ("recompile_limit", "cache_size_limit"):
+        if getattr(dynamo_config, name, None) is not None:
+            setattr(dynamo_config, name, wanted)
+    log(f"[batch] dynamo recompile limit raised to {wanted} for {slots} slots")
+
+
 def run_batch(
     runner: BatchRunner,
     batch: Batch,
@@ -440,6 +545,7 @@ def run_batch(
     Returns ``(results, calibrated, prediction_scores)``. ``calibrated`` is ``None`` when
     the batch has no identity slot, which is itself worth seeing in the record.
     """
+    _raise_recompile_limit(len(batch), log=log)
     runner.prepare_reference()
 
     results: list[SlotResult] = []

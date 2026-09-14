@@ -10,16 +10,23 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**None yet — no kernel has ever executed on a GPU.**
+**None yet — but the harness is calibrated, and eight kernels have now run on a GPU.**
 
-The harness, the reference implementation, the correctness gates, the provisioning
-machinery and the cost controls are built and tested. One kernel has been written and then
-graveyarded on its mechanism — see the fused-RMSNorm entry in `docs/HYPOTHESES.md` and the
-full account in `results/hypotheses/001-fused-rmsnorm-residual/`. Every number-producing
-step is wired, marked deferred, and
-**skipped rather than faked**: there are no estimated, placeholder or illustrative numbers
-anywhere in this repo, and when a number appears it will have come off a real card.
-`LEADERBOARD.md` and `results/` say the same thing.
+On 2026-09-14 (rental 35) all nine slots of batch 001 executed on an RTX 5090. The identity
+champion — a candidate bit-identical to the reference, which must therefore measure 1.00 —
+came back at **1.0018 with an IQR of 0.0018** and exact correctness. That was the
+precondition for every number this project will ever report, and it had never been met.
+
+**No hypothesis has an admissible ratio.** Six of the eight kernels failed the correctness
+gate, which is a real result and is recorded as one. Of the two that passed, both ran after
+dynamo had hit its `recompile_limit` and stopped compiling candidates, so what their numbers
+compare is an eager candidate against a compiled reference — not a kernel against inductor.
+Those ratios are labelled void rather than deleted, and the fix is written and awaiting a
+rental.
+
+There are no estimated, placeholder or illustrative numbers anywhere in this repo. Every
+number here came off a real card, and the ones that do not mean what they appear to mean say
+so. `LEADERBOARD.md` and `results/batches/001-calibration/README.md` carry the detail.
 
 ## What is being claimed
 
@@ -168,15 +175,13 @@ Budget is **$50/month**, enforced by code rather than by discipline:
 - The spend row is written to `ledger/spend.jsonl` *before* the instance is used, then
   reconciled with actuals at destroy.
 - The compile cache is pulled off the box before it is destroyed and pushed back to the
-  next rental on the same card, so a 40-minute cold `max-autotune` compile is paid once
+  next rental on the same card, so a cold `max-autotune` compile is paid once
   rather than every session. It changes how long compilation takes, not what it emits.
-  **Still not demonstrated:** no rental has yet completed a cold `max-autotune` compile at
-  all, so the saving remains a design claim rather than a measurement. Rental 32
-  (2026-09-13) did carry **47 MB / 1800 entries** home — compiled without autograd and so
-  reusable, unlike rental 31's 312 KB — because inductor caches per kernel and a
-  timed-out compile still banks progress. Whether that is enough to finish one is the next
-  thing to measure. Teardown now reports warmth from what actually landed on disk, because a log
-  that overstates it would corrupt the very number the cache is meant to improve.
+  **Now demonstrated.** Rental 34 completed the first cold `max-autotune` compile this
+  project has ever finished, in **267.5 s**, off the 47 MB rental 32 banked; rental 35 then
+  did it in **57.4 s** off the 298 MB rental 34 brought home. Teardown reports warmth from
+  what actually landed on disk, because a log that overstates it would corrupt the very
+  number the cache is meant to improve.
 
 Every script in `remote/` supports `--dry-run`, which exercises the full logic path —
 including all the gates and the teardown trap — without contacting the create or destroy
@@ -185,9 +190,9 @@ endpoints. That is how the cost machinery is verified with no money at risk.
 ## One rental, many hypotheses
 
 A rental's fixed cost — container image, torch, a 9.32 GB checkpoint, the GPU test suite,
-and one `max-autotune` compile of the reference — is about fifteen minutes. Each additional
-hypothesis costs two to four. Testing one hypothesis per rental therefore pays fifteen
-minutes of setup to buy three minutes of measurement.
+and one `max-autotune` compile of the reference — is about nineteen minutes, measured.
+Each additional hypothesis costs three to six. Testing one hypothesis per rental therefore
+pays nineteen minutes of setup to buy three of measurement.
 
 So a rental measures a **batch of 7–12 hypotheses**. The reference is compiled once and
 kept; each candidate is built, gated, benchmarked and freed in turn. Only the *compilation*

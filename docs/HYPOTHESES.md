@@ -16,6 +16,15 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-14: eight of these ran on a GPU, and nothing here changes status yet.** Rental
+> 35 executed all nine slots of batch 001. The batch is calibrated, so the harness is sound
+> — but six of the eight kernels failed the correctness gate, and the two that passed were
+> timed after dynamo stopped compiling candidates, so their ratios compare eager against
+> compiled. **No entry below is promoted, graveyarded or amended on this rental.** A kernel
+> whose candidate never compiled has not been shown to be slow, and a kernel that fails an
+> exact-token gate by ~2 bf16 ULP has not been shown to be wrong. See
+> `results/batches/001-calibration/README.md`.
+
 At batch 1, decode is a weight-streaming problem. Here is where every byte goes for
 `Qwen/Qwen3.5-4B` at batch 1, context 2048 — reproduce it with `docs/roofline.py`:
 

@@ -4,7 +4,7 @@
   "batch_id": "001-calibration",
   "session_id": "batch001-20260914T205517Z",
   "description": "The first batch, and the first measurement this project has ever taken: nine rentals have been billed and none produced a number. Slot 0 calibrates the harness; slots 1-5 collect real measurements for hypotheses the backlog graveyarded on *cost* rather than on truth, now that a slot is three minutes instead of a rental; slots 6-8 attack the only byte shares in the model large enough to matter at all.",
-  "timestamp": "2026-09-14T21:34:05.075073+00:00",
+  "timestamp": "2026-09-14T22:39:35.131780+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "workload": {
     "batch_size": 1,
@@ -12,39 +12,48 @@
     "decode_tokens": 128
   },
   "phases": {
-    "000-identity.candidate_build": 0.05440858588553965,
-    "000-identity.correctness": 15.352904974017292,
-    "000-identity.compile_candidate_compiled": 0.006576573941856623,
-    "000-identity.bench": 387.82243624608964,
-    "001-fused-rmsnorm-residual.candidate_build": 0.08979781297966838,
-    "001-fused-rmsnorm-residual.correctness": 15.10897055012174,
-    "001-fused-rmsnorm-residual.compile_candidate_compiled": 0.006134810857474804,
-    "002-rmsnorm-only.candidate_build": 0.09470290900208056,
-    "002-rmsnorm-only.correctness": 15.160579333081841,
-    "002-rmsnorm-only.compile_candidate_compiled": 0.005772985052317381,
-    "003-qk-norm-triton.candidate_build": 0.09138567419722676,
-    "003-qk-norm-triton.correctness": 15.38088376680389,
-    "003-qk-norm-triton.compile_candidate_compiled": 0.005809683119878173,
-    "004-fused-swiglu.candidate_build": 0.09248451399616897,
-    "004-fused-swiglu.correctness": 16.154615177074447,
-    "004-fused-swiglu.compile_candidate_compiled": 0.005895103793591261,
-    "005-fused-qkv-rope.candidate_build": 0.09176691714674234,
-    "005-fused-qkv-rope.correctness": 16.316958880983293,
-    "005-fused-qkv-rope.compile_candidate_compiled": 0.005799661856144667,
-    "006-gqa-no-expand.candidate_build": 0.09254090394824743,
-    "006-gqa-no-expand.correctness": 16.475720848189667,
-    "006-gqa-no-expand.compile_candidate_compiled": 0.005797170801088214,
-    "007-gated-delta-fused-step.candidate_build": 0.09360423404723406,
-    "007-gated-delta-fused-step.correctness": 15.828197073889896,
-    "007-gated-delta-fused-step.compile_candidate_compiled": 0.005832150112837553,
-    "008-flash-decode-splitkv.candidate_build": 0.09001031005755067,
-    "008-flash-decode-splitkv.correctness": 16.602060288889334,
-    "008-flash-decode-splitkv.compile_candidate_compiled": 0.005827130051329732
+    "000-identity.candidate_build": 0.05417599808424711,
+    "000-identity.correctness": 15.310637725051492,
+    "000-identity.compile_candidate_compiled": 0.006610828917473555,
+    "000-identity.bench": 178.15532314800657,
+    "001-fused-rmsnorm-residual.candidate_build": 0.0903278801124543,
+    "001-fused-rmsnorm-residual.correctness": 14.919922452885658,
+    "001-fused-rmsnorm-residual.compile_candidate_compiled": 0.005900879157707095,
+    "001-fused-rmsnorm-residual.bench": 361.3044103819411,
+    "002-rmsnorm-only.candidate_build": 0.09097359306178987,
+    "002-rmsnorm-only.correctness": 14.96439136005938,
+    "002-rmsnorm-only.compile_candidate_compiled": 0.006035028025507927,
+    "002-rmsnorm-only.bench": 298.82419846300036,
+    "003-qk-norm-triton.candidate_build": 0.0949337079655379,
+    "003-qk-norm-triton.correctness": 15.397058472968638,
+    "003-qk-norm-triton.compile_candidate_compiled": 0.006102429004386067,
+    "003-qk-norm-triton.bench": 157.63279544305988,
+    "004-fused-swiglu.candidate_build": 0.09207011200487614,
+    "004-fused-swiglu.correctness": 16.1521873769816,
+    "004-fused-swiglu.compile_candidate_compiled": 0.006049318006262183,
+    "004-fused-swiglu.bench": 159.25663980306126,
+    "005-fused-qkv-rope.candidate_build": 0.09421607409603894,
+    "005-fused-qkv-rope.correctness": 15.398311481811106,
+    "005-fused-qkv-rope.compile_candidate_compiled": 0.0060930391773581505,
+    "005-fused-qkv-rope.bench": 156.12664525792934,
+    "006-gqa-no-expand.candidate_build": 0.09533870499581099,
+    "006-gqa-no-expand.correctness": 15.28277175896801,
+    "006-gqa-no-expand.compile_candidate_compiled": 0.005931947147473693,
+    "006-gqa-no-expand.bench": 156.49869906785898,
+    "007-gated-delta-fused-step.candidate_build": 0.09378109592944384,
+    "007-gated-delta-fused-step.correctness": 15.340178394922987,
+    "007-gated-delta-fused-step.compile_candidate_compiled": 0.005896036978811026,
+    "007-gated-delta-fused-step.bench": 164.8881139140576,
+    "008-flash-decode-splitkv.candidate_build": 0.09384311409667134,
+    "008-flash-decode-splitkv.correctness": 15.775342647917569,
+    "008-flash-decode-splitkv.compile_candidate_compiled": 0.005925117060542107,
+    "008-flash-decode-splitkv.bench": 156.89256148785353
   },
   "calibrated": true,
   "counts": {
     "inconclusive": 1,
-    "error": 8
+    "incorrect": 6,
+    "loss": 2
   },
   "predictions": [
     {
@@ -56,55 +65,55 @@
     {
       "slug": "001-fused-rmsnorm-residual",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     },
     {
       "slug": "002-rmsnorm-only",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     },
     {
       "slug": "003-qk-norm-triton",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "loss",
+      "correct": false
     },
     {
       "slug": "004-fused-swiglu",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "loss",
+      "correct": false
     },
     {
       "slug": "005-fused-qkv-rope",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     },
     {
       "slug": "006-gqa-no-expand",
       "predicted": "win",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     },
     {
       "slug": "007-gated-delta-fused-step",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     },
     {
       "slug": "008-flash-decode-splitkv",
       "predicted": "inconclusive",
-      "outcome": "error",
-      "correct": null
+      "outcome": "incorrect",
+      "correct": false
     }
   ],
   "prediction_record": {
     "correct": 1,
-    "scored": 1
+    "scored": 9
   },
   "slots": [
     {
@@ -117,22 +126,22 @@
       "kernels": [],
       "mechanism": "Install nothing. The candidate is then bit-identical to the reference, so every column must measure the same thing.",
       "rationale": "Not a hedge but the strongest claim in the batch: the candidate IS the reference, so a ratio away from 1.00 means the harness is measuring something other than the kernel under test. If this misses, every other number below is void and the writeup says so rather than reporting them.",
-      "median_ratio": 1.0008608955110199,
-      "iqr_ratio": 0.0017983514373189902,
+      "median_ratio": 1.0018197410386402,
+      "iqr_ratio": 0.004322825991425194,
       "error": null,
-      "duration_s": 403.2368593860883,
+      "duration_s": 193.5273126962129,
       "peak_memory_mb": 9024,
       "phases_s": {
-        "candidate_build": 0.05440858588553965,
-        "correctness": 15.352904974017292,
-        "compile_candidate_compiled": 0.006576573941856623,
-        "bench": 387.82243624608964
+        "candidate_build": 0.05417599808424711,
+        "correctness": 15.310637725051492,
+        "compile_candidate_compiled": 0.006610828917473555,
+        "bench": 178.15532314800657
       },
       "prediction_correct": true
     },
     {
       "slug": "001-fused-rmsnorm-residual",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 0.00018,
@@ -145,21 +154,22 @@
       ],
       "mechanism": "Fuse the residual add with the RMSNorm that follows it, reading the hidden state once instead of across three separate elementwise kernels.",
       "rationale": "Ceiling 0.018% of per-token bytes \u2014 below the harness's own noise band, so even a perfect kernel is unmeasurable. Inductor also emits a single persistent reduction here that loads the row once, which is the same kernel generated. Written in September 2026 and never measured because eight rentals died on a container pull; this is its first measurement.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 23.01508640591055,
-      "peak_memory_mb": null,
+      "median_ratio": 0.5536386012539511,
+      "iqr_ratio": 0.006707688293944414,
+      "error": null,
+      "duration_s": 376.321088030003,
+      "peak_memory_mb": 9024,
       "phases_s": {
-        "candidate_build": 0.08979781297966838,
-        "correctness": 15.10897055012174,
-        "compile_candidate_compiled": 0.006134810857474804
+        "candidate_build": 0.0903278801124543,
+        "correctness": 14.919922452885658,
+        "compile_candidate_compiled": 0.005900879157707095,
+        "bench": 361.3044103819411
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "002-rmsnorm-only",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 0.00018,
@@ -171,21 +181,22 @@
       ],
       "mechanism": "The same Triton RMSNorm as 001 on the same three hidden-size sites, but without fusing the residual add.",
       "rationale": "Same 0.018% ceiling as 001, so the same argument applies. Its real job is to be subtracted: 001 changes the kernel AND the fusion, 002 changes only the kernel, so 001 minus 002 is the fusion's contribution. Neither number alone can separate them.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 23.217967150965706,
-      "peak_memory_mb": null,
+      "median_ratio": 0.5786783210966089,
+      "iqr_ratio": 0.0118050749565064,
+      "error": null,
+      "duration_s": 313.88603789010085,
+      "peak_memory_mb": 9024,
       "phases_s": {
-        "candidate_build": 0.09470290900208056,
-        "correctness": 15.160579333081841,
-        "compile_candidate_compiled": 0.005772985052317381
+        "candidate_build": 0.09097359306178987,
+        "correctness": 14.96439136005938,
+        "compile_candidate_compiled": 0.006035028025507927,
+        "bench": 298.82419846300036
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "003-qk-norm-triton",
-      "outcome": "error",
+      "outcome": "loss",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 1e-05,
@@ -197,21 +208,22 @@
       ],
       "mechanism": "The same kernel again on q_norm/k_norm: 256-wide rows instead of 2560-wide, ten times as many of them, in the 8 full-attention layers only.",
       "rationale": "A tenth of the reduction width and ten times the row count is a genuinely different regime for a persistent reduction \u2014 narrow rows are where a hand-written kernel's fixed launch cost is worst amortised, and where inductor's tiling heuristics have the most room to differ. The byte share is ~0.001%, far below anything measurable, so the prediction is a null; the reason to spend a slot is that the *shape regime* is untested and 001 explicitly declined to enter it.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 23.307536559877917,
-      "peak_memory_mb": null,
+      "median_ratio": 0.15459749780072965,
+      "iqr_ratio": 0.0021512964128145295,
+      "error": null,
+      "duration_s": 173.13143160007894,
+      "peak_memory_mb": 9024,
       "phases_s": {
-        "candidate_build": 0.09138567419722676,
-        "correctness": 15.38088376680389,
-        "compile_candidate_compiled": 0.005809683119878173
+        "candidate_build": 0.0949337079655379,
+        "correctness": 15.397058472968638,
+        "compile_candidate_compiled": 0.006102429004386067,
+        "bench": 157.63279544305988
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "004-fused-swiglu",
-      "outcome": "error",
+      "outcome": "loss",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 0.00026,
@@ -223,21 +235,22 @@
       ],
       "mechanism": "Fuse SiLU and the gate multiply into one pass over the two 9216-wide MLP intermediates, replacing three elementwise kernels with one.",
       "rationale": "Ceiling 0.026%. The MLP is 53.9% of weight bytes, but the fusion target is the activation, not the weights: at batch 1 the two intermediates are 18 KB each against 141 MB of weights per layer. The GEMMs are cuBLAS territory and this epilogue is rounding error.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 24.236647412879393,
-      "peak_memory_mb": null,
+      "median_ratio": 0.14604220645585286,
+      "iqr_ratio": 0.0013744645886024087,
+      "error": null,
+      "duration_s": 175.50748626608402,
+      "peak_memory_mb": 9134,
       "phases_s": {
-        "candidate_build": 0.09248451399616897,
-        "correctness": 16.154615177074447,
-        "compile_candidate_compiled": 0.005895103793591261
+        "candidate_build": 0.09207011200487614,
+        "correctness": 16.1521873769816,
+        "compile_candidate_compiled": 0.006049318006262183,
+        "bench": 159.25663980306126
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "005-fused-qkv-rope",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 4e-05,
@@ -249,21 +262,22 @@
       ],
       "mechanism": "Partial mRoPE in one pass: rotate 64 of 256 head dims in registers and pass the other 192 through, replacing a slice/negate/cat/cat chain that copies three quarters of every element for no reason but to rebuild contiguity.",
       "rationale": "Ceiling 0.004%, the smallest in the backlog. The projections' cost is streaming their weights; the Q/K/V intermediates are 0.33 MB/token across all 8 full-attention layers. The cat-elimination is real but it is real against a denominator of nothing.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 24.396520107984543,
-      "peak_memory_mb": null,
+      "median_ratio": 0.15598041918885558,
+      "iqr_ratio": 0.002425991797103344,
+      "error": null,
+      "duration_s": 171.62577317887917,
+      "peak_memory_mb": 9024,
       "phases_s": {
-        "candidate_build": 0.09176691714674234,
-        "correctness": 16.316958880983293,
-        "compile_candidate_compiled": 0.005799661856144667
+        "candidate_build": 0.09421607409603894,
+        "correctness": 15.398311481811106,
+        "compile_candidate_compiled": 0.0060930391773581505,
+        "bench": 156.12664525792934
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "006-gqa-no-expand",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "win",
       "category": "B",
       "byte_share": 0.0623,
@@ -276,21 +290,22 @@
       ],
       "mechanism": "Index the unexpanded KV cache directly instead of materialising repeat_interleave's 4x copy: each program maps its query head to hq // groups and reads the one KV head that actually exists.",
       "rationale": "The only slot here with a byte share worth anything: 570 MB/token, 6.23% of all per-token traffic, 300x every elementwise fusion in this batch combined. Category B \u2014 moving fewer bytes is a choice about representation, which a scheduler is not obliged to make. **Conditional:** if inductor already folds the expansion's index arithmetic into its consumer rather than materialising it, `compiled` has this win already and there is nothing to take. Nobody has read the output code to find out, so 6.23% is an upper bound, and the honest first move next session is TORCH_LOGS=output_code, which costs nothing.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 24.473167126066983,
-      "peak_memory_mb": null,
+      "median_ratio": 0.15521171220587954,
+      "iqr_ratio": 0.0017009147721638307,
+      "error": null,
+      "duration_s": 171.8832947849296,
+      "peak_memory_mb": 9437,
       "phases_s": {
-        "candidate_build": 0.09254090394824743,
-        "correctness": 16.475720848189667,
-        "compile_candidate_compiled": 0.005797170801088214
+        "candidate_build": 0.09533870499581099,
+        "correctness": 15.28277175896801,
+        "compile_candidate_compiled": 0.005931947147473693,
+        "bench": 156.49869906785898
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "007-gated-delta-fused-step",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "inconclusive",
       "category": "A",
       "byte_share": 0.011,
@@ -302,21 +317,22 @@
       ],
       "mechanism": "One pass over the (128, 128) fp32 recurrent state instead of five: decay, recall, rank-1 correction and read-out all held in registers. 24 of 32 layers are linear-attention layers.",
       "rationale": "1.10% of per-token bytes, and the ceiling is only the fraction of that the extra passes waste \u2014 the state must be read and written once regardless. That lands near the noise band before discounting. A memory-bound elementwise chain is also inductor's home turf, so it may already fuse most of it. NOT the chunked scan from the backlog, which is a larger claim that cannot express itself where there is no sequence to chunk.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 23.917985055129975,
-      "peak_memory_mb": null,
+      "median_ratio": 0.15683910519517874,
+      "iqr_ratio": 0.0036377425375962447,
+      "error": null,
+      "duration_s": 180.32843950600363,
+      "peak_memory_mb": 9115,
       "phases_s": {
-        "candidate_build": 0.09360423404723406,
-        "correctness": 15.828197073889896,
-        "compile_candidate_compiled": 0.005832150112837553
+        "candidate_build": 0.09378109592944384,
+        "correctness": 15.340178394922987,
+        "compile_candidate_compiled": 0.005896036978811026,
+        "bench": 164.8881139140576
       },
-      "prediction_correct": null
+      "prediction_correct": false
     },
     {
       "slug": "008-flash-decode-splitkv",
-      "outcome": "error",
+      "outcome": "incorrect",
       "prediction": "inconclusive",
       "category": "C",
       "byte_share": 0.0078,
@@ -328,17 +344,18 @@
       ],
       "mechanism": "Split the KV scan across 8 programs and merge their partial softmax results with the online-softmax rescaling identity, turning 16 programs at batch 1 into 128 and manufacturing parallelism the workload does not have.",
       "rationale": "A prediction about the experiment, not about the kernel. The KV read is 0.78% of per-token bytes at context 2048 while weights are 91.85%: parallelism in attention cannot show up in an end-to-end decode ratio when attention is not the bottleneck. docs/HYPOTHESES.md is explicit that this needs a 32k or 128k workload, and batch 001 has none. It is here as the **control for 006** \u2014 the two differ only in how the scan is parallelised, so 008 matching 006 is evidence that 006's win, if any, comes from not materialising the expansion \u2014 and to put a gated, measured kernel on disk for the session that adds a long-context workload.",
-      "median_ratio": null,
-      "iqr_ratio": null,
-      "error": "AssertionError: Running CUDAGraph after shutdown\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 378, in run_slot\n    result = run_interleaved(\n             ^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 291, in run_interleaved\n    elapsed = timer.time_ms(columns[label])\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/harness/bench.py\", line 63, in time_ms\n    fn()\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 184, in run\n    greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)\n  File \"/usr/local/lib/python3.12/dist-packages/torch/utils/_contextlib.py\", line 124, in decorate_context\n    return func(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/model.py\", line 125, in greedy_decode\n    logits, _ = model(input_ids, cache, num_logits_to_keep=1)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 472, in __call__\n    return super().__call__(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1024, in compile_wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1779, in _wrapped_call_impl\n    return self._call_impl(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/nn/modules/module.py\", line 1790, in _call_impl\n    return forward_call(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 686, in forward\n    def forward(\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/aot_autograd.py\", line 1200, in forward\n    return compiled_fn(full_args)\n           ^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 580, in runtime_wrapper\n    all_outs = call_func_at_runtime_with_args(\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/utils.py\", line 138, in call_func_at_runtime_with_args\n    out = normalize_as_list(f(args))\n                            ^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 2298, in __call__\n    return self.compiled_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 783, in wrapper\n    return compiled_fn(runtime_args)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_functorch/_aot_autograd/runtime_wrappers.py\", line 1011, in inner_fn\n    outs = compiled_fn(args)\n           ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/output_code.py\", line 656, in __call__\n    return self.current_callable(inputs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/df-cache/inductor/el/celwopipbmptqd5imovebnt3zmlk474yz2terf6ytftplngecdkf.py\", line 7854, in call\n    (buf771,) = self.partitions[0](partition0_args)\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/compile_fx.py\", line 1875, in run\n    return compiled_fn(new_inputs)  # type: ignore[arg-type]\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 420, in deferred_cudagraphify\n    return fn(inputs)\n           ^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/utils.py\", line 3401, in run\n    out = model(new_inputs)\n          ^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_inductor/cudagraph_trees.py\", line 2110, in run\n    assert self.graph is not None, \"Running CUDAGraph after shutdown\"\n           ^^^^^^^^^^^^^^^^^^^^^^\nAssertionError: Running CUDAGraph after shutdown\n",
-      "duration_s": 24.69240576401353,
-      "peak_memory_mb": null,
+      "median_ratio": 0.15268262997145496,
+      "iqr_ratio": 0.0029745005348738585,
+      "error": null,
+      "duration_s": 172.76811428996734,
+      "peak_memory_mb": 9437,
       "phases_s": {
-        "candidate_build": 0.09001031005755067,
-        "correctness": 16.602060288889334,
-        "compile_candidate_compiled": 0.005827130051329732
+        "candidate_build": 0.09384311409667134,
+        "correctness": 15.775342647917569,
+        "compile_candidate_compiled": 0.005925117060542107,
+        "bench": 156.89256148785353
       },
-      "prediction_correct": null
+      "prediction_correct": false
     }
   ],
   "git": {
@@ -349,7 +366,7 @@
   "environment": {
     "python_version": "3.12.3",
     "platform": "Linux-5.15.0-119-generic-x86_64-with-glibc2.39",
-    "hostname": "061ccef78571",
+    "hostname": "f3296422b256",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
@@ -359,15 +376,15 @@
     "driver_version": "580.173.02",
     "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2565,
+      "sm": 2572,
       "memory": 13801,
-      "observed_at": "2026-09-14T21:34:05.215454+00:00"
+      "observed_at": "2026-09-14T22:39:35.327557+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0"
   },
   "cost": {
-    "instance_id": "51055276",
+    "instance_id": "51057825",
     "hourly_rate_usd": 0.4362962962962963,
     "gpu_model": null,
     "actual_minutes": null,

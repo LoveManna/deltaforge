@@ -1,15 +1,24 @@
-# Batch 001 — calibration. Void again, and further along.
+# Batch 001 — calibration. The harness is calibrated; the batch is not yet measured.
 
-**No hypothesis in this batch has been measured.** Two rentals on 2026-09-08 (21 and 22)
+> **Current state (2026-09-14, rental 35).** All nine slots ran to completion for the
+> first time. `calibrated: true` — `000-identity` measured **1.0018** against an IQR of
+> **0.0018**, correctness exact. Six of eight kernels failed the correctness gate, which is
+> a real result. **No hypothesis has an admissible ratio**, because dynamo hit
+> `recompile_limit` inside slot 2 and slots 3-8 timed an eager candidate. Full account in
+> "Rentals 33-35" below; everything above that heading is older and kept for the record.
+
+---
+
+**No hypothesis in this batch had been measured as of 2026-09-08.** Two rentals (21 and 22)
 reached the batch loop; neither produced a ratio. The identity champion never returned a
-number, so the batch is **void by its own rule** — `calibrated: false`,
+number, so the batch was **void by its own rule** — `calibrated: false`,
 `counts: {"error": 9}`, `prediction_record: {"correct": 0, "scored": 0}`.
 
 Not one of the nine predictions was scored. A slot that errored never tested its
 prediction, and counting those as wrong would understate the record exactly as counting
 them right would flatter it.
 
-The JSON records here are **rental 21's**. Rental 22 completed no slot, so it overwrote
+The JSON records here were **rental 21's**. Rental 22 completed no slot, so it overwrote
 nothing.
 
 ---
@@ -291,3 +300,170 @@ is `mode="reduce-overhead"` or fewer columns, not more cores and not a bigger ba
 Five rentals, 91.39 billed minutes, $0.567 — session `batch001-20260908T211825Z`, which
 ended at its 90-minute gate. Zero leaked instances. Three of the five died to blocker 7
 before it was understood.
+
+## Rentals 33-35, 2026-09-14 — nine slots ran, and the harness is calibrated
+
+Three rentals, **$0.662**, and the first measurements this project has taken. Two of the
+three bought a layer that the one before it had been hiding.
+
+### The compile finished
+
+Rental 32 spent its entire 6980.9s cap inside slot 0 without completing a cold
+`max-autotune`. No run ever had. The cause was not cores, not autograd, and not the cache:
+
+`gated_delta_rule` scans the sequence with a Python `for t in range(seq_len)`, and dynamo
+**unrolls that into the graph**. Measured on a CPU against the tiny config, the captured
+graph grows linearly with prefill length at ~22 FX nodes per token per linear-attention
+layer — 466 nodes at prefill 8, 5922 at 256. Qwen3.5-4B has **24** linear-attention layers
+of 32 and the workload prefills **2048** tokens, so `setup()` handed inductor roughly
+**1.08 million FX nodes** under `max-autotune`, once per column.
+
+And `run_interleaved` excludes every `setup` from the timed region *by construction*. The
+compile that consumed four rentals was of a graph nothing measures.
+
+The prefill now runs on the eager module; the decode steps, which are the measurement, still
+go through the compiled wrapper.
+
+| | slot-0 reference compile |
+|---|---|
+| rental 32 (cold, autograd already fixed) | **6980.9s, did not finish** |
+| rental 34 (47 MB cache from 32) | **267.5s** |
+| rental 35 (298 MB cache from 34) | **57.4s** |
+
+Every timed round after the compile is ~900ms with an IQR under 0.005.
+
+### Calibration passes
+
+| rental | identity ratio | IQR | correctness |
+|---|---:|---:|---|
+| 34 | **1.0009** | 0.0018 | exact — `max_abs_err` 0.0, 32/32 tokens on 5 prompts |
+| 35 | **1.0018** | 0.0043 | exact |
+
+`summary.json` records `calibrated: true`. The identity champion is the strongest claim in
+the batch and it has never returned a number before. **Every other number in this batch is
+now admissible in principle** — which is what makes the rest of this section a statement
+about the numbers rather than about the harness.
+
+### Rental 34: the reclaim that emptied the batch
+
+Slot 0 calibrated, and then **all eight scoring slots died in 23s each**:
+
+```
+AssertionError: Running CUDAGraph after shutdown
+```
+
+`release_compiled_state` called `reset_cudagraph_trees` to give back the graph pool a
+finished slot was holding, on the premise — written in its own docstring — that the
+reference would "re-record on the next slot's first warmup call". It does not. The shutdown
+is permanent for an already-recorded callable, and inductor's trees are per **device**, not
+per model, so releasing the candidate tore down the reference columns too.
+
+This could not appear until a slot completed, which is why 33 rentals never saw it.
+
+The pools now stay, and rental 34 measured what that costs: slot 0 recorded CUDA graphs on
+both columns and sat at **8.07 GiB allocated / 8.08 reserved of 31.36 before and after the
+release alike**. At two columns with autograd off, the reclaim returned less than the logged
+number resolves. (It also settles blocker 8: nine slots never exceeded 8.07 GiB.)
+
+### Rental 35: nine slots, and six of them are not measurements
+
+| slot | outcome | ratio | IQR | ref ms | cand ms | correctness |
+|---|---|---:|---:|---:|---:|---|
+| 000-identity | inconclusive | 1.0018 | 0.0043 | 893.2 | 892.4 | pass |
+| 001-fused-rmsnorm-residual | incorrect | 0.5536 | 0.0067 | 911.8 | 1637.6 | **fail** |
+| 002-rmsnorm-only | incorrect | 0.5787 | 0.0118 | 924.9 | 1589.9 | **fail** |
+| 003-qk-norm-triton | loss | 0.1546 | 0.0022 | 920.7 | 5950.4 | pass |
+| 004-fused-swiglu | loss | 0.1460 | 0.0014 | 902.2 | 6201.3 | pass |
+| 005-fused-qkv-rope | incorrect | 0.1560 | 0.0024 | 898.0 | 5793.7 | **fail** |
+| 006-gqa-no-expand | incorrect | 0.1552 | 0.0017 | 912.9 | 5919.2 | **fail** |
+| 007-gated-delta-fused-step | incorrect | 0.1568 | 0.0036 | 919.3 | 5872.1 | **fail** |
+| 008-flash-decode-splitkv | incorrect | 0.1527 | 0.0030 | 898.4 | 5944.0 | **fail** |
+
+Six kernels attacking six different operations — QK norm, SwiGLU, RoPE, GQA, the delta-rule
+scan, split-K attention — returning ratios between 0.146 and 0.157. That is not six
+coincidences. It is one systematic effect, and the log names it:
+
+```
+[0/8] torch._dynamo hit config.recompile_limit (8)
+```
+
+Dynamo caches compiled code per **code object** with guards, and a fresh candidate module is
+a fresh guard. Every slot compiles one against the same `ReferenceModel.forward`, so slot N
+is cache entry N. At the limit, dynamo stops compiling that code object and **runs it
+eagerly for the rest of the process**, with a warning and no error.
+
+The per-round progress log added this session shows it happening. The candidate's *first*
+round, which contains its compile:
+
+| slot | candidate round 0 |
+|---|---:|
+| 0 | 906.9 ms |
+| 1 | 235 848.1 ms — compiling |
+| 2 | 171 750.6 ms — compiling; the limit trips here |
+| 3 | 6 020.0 ms — **not compiling** |
+| 4 | 6 162.5 ms |
+| 5 | 5 965.9 ms |
+| 6 | 5 945.9 ms |
+| 7 | 5 928.7 ms |
+| 8 | 5 991.9 ms |
+
+**So slots 3-8 timed an eager candidate against a compiled reference.** Their ratios measure
+`torch.compile` itself — worth about 6.5x on batch-1 decode, which is its own datum — and say
+nothing about any kernel. `003-qk-norm-triton` and `004-fused-swiglu` are recorded as `loss`
+and **are not losses**; they are void, and they are the two that passed correctness.
+
+Slots 1 and 2 *did* compile, so their ratios are admissible. Both failed correctness, so
+neither is a finding about speed.
+
+### What is trustworthy from rental 35
+
+**The correctness gate**, for all eight kernels — it runs eagerly, before the benchmark, and
+does not depend on compilation at all. Six of eight kernels failed it. That is a real
+result, and this project's first.
+
+**Why they failed is not settled**, and the detail matters. For 001 and 002 the *layer-1
+kernel checks passed* — max relative error 0.0076 and 0.0074 against the tensor's own
+scale, a couple of bf16 ULP. It is **layer 2**, exact token equality, that failed: on 1 of 5
+prompts, at token 9, **identically for two different kernels**.
+
+Two independent kernels diverging at the same token of the same prompt, at relative errors
+inside the bf16 bound, is the signature of a borderline argmax — not of two coincident bugs.
+`AGENT.md` §7a records this project getting that call wrong in one direction (four fp32-era
+bounds that looked like model bugs) and the oracle saga getting it wrong in the other. **Do
+not promote either reading without the number**: the top-2 logit gap at the diverging step,
+against the disagreement the two implementations show anyway. That is exactly what
+`test_report_the_first_greedy_divergence` already computes for the oracle, and the same
+treatment applies here.
+
+### Scorecard
+
+`prediction_record: {"correct": 1, "scored": 9}`. Read it with care: the one correct
+prediction is the identity slot. Six of the eight kernel predictions were scored against
+ratios that measure a fallback rather than a kernel, so the scorecard is not yet meaningful
+for them either.
+
+### What it cost
+
+| Rental | GPU | Billed | Cost | Outcome |
+|---|---|---:|---:|---|
+| 33 | RTX 5090 (machine 44927) | 8.90 min | $0.0602 | CUDA `Error 804` — blocker 11 recurred |
+| 34 | RTX 5090 | 30.15 min | $0.2192 | compile finished; calibrated; 8 slots lost to the cudagraph reset |
+| 35 | RTX 5090 | 52.65 min | $0.3829 | **all nine slots ran**; 6 lost to the recompile limit |
+| | | 91.70 min | **$0.6623** | month-to-date $5.764 of $45 |
+
+Zero leaked instances. The session ends at 91.70 of its 180 billed minutes, and the
+pre-flight gate refuses the next rental on its own arithmetic.
+
+### What the next session should do first
+
+**One thing, and it is written and tested on CPU already:** `recompile_limit_for` in
+`batch_run.py` raises dynamo's limit to cover every slot, and each slot record now carries
+`graphs_compiled`, so a candidate that never compiled says so in the record instead of
+publishing a plausible ratio. Neither has run on a GPU.
+
+Run batch 001 again. Slot 0 is now ~194s including a warm compile, a slot averages ~200s,
+and a full nine-slot batch took 44 minutes of GPU time — so this is one rental, and it
+should produce eight admissible ratios and the project's first real leaderboard.
+
+Then, separately and cheaply, settle the layer-2 correctness question above with the logit
+gap rather than by loosening the gate.

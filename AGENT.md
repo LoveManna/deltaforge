@@ -68,17 +68,20 @@ TORCH_LOGS=output_code python -m deltaforge.cli bench --weights … 2>&1 | tee i
 
 This prints the exact Triton inductor generated. **Do this before writing a kernel.** You
 cannot claim to beat code you have not read, and you cannot explain why you won without it.
-Also confirm the baseline actually compiled — a silent graph break drags `compiled` toward
+Also confirm both columns actually compiled. A silent graph break drags `compiled` toward
 eager and inflates every ratio in your favour, which is the first thing a sceptical reader
-checks.
+checks — and rental 35 proved it cuts the other way just as easily, when the *candidate*
+stopped compiling and six hypotheses reported ratios near 0.15 that measured nothing (§8).
+Every slot record now carries `graphs_compiled`; a `0` there means the ratio beside it is
+not a comparison.
 
 ## 4. A session, start to finish
 
 **A rental measures a batch of 7-12 hypotheses, not one.** The fixed cost of a rental —
 container image, torch, a 9.32 GB checkpoint, the GPU suite, and one `max-autotune` compile
-of the reference — is about 15 minutes. Each additional hypothesis costs 2-4. Testing one
-per rental pays that 15 minutes to buy a single measurement, and nine rentals were billed
-that way without producing a number. `docs/BATCHES.md` has the arithmetic and the workflow;
+of the reference — is about 19 minutes, and each additional hypothesis costs 3-6. Those are
+measured on rentals 34-35, not estimated. Testing one per rental pays that fixed cost to buy
+a single measurement, and nine rentals were billed that way without producing a number. `docs/BATCHES.md` has the arithmetic and the workflow;
 `docs/superpowers/specs/2026-09-06-batched-hypotheses-design.md` is the design.
 
 1. **Read `LEADERBOARD.md`** — current champion and every attempt so far.
@@ -190,14 +193,12 @@ Until that number exists, **do not promote either reading**, and every number do
 the reference remains inadmissible. See `docs/GPU-ACCESS.md` (blocker 13) and
 `results/batches/001-calibration/README.md`.
 
-**Then know what a compile costs.** The 15-minutes-fixed + 2-4-per-slot split in §4 and
-`docs/BATCHES.md` is an *estimate that has never been measured*, and the only evidence so
-far contradicts it: rental 22 spent ~40 minutes in one slot's cold `max-autotune` compile
-and the session gate ended the run. Until that number is known, a batch's size is a guess.
-`002-compile-cost` — three slots whose product is the clock — is written and has **never
-started**: five rentals on 2026-09-10 all died before the batch loop. See
-`results/batches/001-calibration/README.md` and
-`results/batches/002-compile-cost/README.md`.
+**The compile cost is now measured** (2026-09-14, rentals 34-35), and `docs/BATCHES.md`
+carries the numbers: ~19 minutes of fixed cost, a reference `max-autotune` compile of
+**268 s cold / 57 s warm**, and **173-376 s per slot**. A full nine-slot batch ran in 44
+minutes. The ~40-minute figure this section used to carry measured an unrolled prefill scan
+that nothing times — see §8. `002-compile-cost` was written to obtain these numbers and
+batch 001 produced them instead.
 
 **The compile cache now comes home.** Torch's fx-graph and autotune caches are on by
 default but write to `/tmp` on a box that gets destroyed, so every rental this project has
@@ -247,13 +248,15 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Thirty-two rentals have been billed on this project and none has produced a number.**
-The early ones died on an anonymous Docker Hub pull and the blockers behind it; those are
-fixed. As of 2026-09-13 the failure has moved all the way to the end: the oracle gate
-passes on three independent hosts, correctness gates pass, memory is flat — and slot 0
-still cannot finish a cold `max-autotune` compile inside a session. `docs/GPU-ACCESS.md`
-records every blocker, how each was fixed, and which fixes are *proven on a GPU* rather
-than merely believed.
+**Thirty-five rentals have been billed. The harness is calibrated and no hypothesis has an
+admissible ratio yet.** As of 2026-09-14 rental 35 ran all nine slots of batch 001: the
+oracle gate passes, the identity champion measures 1.0018 against an IQR of 0.0018, memory
+is flat at 8.07 GiB of 31.36, and six of eight kernels failed the correctness gate — which
+is a real result and the first this project has. The remaining obstacle is blocker 16 (§8):
+dynamo stopped compiling candidates part-way through the batch, so six slots timed an eager
+candidate and their ratios are void. The fix is written and tested on CPU and has never run
+on a GPU. `docs/GPU-ACCESS.md` records every blocker, how each was fixed, and which fixes
+are *proven on a GPU* rather than merely believed.
 
 ## 6. Recording the outcome — the part that matters
 
@@ -452,6 +455,43 @@ Model-level traps, all asserted by tests so CI catches them before the GPU does:
   flat projection.
 - **The Gated DeltaNet projection layout differs from Qwen3-Next**: four separate
   projections, no head interleaving to undo.
+
+**Compiling something nothing measures.** `gated_delta_rule` scans the sequence with a
+Python `for t in range(seq_len)`, which dynamo unrolls into the graph — ~22 FX nodes per
+token per linear-attention layer, measurable on a CPU with the tiny config. At the
+benchmark's 2048-token context across 24 such layers that is **~1.08M nodes**, handed to
+inductor under `max-autotune`, once per column. Four rentals died there. None of it was ever
+timed: `run_interleaved` excludes every `setup` from the measured region by design, and the
+prefill is setup. The prefill now runs eager.
+
+The general form: **before optimising a cost, check that anything measures it.** The cheapest
+version of that check is free and needs no GPU — a counting `torch.compile` backend that
+returns the graph module and reports `len(gm.graph.nodes)`.
+
+**Dynamo stops compiling, and says so only in a warning.** Its `recompile_limit` (default 8)
+is per *code object*. Every batch slot compiles a fresh candidate against the same
+`ReferenceModel.forward`, so slot N is cache entry N, and past the limit dynamo runs that
+code object **eagerly for the rest of the process**. Rental 35 tripped it inside slot 2:
+six hypotheses attacking six unrelated operations then returned ratios between 0.146 and
+0.157, with tight IQRs, all of them measuring eager against compiled.
+
+Nothing failed. The ratios looked like results. `recompile_limit_for` in `batch_run.py` now
+raises the limit to cover the batch, and every slot record carries `graphs_compiled` — a `0`
+there means the number beside it is not a comparison. **Widening a batch means widening that
+limit too.**
+
+**A reclaim can have a premise that was never true.** `release_compiled_state` called
+`reset_cudagraph_trees` between slots, its docstring asserting the reference would
+"re-record on the next slot's first warmup call". It does not: the shutdown is permanent for
+an already-recorded callable, and inductor's trees are per *device*, not per model. Rental 34
+calibrated in slot 0 and then lost all eight scoring slots to
+`AssertionError: Running CUDAGraph after shutdown`, 23s each.
+
+It stayed invisible for 33 rentals because it can only fire *between* two completed slots,
+and until rental 34 no slot had ever completed. Blocker 7 was a guard firing before its
+subject was reached; blocker 9 one firing after its subject had succeeded; this is a third
+shape — **a cleanup whose stated justification had never been tested at all.** When a
+comment explains why something is safe, check whether anything ever exercised it.
 
 ## 9. Environments — the one thing that surprises people
 

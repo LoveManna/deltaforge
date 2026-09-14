@@ -504,3 +504,96 @@ def test_the_untimed_prefill_still_fills_the_cache(monkeypatch):
 
     run()
     assert seen == [16, 1, 1, 1], "the timed region is the decode steps over the filled cache"
+
+
+# -- dynamo's recompile limit, which is a ceiling on how many slots a batch can measure ----
+
+
+def test_dynamo_falls_back_to_eager_once_a_code_object_is_recompiled_too_often():
+    """The mechanism that voided six of rental 35's nine slots, reproduced on a CPU.
+
+    Dynamo caches compiled code per *code object* with guards, and a fresh candidate module
+    is a fresh guard. A batch builds one candidate per slot against the same
+    `ReferenceModel.forward`, so slot N is cache entry N — and at `recompile_limit` (8 by
+    default) dynamo stops compiling that code object **and runs it eagerly, for the rest of
+    the process**, with a warning and no error.
+
+    Rental 35 hit it inside slot 2. From slot 3 on, the candidate column's first round
+    dropped from ~170s of compiling to a flat ~6s of not compiling, and all six remaining
+    ratios clustered at 0.15 regardless of which kernel was installed, because what they
+    measured was eager against compiled.
+    """
+    import torch
+    import torch._dynamo as dynamo
+
+    from .config import tiny_config
+    from .reference import ReferenceModel
+
+    dynamo.reset()
+    compiled_count = 0
+
+    def counting_backend(gm, example_inputs):
+        nonlocal compiled_count
+        compiled_count += 1
+        return gm.forward
+
+    limit = 4
+    with dynamo.config.patch(recompile_limit=limit):
+        config = tiny_config()
+        prompt = torch.randint(0, config.vocab_size, (1, 4))
+        for _ in range(limit + 3):
+            model = ReferenceModel(config).eval()
+            runnable = torch.compile(model, backend=counting_backend, dynamic=False)
+            with torch.no_grad():
+                runnable(prompt, model.new_cache(1, 8), num_logits_to_keep=1)
+
+    assert compiled_count <= limit, (
+        f"dynamo compiled {compiled_count} times against a limit of {limit}; past the limit "
+        "it silently runs eager, which is what a slot then measures"
+    )
+
+
+def test_the_batch_raises_the_recompile_limit_to_cover_every_slot():
+    """Each slot legitimately needs its own entry, so the default limit caps the batch.
+
+    Raising it is not papering over runaway recompilation: the recompiles here are bounded
+    and intended, one candidate per slot plus a few for dynamic shapes. Leaving the default
+    in place means a batch longer than a handful of slots reports eager timings as kernel
+    results — silently, and with a plausible-looking ratio.
+    """
+    from .batch_run import recompile_limit_for
+
+    assert recompile_limit_for(9) >= 9
+    # Still bounded: a limit that grows without end would hide a real runaway.
+    assert recompile_limit_for(9) <= 64
+    # Never lowers what torch already allows.
+    assert recompile_limit_for(1) >= 8
+
+
+def test_a_slot_records_how_many_graphs_dynamo_actually_compiled():
+    """A ratio from a candidate that never compiled is not a comparison, and looks like one.
+
+    Rental 35 published six of them — 0.146 to 0.157, tight enough to look like a real
+    effect — from a candidate dynamo had stopped compiling. Nothing in the record said so;
+    the only trace was a warning in the rental log and a first round that was suspiciously
+    quick. `AGENT.md` §3 already tells a session to confirm the baseline actually compiled.
+    This makes the run confirm it, for both columns, without being asked.
+    """
+    from .batch_run import graphs_compiled_during
+
+    counters = {"stats": {"unique_graphs": 3}}
+
+    with graphs_compiled_during(counters) as count:
+        counters["stats"]["unique_graphs"] = 7
+
+    assert count.compiled == 4
+
+
+def test_graph_counting_survives_a_torch_that_does_not_offer_the_counter():
+    """Private API. Its absence must cost the evidence, not the slot."""
+    from .batch_run import graphs_compiled_during
+
+    with graphs_compiled_during({}) as count:
+        pass
+
+    assert count.compiled is None

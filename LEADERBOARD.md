@@ -20,9 +20,10 @@ first session to get a working GPU records the baseline; until then this table s
 HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10 and again on
 2026-09-12; see below. That was the outstanding precondition, so it is now the outstanding
 *question*. The oracle's version is pinned rather than floored since 2026-09-11, which was
-right on its own terms and ruled itself out as the cause on the next rental. Also still missing
-is a *calibrated harness*: an identity champion that measures 1.00 ± noise. Until both
-exist there is no baseline, and `AGENT.md` §4 still governs what to do about it.
+right on its own terms and ruled itself out as the cause on the next rental. **The calibrated harness now exists**: on rentals 34 and 35 the identity champion
+measured 1.0009 and 1.0018 against IQRs of 0.0018 and 0.0043, with correctness exact. That
+was the other outstanding precondition and it is met. There is still no baseline and no
+champion, because no candidate has produced an admissible ratio — see the hypotheses table.
 
 ### The reference was validated on 2026-09-07, and disagreed on 2026-09-10.
 
@@ -89,30 +90,35 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 5 | Four `oracle_test.py` bounds were fp32-era absolutes applied to bf16 | fixed, proven |
 | 6 | Candidate construction double-allocates the 8.4 GB of weights | fixed, **proven** — every slot on rental 21 built and passed correctness |
 | 7 | Readiness waited on `cur_state` (the rental contract), not `actual_status` (the container) | fixed, proven |
-| 8 | The benchmark OOMs at warmup with the default four columns | fix written, **untested** |
+| 8 | The benchmark OOMs at warmup with the default four columns | fixed, **proven** — rentals 34-35 held 8.07 GiB of 31.36 across nine slots |
 | 9 | **The stall guard destroyed a healthy rental** the moment its pull finished | fixed, **proven** — three instances have since passed through that state |
 | 10 | A phantom ask traps the deterministic, price-ordered offer search | manual `--exclude-machines` only, **no real fix** |
-| 11 | Host driver older than our torch build → CUDA `Error 804` | fixed, **proven** — `DF_MIN_CUDA` placed rental 27 on a working card |
-| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | fix written, **untested** |
-| 13 | The oracle's greedy decode no longer matches HuggingFace | **open** — the `transformers` explanation was refuted on rental 28 |
+| 11 | Host driver older than our torch build → CUDA `Error 804` | **recurred on rental 33** — `DF_MIN_CUDA` filters an advertised `cuda_max_good`, not a driver |
+| 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | fixed, **proven** — the GPU suite has passed on rentals 34 and 35 |
+| 13 | The oracle's greedy decode no longer matches HuggingFace | **closed** — agrees token-for-token on rentals 30-32 and 34-35, zero tie-breaks |
+| 14 | A cold `max-autotune` compile never finishes inside a session | fixed, **proven** — the unrolled prefill scan; 6980.9s (unfinished) → 267.5s → 57.4s warm |
+| 15 | `reset_cudagraph_trees` between slots tears down the reference columns | fixed, **proven** — it emptied rental 34, and rental 35 ran all nine slots |
+| 16 | Dynamo's `recompile_limit` (8) makes a batch silently time **eager** candidates | fix written, **untested** — cost six of rental 35's nine slots |
 
 Blocker 7 is worth reading even though it is closed: it had been costing rentals since 11
 while wearing a convincing disguise as flaky hosts, and the "2 in 17 rentals go to hosts
 that never answer sshd" line this file used to carry has been withdrawn.
 
-**The next session still starts on blocker 13**, because an unvalidated reference makes
-every number downstream of it meaningless. The `transformers` explanation is dead: 5.17.0
-was released 2026-09-09, so the floor already resolved to 5.16.1 on the day the test
-*passed*, and rental 28 pinned 5.16.1 and failed byte-identically to rental 27 on different
-hardware. Every other input — model code, test, prompt, checkpoint revision, torch, triton,
-python — is unchanged between the two.
+**The next session starts on blocker 16**, which is the only thing between this project
+and its first admissible ratio. The fix — `recompile_limit_for` in `batch_run.py`, plus a
+`graphs_compiled` count in every slot record so a candidate that did not compile says so —
+is written and tested on CPU, and has never run on a GPU.
 
-What is left is the gate itself: exact equality over 32 sequential bf16 argmaxes.
-`test_report_the_first_greedy_divergence` measures the top-two logit gap at the diverging
-step and writes it to `results/diagnostics/`, asserting nothing. It runs inside the suite
-that already runs before every batch, so the number costs no extra GPU time.
+Note what blockers 14, 15 and 16 have in common: none of them could be seen until the one
+before it was fixed. 14 stopped any slot finishing, so 15 (which only fires *between* two
+slots) was invisible; 15 emptied the batch after slot 0, so 16 (which only fires once
+several candidates have compiled) was invisible in turn. Three rentals in one day, each
+buying exactly one layer.
 
-Then blockers 8 and 12, and the compile time behind them. See `docs/GPU-ACCESS.md`,
+Blocker 11 is the one regression: its fix was recorded as proven on the strength of rental
+27 and rental 33 disproved it. `DF_MIN_CUDA` filters the offer's advertised `cuda_max_good`,
+which is a claim rather than a driver, and a host sitting exactly on the floor turned out to
+be the risky case. See `docs/GPU-ACCESS.md`,
 `results/batches/002-compile-cost/README.md`, and
 `results/batches/001-calibration/README.md`.
 
@@ -130,18 +136,27 @@ Then blockers 8 and 12, and the compile time behind them. See `docs/GPU-ACCESS.m
 
 ## Hypotheses
 
-Nine written and shipped. **None measured.**
+Nine written and shipped. **Nine ran on rental 35 (2026-09-14), and none has an admissible
+ratio.** The batch is *calibrated* for the first time — `000-identity` measured 1.0018 with
+an IQR of 0.0018 — so the harness is trustworthy. What is not trustworthy is six of the
+eight numbers below, and the reason is recorded rather than guessed: dynamo hit
+`recompile_limit` (8) inside slot 2 and stopped compiling candidates, so slots 3-8 timed an
+**eager** candidate against a compiled reference. Six unrelated kernels returning ratios
+between 0.146 and 0.157 is that fallback, not six coincidences.
+
+`ratio*` marks a number measured against a candidate that never compiled. It is kept
+because deleting evidence is worse than labelling it, and it is not a result.
 
 | ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
 |---|---|---|---:|---:|---|---|---|---|
-| 001 | Fused residual add + RMSNorm | `rms_norm_residual` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 002 | Standalone Triton RMSNorm, hidden-size sites | `rms_norm` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 003 | The same kernel on `q_norm`/`k_norm` | `rms_norm` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 004 | Fused SwiGLU activation | `swiglu_mlp` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 005 | Fused partial mRoPE | `qkv_projection_rope` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 006 | GQA decode without the head expansion | `gqa_attention` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 007 | Fused gated delta-rule step | `gated_delta_rule` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
-| 008 | Split-KV flash decode | `gqa_attention` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
+| 001 | Fused residual add + RMSNorm | `rms_norm_residual` | 0.5536 | 0.0067 | RTX 5090 | **fail** — layer 2, 1 of 5 prompts, token 9 | `incorrect` | [dir](results/batches/001-calibration/) |
+| 002 | Standalone Triton RMSNorm, hidden-size sites | `rms_norm` | 0.5787 | 0.0118 | RTX 5090 | **fail** — layer 2, 1 of 5 prompts, token 9 | `incorrect` | [dir](results/batches/001-calibration/) |
+| 003 | The same kernel on `q_norm`/`k_norm` | `rms_norm` | 0.1546* | 0.0022 | RTX 5090 | pass | **void** — candidate ran eager | [dir](results/batches/001-calibration/) |
+| 004 | Fused SwiGLU activation | `swiglu_mlp` | 0.1460* | 0.0014 | RTX 5090 | pass | **void** — candidate ran eager | [dir](results/batches/001-calibration/) |
+| 005 | Fused partial mRoPE | `qkv_projection_rope` | 0.1560* | 0.0024 | RTX 5090 | **fail** | `incorrect`, ratio void | [dir](results/batches/001-calibration/) |
+| 006 | GQA decode without the head expansion | `gqa_attention` | 0.1552* | 0.0017 | RTX 5090 | **fail** | `incorrect`, ratio void | [dir](results/batches/001-calibration/) |
+| 007 | Fused gated delta-rule step | `gated_delta_rule` | 0.1568* | 0.0036 | RTX 5090 | **fail** | `incorrect`, ratio void | [dir](results/batches/001-calibration/) |
+| 008 | Split-KV flash decode | `gqa_attention` | 0.1527* | 0.0030 | RTX 5090 | **fail** | `incorrect`, ratio void | [dir](results/batches/001-calibration/) |
 
 **2026-09-13 (rentals 30-32): still no ratio, but the reason is now known.** The oracle
 gate passes on three independent hosts with zero tie-breaks, and correctness gates pass.
@@ -151,17 +166,32 @@ voided everything else. The cause of two of those errors was one missing `no_gra
 does not finish inside a session — which no run has ever managed. See
 `results/batches/001-calibration/README.md`.
 
-**All nine slots carry no ratio, and every prediction is unscored.** They are written,
-gated on CPU, and shipped; they simply have not been measured. A slot that errored never
-tested its prediction, so `summary.json` records `0 correct of 0 scored` rather than 0 of 9
-— counting an untested prediction as wrong would understate the record exactly as counting
-it right would flatter it.
+**2026-09-14 (rentals 33-35): the harness is calibrated, and the batch is not
+trustworthy past slot 2.** `summary.json` records `calibrated: true`, `counts:
+{inconclusive: 1, incorrect: 6, loss: 2}` and `1 correct of 9 scored`. Read that scorecard
+with care: the one correct prediction is the identity slot, and the two `loss` outcomes are
+the artefact above rather than measurements of a kernel.
+
+What *is* trustworthy from this rental, because it does not depend on compilation at all:
+**the correctness gate ran eagerly for all eight kernels and six of them failed.** That is a
+real result about the kernels, and it is the first one this project has.
+
+What is not settled is *why* they failed. For 001 and 002 the layer-1 kernel checks
+**passed** (max relative error 0.0076 and 0.0074, a couple of bf16 ULP) and it is layer 2 —
+exact token equality — that failed, on the same 1 of 5 prompts at the same token 9, for two
+different kernels. An identical divergence from two independent kernels, at relative errors
+inside the bf16 bound, is the signature of a borderline argmax, not of two coincident bugs.
+This project has twice mistaken that signature for a model bug (`AGENT.md` §7a) and once for
+a fragile gate. **Do not promote either reading without the top-2 logit gap at the diverging
+step**, which is the same number `test_report_the_first_greedy_divergence` already produces
+for the oracle.
 
 **001 is no longer graveyarded on mechanism.** It was closed on the argument that a 0.018%
-ceiling is not worth a rental — an argument about *cost*, which batching dissolves. At
-roughly three minutes a slot it is worth measuring, and it is now slot 1 of batch 001
-awaiting a working harness. Its arithmetic still stands as the *prediction*; what changed is
-that the prediction is now falsifiable in practice. Same for 004 and 005.
+ceiling is not worth a rental — an argument about *cost*, which batching dissolves. Its
+arithmetic still stands as the *prediction*; what changed is that the prediction is now
+falsifiable in practice. Same for 004 and 005. **None of them is graveyarded on this
+rental either**: a kernel whose candidate never compiled has not been shown to be slow, and
+a kernel that fails an exact-token gate at 2 ULP has not been shown to be wrong.
 
 ### Column definitions
 
