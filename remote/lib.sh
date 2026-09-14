@@ -102,6 +102,40 @@ df_cache_is_warm() {
     [ -d "$1" ] && [ -n "$(ls -A "$1" 2>/dev/null)" ]
 }
 
+# df_phase_estimates CACHE_ROOT [CACHE_KEY]
+# The measured phase costs the pre-flight gate should use, as `KEY=VALUE` lines on stdout.
+# Prints nothing when no rental has measured any, which leaves the caller's cold defaults
+# in place -- a zero would read as "this phase is free" and buy a rental that cannot finish.
+#
+# The gate cannot pass a CACHE_KEY, and that is the point. The key is read off the rented
+# box (`torch.cuda.get_device_name`), so it does not exist until an instance is running,
+# while the gate runs before anything is provisioned. `run_remote.sh` therefore expanded
+# `$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}/phases.env`, missed every time, and fell back to
+# the cold estimates on every rental this project has run -- including after rental 34
+# measured a slot at 403.2s against a cold guess of 1980.
+#
+# With no key, every cached card is surveyed and the **largest** value for each phase wins.
+# The gate cannot know which card the market will give it, and being wrong optimistically
+# here buys a compile and no measurement.
+df_phase_estimates() {
+    _root="$1"
+    _key="${2:-}"
+    [ -d "$_root" ] || return 0
+    if [ -n "$_key" ] && [ -f "$_root/$_key/phases.env" ]; then
+        cat "$_root/$_key/phases.env"
+        return 0
+    fi
+    find "$_root" -mindepth 2 -maxdepth 2 -name phases.env -exec cat {} + 2>/dev/null | awk '
+        /^[A-Za-z_][A-Za-z0-9_]*=/ {
+            split($0, parts, "=")
+            name = parts[1]
+            value = parts[2] + 0
+            if (!(name in best) || value > best[name]) best[name] = value
+        }
+        END { for (name in best) printf "%s=%.1f\n", name, best[name] }
+    '
+}
+
 # ---------------------------------------------------------------------------
 # Credentials
 # ---------------------------------------------------------------------------

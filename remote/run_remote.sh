@@ -349,11 +349,15 @@ fi
 DF_PHASE_SETUP_S="${DF_PHASE_SETUP_S:-1500}"
 DF_PHASE_REFERENCE_COMPILE_S="${DF_PHASE_REFERENCE_COMPILE_S:-2400}"
 DF_PHASE_SLOT_S="${DF_PHASE_SLOT_S:-1980}"
-DF_PHASES_FILE="$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}/phases.env"
-if [ -f "$DF_PHASES_FILE" ]; then
-    # shellcheck disable=SC1090
-    . "$DF_PHASES_FILE"
-    df_log "pre-flight: using measured phase costs from $DF_PHASES_FILE"
+# `DF_CACHE_KEY` is read off the rented box and so is still empty here -- this gate runs
+# before anything is provisioned. Asking for `$DF_LOCAL_CACHE/${DF_CACHE_KEY:-unknown}/`
+# therefore missed on every rental this project has run, and the "measured" branch below
+# had never once been taken. `df_phase_estimates` surveys the cards that *have* measured
+# something and takes the most pessimistic value for each phase.
+DF_PHASES_MEASURED=$(df_phase_estimates "$DF_LOCAL_CACHE" "${DF_CACHE_KEY:-}")
+if [ -n "$DF_PHASES_MEASURED" ]; then
+    eval "$DF_PHASES_MEASURED"
+    df_log "pre-flight: measured phase costs from $DF_LOCAL_CACHE -- $(printf '%s' "$DF_PHASES_MEASURED" | tr '\n' ' ')"
 fi
 DF_NEEDED_MIN=$(awk -v s="$DF_PHASE_SETUP_S" -v c="$DF_PHASE_REFERENCE_COMPILE_S" \
     -v t="$DF_PHASE_SLOT_S" -v r="$DF_BATCH_RESERVE_MINUTES" \

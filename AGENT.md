@@ -215,9 +215,13 @@ already did — none of which needs a GPU — and stop. Do not start "just one m
 5, before provisioning. The minimum is two slots: the identity champion calibrates the
 harness but scores nothing, so a rental that fits only that has bought no science. Nine
 rentals were billed here without producing a number, and the cheapest of those failures
-would have been not renting. The estimate comes from the last rental on the same card when
-there is one (`cache/compile/<key>/phases.env`) and from the deliberately pessimistic cold
-numbers in `batch.COLD_PHASE_ESTIMATES` when there is not.
+would have been not renting. The estimate comes from `cache/compile/<key>/phases.env` and
+falls back to the deliberately pessimistic cold numbers in `batch.COLD_PHASE_ESTIMATES`.
+**Until 2026-09-14 it always fell back**, whatever had been measured: the gate runs before
+provisioning and `DF_CACHE_KEY` is read off the rented box, so the path it built was always
+`cache/compile/unknown/`. `df_phase_estimates` in `remote/lib.sh` now surveys the cards that
+have measured something and takes the most pessimistic value for each phase, because the
+gate cannot know which card the market will give it.
 
 The gate was an hour, then 90 minutes, then two, and is now three because one hypothesis on
 a **cold compile cache** does not fit in two — see

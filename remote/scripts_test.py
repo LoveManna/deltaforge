@@ -2270,3 +2270,72 @@ def test_body_cleanup_is_registered_before_the_request_not_after(workdir):
     assert "umask 077" in code, "the body file must not be world-readable"
     assert re.search(r"trap\s+'rm -f \"\$_body_file\"'", code), "removal must be armed by a trap"
     assert code.index("trap") < code.index("curl"), "arm cleanup before the request, not after"
+
+
+# -- the pre-flight's measured phase costs ------------------------------------------------
+
+
+def _phase_estimates(cache_root: Path, key: str = "") -> dict[str, float]:
+    """`df_phase_estimates` as the pre-flight calls it, parsed."""
+    shell = subprocess.run(
+        [
+            "sh",
+            "-c",
+            f'DF_REPO_ROOT="{REPO_ROOT}"; . "{REMOTE}/lib.sh"; '
+            f'df_phase_estimates "{cache_root}" "{key}"',
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=True,
+    )
+    out = {}
+    for line in shell.stdout.splitlines():
+        if "=" in line:
+            name, _, value = line.partition("=")
+            out[name.strip()] = float(value)
+    return out
+
+
+def test_the_preflight_finds_measured_phases_without_knowing_the_cache_key(tmp_path):
+    """The key is read off the rented box, so the gate never has it.
+
+    `DF_CACHE_KEY` is set by ssh-ing into the instance and asking torch for the device
+    name — line 671 of run_remote.sh — and the pre-flight gate is line 352. So the gate
+    has always expanded `cache/compile/${DF_CACHE_KEY:-unknown}/phases.env`, always missed,
+    and always used the cold estimates. `AGENT.md` §5's claim that it reasons from the last
+    rental on the same card was false for every rental this project has run.
+
+    Rental 34 measured a slot at 403.2s where the cold estimate guesses 1980, and the gate
+    then refused the next rental for being 2.1 minutes short of a number five times too
+    large.
+    """
+    key = tmp_path / "NVIDIAGeForceRTX5090-2.11.0-cu12.8"
+    key.mkdir(parents=True)
+    (key / "phases.env").write_text("DF_PHASE_SLOT_S=403.2\n")
+
+    assert _phase_estimates(tmp_path) == {"DF_PHASE_SLOT_S": 403.2}
+
+
+def test_a_known_cache_key_is_preferred_over_the_survey(tmp_path):
+    """Once the key *is* known, that card's own numbers are the right ones."""
+    for name, slot in (("cardA", 403.2), ("cardB", 900.0)):
+        (tmp_path / name).mkdir(parents=True)
+        (tmp_path / name / "phases.env").write_text(f"DF_PHASE_SLOT_S={slot}\n")
+
+    assert _phase_estimates(tmp_path, "cardA") == {"DF_PHASE_SLOT_S": 403.2}
+
+
+def test_without_a_key_the_most_pessimistic_card_wins(tmp_path):
+    """The gate cannot know which card it will land on, and being wrong optimistically
+    here buys a compile and no measurement — which is how the first nine rentals went."""
+    for name, slot in (("cardA", 403.2), ("cardB", 900.0)):
+        (tmp_path / name).mkdir(parents=True)
+        (tmp_path / name / "phases.env").write_text(f"DF_PHASE_SLOT_S={slot}\n")
+
+    assert _phase_estimates(tmp_path) == {"DF_PHASE_SLOT_S": 900.0}
+
+
+def test_no_measured_phases_says_nothing_rather_than_zero(tmp_path):
+    """Silence leaves the caller's cold defaults in place. A zero would read as free."""
+    assert _phase_estimates(tmp_path) == {}
