@@ -384,3 +384,110 @@ def test_a_batch_that_measured_something_before_stopping_records_not_run():
 
     assert results[0].outcome == "inconclusive"
     assert [r.outcome for r in results[1:]] == ["not_run", "not_run"]
+
+
+# -- what the untimed prefill is allowed to compile ---------------------------------------
+
+
+class RecordingCompile:
+    """Stands in for the object `torch.compile` returns, and says when it was called."""
+
+    def __init__(self, model) -> None:
+        self.model = model
+        self.calls: list[int] = []
+
+    def __call__(self, input_ids, *args, **kwargs):
+        self.calls.append(int(input_ids.shape[1]))
+        return self.model(input_ids, *args, **kwargs)
+
+
+def _column_under_test(monkeypatch, context: int, tokens: int):
+    """`BatchRunner._make_column` against the tiny CPU model, with compilation recorded."""
+    import torch
+
+    from .batch_run import BatchRunner
+    from .config import tiny_config
+    from .reference import ReferenceModel
+
+    config = tiny_config()
+    model = ReferenceModel(config).eval()
+    compiled: list[RecordingCompile] = []
+
+    def fake_compile(target, **_kwargs):
+        wrapper = RecordingCompile(target)
+        compiled.append(wrapper)
+        return wrapper
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+
+    runner = BatchRunner(
+        config=config,
+        reference=model,
+        prompt=torch.randint(0, config.vocab_size, (1, context)),
+        prompt_ids=None,
+        workload={"batch_size": 1, "context_length": context, "decode_tokens": tokens},
+        weights_dtype=torch.float32,
+        bench_config=None,
+        max_new_tokens=tokens,
+        columns=("compiled",),
+        log=silent,
+    )
+    setup, run = runner._make_column(model, "max-autotune")
+    return setup, run, compiled
+
+
+def test_the_untimed_prefill_does_not_go_through_the_compiled_wrapper(monkeypatch):
+    """Compiling the prefill is what stopped this project, and none of it is scored.
+
+    `gated_delta_rule` unrolls its scan over the sequence, so the benchmark's 2048-token
+    prefill hands inductor about 22 nodes x 2048 tokens x 24 linear-attention layers --
+    roughly a million FX nodes -- under `max-autotune`, once per column. Rental 32's slot 0
+    burned its whole 6980.9s cap there without finishing, and rentals 22, 30 and 31 died on
+    the same graph.
+
+    `run_interleaved` excludes every `setup` from the timed region by construction, so that
+    compilation buys no measurement at all. The decode calls, which *are* timed, run the
+    scan once per step and stay small -- those still go through the compiled wrapper, which
+    is the whole claim.
+    """
+    setup, run, compiled = _column_under_test(monkeypatch, context=16, tokens=3)
+    assert len(compiled) == 1, "the column should compile exactly one runnable"
+    wrapper = compiled[0]
+
+    setup()
+
+    assert wrapper.calls == [], (
+        "the prefill reached the compiled wrapper; at the real workload that is a "
+        "million-node max-autotune compile of a graph nothing times"
+    )
+
+    run()
+
+    assert wrapper.calls == [1, 1, 1], "every timed decode step must use the compiled model"
+
+
+def test_the_untimed_prefill_still_fills_the_cache(monkeypatch):
+    """Moving the prefill off the compiled wrapper must not move it out of the run.
+
+    The decode steps measure attention over a full-length cache. A setup that skipped the
+    prefill would leave an empty one, and every column would then time the wrong workload
+    while still producing a plausible-looking ratio.
+    """
+    from .reference import ReferenceModel
+
+    seen: list[int] = []
+    original = ReferenceModel.forward
+
+    def recording_forward(self, input_ids, *args, **kwargs):
+        seen.append(int(input_ids.shape[1]))
+        return original(self, input_ids, *args, **kwargs)
+
+    monkeypatch.setattr(ReferenceModel, "forward", recording_forward)
+
+    setup, run, _compiled = _column_under_test(monkeypatch, context=16, tokens=3)
+
+    setup()
+    assert seen == [16], "the prefill must still run, eagerly, before the timed decode"
+
+    run()
+    assert seen == [16, 1, 1, 1], "the timed region is the decode steps over the filled cache"

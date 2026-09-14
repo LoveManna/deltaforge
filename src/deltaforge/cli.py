@@ -310,8 +310,12 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
         cache = model.new_cache(batch, context + tokens)
 
         def setup() -> None:
+            # The prefill is untimed, so it runs eager. Compiling it means asking inductor
+            # to max-autotune the unrolled `gated_delta_rule` scan -- ~1M FX nodes at a
+            # 2048-token context -- for a region `run_interleaved` excludes from every
+            # measurement. See `batch_run.BatchRunner._make_column`.
             cache.reset()
-            runnable(prompt, cache, num_logits_to_keep=1)
+            model(prompt, cache, num_logits_to_keep=1)
 
         def run() -> None:
             greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)
@@ -414,11 +418,25 @@ def _write_phases_env(path: Path, phases: dict[str, float], results) -> None:
     `slot_s` is the **longest** slot rather than the median. The check it feeds decides
     whether to rent at all, and being wrong in the optimistic direction costs a rental that
     buys nothing — which is the failure this whole change exists to stop.
+
+    **A slot that hit its cap is excluded**, because it did not finish and so measures
+    nothing about what finishing costs. It is the maximum by construction, so including it
+    writes the cap itself into the gate: rental 32 recorded 6983.3s that way, which needs
+    310 minutes against a 180-minute session and refuses every subsequent rental on that
+    card. A slot that *failed* still counts — a kernel that raised did its work first, and
+    dropping every error would bias the estimate the optimistic way.
     """
+    from .slot_timer import SlotTimeout
+
+    cut_off = f"{SlotTimeout.__name__}:"
     reference_compile_s = sum(
         seconds for name, seconds in phases.items() if name.endswith(".compile_compiled")
     )
-    slot_times = [r.duration_s for r in results if r.duration_s and r.outcome != "not_run"]
+    slot_times = [
+        r.duration_s
+        for r in results
+        if r.duration_s and r.outcome != "not_run" and not (r.error or "").startswith(cut_off)
+    ]
     measured = {
         "DF_PHASE_REFERENCE_COMPILE_S": reference_compile_s,
         "DF_PHASE_SLOT_S": max(slot_times) if slot_times else 0.0,

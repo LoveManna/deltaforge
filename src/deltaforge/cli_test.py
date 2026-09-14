@@ -242,3 +242,77 @@ def test_the_default_columns_are_the_two_that_score():
     from .cli import DEFAULT_COLUMNS, SCORING_COLUMNS
 
     assert DEFAULT_COLUMNS == SCORING_COLUMNS
+
+
+# -- what a rental is allowed to tell the next one's pre-flight gate -----------------------
+
+
+def _slot(slug: str, duration_s: float, outcome: str = "inconclusive", error: str | None = None):
+    from .batch import Hypothesis
+    from .batch_run import SlotResult
+
+    return SlotResult(
+        hypothesis=Hypothesis(
+            slug=slug,
+            kernels=("k",),
+            category="A",
+            byte_share=0.01,
+            mechanism="does a thing",
+            prediction="inconclusive",
+            rationale="a rationale long enough to be a claim rather than a label, stated up front",
+        ),
+        outcome=outcome,
+        duration_s=duration_s,
+        error=error,
+    )
+
+
+def test_a_slot_that_hit_its_cap_is_not_reported_as_what_a_slot_costs(tmp_path):
+    """A cut-off slot is a lower bound, and the gate it feeds decides whether to rent.
+
+    Rental 32's slot 0 was killed at its 6980.9s cap without finishing, and `max()` over
+    slot durations wrote that cap to `phases.env` as the measured cost of a slot. The next
+    pre-flight then needs 310 minutes against a 180-minute gate and refuses — so one
+    timeout silently ends every future rental on that card, and the number doing it was
+    never a measurement of anything.
+    """
+    from .cli import _write_phases_env
+
+    path = tmp_path / "phases.env"
+    results = [
+        _slot("000-identity", 6980.9, outcome="error", error="SlotTimeout: exceeded its 6980.9s cap"),
+        _slot("001-real", 240.0),
+    ]
+
+    _write_phases_env(path, {"000-identity.compile_compiled": 120.0}, results)
+
+    assert "DF_PHASE_SLOT_S=240.0" in path.read_text()
+
+
+def test_a_slot_that_failed_on_its_own_terms_still_counts(tmp_path):
+    """Only a cap is excluded. A kernel that raised still ran, and its time was real —
+    dropping every error would make the estimate optimistic, which costs a rental."""
+    from .cli import _write_phases_env
+
+    path = tmp_path / "phases.env"
+    results = [
+        _slot("000-identity", 200.0),
+        _slot("001-bad-kernel", 900.0, outcome="error", error="ImportError: no such name"),
+    ]
+
+    _write_phases_env(path, {"000-identity.compile_compiled": 120.0}, results)
+
+    assert "DF_PHASE_SLOT_S=900.0" in path.read_text()
+
+
+def test_a_rental_whose_every_slot_was_cut_off_records_nothing(tmp_path):
+    """With no slot that finished there is no measurement, and the cold estimates in
+    `batch.COLD_PHASE_ESTIMATES` are a better input to the gate than a cap."""
+    from .cli import _write_phases_env
+
+    path = tmp_path / "phases.env"
+    results = [_slot("000-identity", 6980.9, outcome="error", error="SlotTimeout: exceeded its 6980.9s cap")]
+
+    _write_phases_env(path, {}, results)
+
+    assert not path.exists()

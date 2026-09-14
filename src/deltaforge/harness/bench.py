@@ -237,6 +237,7 @@ def run_interleaved(
     timer: Timer | None = None,
     metadata: Mapping[str, object] | None = None,
     setups: Mapping[str, Callable[[], object]] | None = None,
+    progress: Callable[[int, str, float], None] | None = None,
 ) -> BenchResult:
     """Time every column once per round, in ``columns`` order, for ``config.rounds`` rounds.
 
@@ -248,6 +249,12 @@ def run_interleaved(
     Putting that inside the timed region would add the same constant to every column,
     which does not cancel in a ratio: it drags every ratio toward 1 and silently shrinks
     whatever win is really there.
+
+    ``progress`` is called ``(round_index, label, elapsed_ms)`` as each column finishes.
+    It exists because a benchmark that says nothing until it returns cannot be diagnosed
+    when it does not: rental 32's slot 0 spent its entire 6980.9s cap inside this function
+    and its results record could only say that the cap was hit. Round 0 is where
+    compilation happens, so the first line is the one worth watching.
     """
     if not columns:
         raise ValueError("no columns to time")
@@ -277,11 +284,14 @@ def run_interleaved(
                 _setup(label)
                 columns[label]()
 
-        for _round in range(config.rounds):
+        for round_index in range(config.rounds):
             for label in labels:
                 _setup(label)
                 call_order.append(label)
-                timings[label].append(timer.time_ms(columns[label]))
+                elapsed = timer.time_ms(columns[label])
+                timings[label].append(elapsed)
+                if progress is not None:
+                    progress(round_index, label, elapsed)
 
     return BenchResult(
         labels=labels,

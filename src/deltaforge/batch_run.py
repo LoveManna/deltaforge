@@ -168,8 +168,17 @@ class BatchRunner:
             # Prefill and cache restoration are excluded from the timed region. Inside it
             # they would add the same constant to every column, which does not cancel in a
             # ratio: it drags every ratio toward 1 and hides whatever win is really there.
+            #
+            # And because it is excluded, the prefill runs on `model` rather than
+            # `runnable`: compiling it costs everything and buys nothing. `gated_delta_rule`
+            # unrolls its scan over the sequence, so a 2048-token prefill hands inductor
+            # ~22 nodes x 2048 tokens x 24 linear-attention layers -- about a million FX
+            # nodes -- under `max-autotune`, once per column. That graph is where rentals
+            # 22, 30, 31 and 32 all died; rental 32's slot 0 spent its entire 6980.9s cap
+            # inside it. The decode steps below, which are the measurement, run the scan
+            # once per token and still go through the compiled wrapper.
             cache.reset()
-            runnable(prompt, cache, num_logits_to_keep=1)
+            model(prompt, cache, num_logits_to_keep=1)
 
         def run() -> None:
             greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)
@@ -354,12 +363,25 @@ class BatchRunner:
                         mark = phase(f"compile_{label}", mark)
                         self._log_memory(f"{hypothesis.slug} column {label!r}")
 
+                bench_started = time.monotonic()
+
+                def say(round_index: int, label: str, elapsed_ms: float) -> None:
+                    # Round 0 is warmup, and warmup is where `max-autotune` compiles. A
+                    # slot that dies mid-compile now says which column it was on and how
+                    # long it had been there; rental 32's could only say "cap exceeded".
+                    since = time.monotonic() - bench_started
+                    self.log(
+                        f"[batch] {hypothesis.slug}: round {round_index} {label} "
+                        f"{elapsed_ms:.1f} ms ({since:.0f}s into the benchmark)"
+                    )
+
                 result = run_interleaved(
                     columns,
                     self.bench_config,
                     timer=CudaEventTimer(),
                     setups=setups,
                     metadata=self._slot_metadata(hypothesis),
+                    progress=say,
                 )
                 phase("bench", mark)
 

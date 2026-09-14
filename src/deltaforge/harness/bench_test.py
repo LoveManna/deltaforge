@@ -405,3 +405,46 @@ def test_setups_run_with_autograd_disabled():
 
     assert setup_grad, "the setup never ran"
     assert not any(setup_grad), "setups ran with autograd live"
+
+
+# -- saying where the time went, while it is still going -----------------------------------
+
+
+def test_progress_reports_each_column_as_it_finishes():
+    """A silent benchmark is how four rentals died without saying what they were doing.
+
+    Rental 32's slot 0 spent its entire 6980.9s cap inside one `run_interleaved` call and
+    recorded nothing: the `bench` phase is only written once the call returns, so a slot
+    killed inside it leaves no evidence at all. Warmup round 1 is where compilation
+    happens, so the first line of progress is the one that matters.
+    """
+    columns, _log = make_columns(["compiled", "candidate_compiled"])
+    timer = ScriptedTimer({"compiled": [10.0] * 3, "candidate_compiled": [20.0] * 3})
+    seen: list[tuple[int, str, float]] = []
+
+    run_interleaved(
+        timer.bind(columns),
+        BenchConfig(rounds=3, warmup_rounds=2),
+        timer=timer,
+        progress=lambda round_index, label, elapsed_ms: seen.append((round_index, label, elapsed_ms)),
+    )
+
+    assert [(r, label) for r, label, _ in seen] == [
+        (0, "compiled"),
+        (0, "candidate_compiled"),
+        (1, "compiled"),
+        (1, "candidate_compiled"),
+        (2, "compiled"),
+        (2, "candidate_compiled"),
+    ]
+    assert seen[0][2] == 10.0
+
+
+def test_progress_is_optional():
+    """The CPU smoke path and every existing caller pass no progress callback."""
+    columns, _log = make_columns(["compiled"])
+    timer = ScriptedTimer({"compiled": [1.0] * 3})
+
+    result = run_interleaved(timer.bind(columns), BenchConfig(rounds=3, warmup_rounds=2), timer=timer)
+
+    assert result.labels == ("compiled",)
