@@ -143,6 +143,14 @@ Nine written and shipped. **None measured.**
 | 007 | Fused gated delta-rule step | `gated_delta_rule` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
 | 008 | Split-KV flash decode | `gqa_attention` | — | — | RTX 5090 | not reached (slot OOMed) | `error` — batch void | [dir](results/batches/001-calibration/) |
 
+**2026-09-13 (rentals 30-32): still no ratio, but the reason is now known.** The oracle
+gate passes on three independent hosts with zero tie-breaks, and correctness gates pass.
+Slot 0 errored in all three rentals, so `CALIBRATION FAILED` fired each time and correctly
+voided everything else. The cause of two of those errors was one missing `no_grad` in
+`harness/bench.py` (fixed in `f461025`); the third is that a cold `max-autotune` compile
+does not finish inside a session — which no run has ever managed. See
+`results/batches/001-calibration/README.md`.
+
 **All nine slots carry no ratio, and every prediction is unscored.** They are written,
 gated on CPU, and shipped; they simply have not been measured. A slot that errored never
 tested its prediction, so `summary.json` records `0 correct of 0 scored` rather than 0 of 9

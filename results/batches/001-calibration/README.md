@@ -213,6 +213,79 @@ Two rentals to finish batch 001 is the plan, not a failure of one. The alternati
 shrinking the batch to fit a cold cache — throws away the only thing that makes the
 remaining slots cheap.
 
+## Rentals 30-32, 2026-09-13 — the calibration slot finally says why
+
+Three rentals, $2.740, and still no ratio. What changed is that the reason is no longer
+unknown.
+
+### The oracle gate passes, on three independent hosts
+
+`results/diagnostics/oracle-divergence.json` records `status: "agree"`,
+`first_divergence_index: null`, ours ≡ theirs across all 32 tokens, and
+`oracle-gate.json` records `tie_break_count: 0`. Not a coin-flip that fell the right way —
+there were no ties to break. The criterion was registered at `c5ce9d7` **before** any data
+existed, which is what makes the pass mean something.
+
+The 2026-09-10 divergence is therefore resolved, and its cause remains unexplained. Rental
+28 had already refuted the `transformers`-version story. `AGENT.md` §8's architecture
+facts were never in doubt and still stand.
+
+### One missing `no_grad` was three failures
+
+`harness/bench.py` timed the workload with autograd live; `harness/correctness.py:120`
+did not. Hence gates passing and only benchmarks failing. Rental 31, same model, same card,
+same rental:
+
+| phase | time | autograd |
+|---|---|---|
+| `correctness` (passes) | **17.1 s** | `no_grad` |
+| benchmark (crashes) | **3162 s** | none |
+
+Slot 0 is `000-identity`: it installs nothing, so the candidate *is* the reference and the
+failure could never have been a kernel bug. Slot 1 failed identically (3206 s) with a
+different kernel installed — a fault in the shared timing path. Inductor was compiling the
+backward graph as well as the forward, which also killed the one-core theory for rental
+22's ~40 minutes: 64 cores on rental 30, **256** on rental 31, no improvement.
+
+Fixed in `f461025`, three tests watched failing first.
+
+### The fix works, and is not enough
+
+Rental 32, same card and same 256 cores as rental 31, changing only the fix: **no
+`BackendCompilerFailed`**, correctness gates passed, memory flat at 8.07 GiB of 31.36.
+Slot 0 then ran its **full 6980.9 s cap without completing the compile**.
+
+The honest correction is to what rental 31 measured: 3162 s was *time-until-crash*, not a
+completed compile. **No run has ever finished a cold `max-autotune` on this model.** The
+crash was hiding the cost, not causing it.
+
+### Scorecard
+
+Nine hypotheses, **nine unscored**. Slot 0 errored in all three rentals, so
+`CALIBRATION FAILED` fired every time and correctly voided everything else: a batch whose
+identity champion never measures 1.00 has established nothing about what its harness
+measures. Slot 1 produced a number on rental 31 and it is recorded for diagnosis, not as a
+finding.
+
+### What it cost
+
+| Rental | Billed | Cost | Outcome |
+|---|---:|---:|---|
+| 30 | 69.72 min | $0.5448 | oracle gate passes; host dropped ssh mid-slot-0 |
+| 31 | 131.03 min | $0.8069 | 2 slots, `BackendCompilerFailed` — root cause found |
+| 32 | 176.80 min | $1.3878 | crash fixed; slot 0 hit its cap |
+| | | **$2.740** | month-to-date $5.102 of $45 |
+
+### What the next session inherits
+
+**47 MB / 1800 inductor and triton entries** compiled *without* autograd, against rental
+31's 312 KB compiled with it. Inductor caches per kernel, so rental 32's timed-out compile
+banked real progress and the next rental on this card starts genuinely warm.
+
+The one thing to do with it: **finish a single cold `max-autotune` compile and time it**,
+off that warm cache, before filling another batch. If it still does not complete, the lever
+is `mode="reduce-overhead"` or fewer columns, not more cores and not a bigger batch.
+
 ## Cost
 
 Five rentals, 91.39 billed minutes, $0.567 — session `batch001-20260908T211825Z`, which

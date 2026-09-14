@@ -170,9 +170,12 @@ Budget is **$50/month**, enforced by code rather than by discipline:
 - The compile cache is pulled off the box before it is destroyed and pushed back to the
   next rental on the same card, so a 40-minute cold `max-autotune` compile is paid once
   rather than every session. It changes how long compilation takes, not what it emits.
-  **Not yet demonstrated:** no rental has completed a compile since the cache was added, so
-  every run so far has started cold and the saving is a design claim rather than a
-  measurement. Teardown now reports warmth from what actually landed on disk, because a log
+  **Still not demonstrated:** no rental has yet completed a cold `max-autotune` compile at
+  all, so the saving remains a design claim rather than a measurement. Rental 32
+  (2026-09-13) did carry **47 MB / 1800 entries** home — compiled without autograd and so
+  reusable, unlike rental 31's 312 KB — because inductor caches per kernel and a
+  timed-out compile still banks progress. Whether that is enough to finish one is the next
+  thing to measure. Teardown now reports warmth from what actually landed on disk, because a log
   that overstates it would corrupt the very number the cache is meant to improve.
 
 Every script in `remote/` supports `--dry-run`, which exercises the full logic path —

@@ -16,16 +16,30 @@ A rental's cost splits in two:
 | Reference `max-autotune` compile | ~3-4 min *(estimated — see below)* | **once per rental** |
 | Candidate compile + correctness gate + benchmark | ~2-4 min *(estimated — see below)* | **per hypothesis** |
 
-> **These two estimates have never been measured, and the first evidence contradicts them.**
-> Rental 22 (2026-09-08) spent **~40 minutes inside a single slot** without finishing it —
-> `nvidia-smi` showing the GPU at 0% and python at 129% CPU, i.e. a cold `max-autotune`
-> compile, not a hang. The session gate ended the run, not the science.
+> **These two estimates are contradicted, and the arithmetic below does not hold.**
+> Rental 22 (2026-09-08) spent ~40 minutes in a single slot without finishing it. Rentals
+> 30-32 (2026-09-13) settled what that was and made it worse:
 >
-> If a first compile really costs 40 minutes, **the arithmetic below does not hold and a
-> nine-slot batch does not fit a two-hour session either.** Measure one compilation before
-> filling another batch, then either bring it down (`reduce-overhead`, a warm inductor
-> cache carried between rentals, on-disk `torch.compiler` caching) or re-cut the batch
-> around what it actually costs.
+> | Rental | Cores | Slot 0 (`000-identity`, installs nothing) |
+> |---|---:|---|
+> | 30 | 64 | ~52 min, host dropped before it finished |
+> | 31 | 256 | **3162 s, then `BackendCompilerFailed`** |
+> | 32 | 256 | **6983 s — hit its cap without completing** |
+>
+> Rental 31's crash was live autograd: the benchmark had no `no_grad`, so inductor
+> compiled the backward graph too (`f461025`, and `docs/GPU-ACCESS.md` blocker 13). **Its
+> 3162 s was time-until-crash, not a completed compile** — so no run has ever finished a
+> cold `max-autotune` on this model. Rental 32, with the crash fixed, did not finish one
+> in 6980.9 s.
+>
+> Worker count is not the lever: 4x the cores changed nothing. **Do not re-cut batch sizes
+> off the 40-minute figure** — it measured a backward pass nothing needed, and the real
+> forward-only cost is still unmeasured. The open levers are `mode="reduce-overhead"`,
+> fewer columns, and the warm cache: rental 32 brought home 47 MB / 1800 inductor and
+> triton entries compiled *without* autograd (rental 31's 312 KB were compiled with it and
+> are expected to miss). Inductor caches per kernel, so a timed-out compile still banks
+> progress. **Measure one compile to completion off that warm cache before filling another
+> batch.**
 
 One hypothesis per rental pays fifteen minutes of fixed cost to buy three minutes of
 science. Nine rentals were billed that way and none produced a number. A batch pays the

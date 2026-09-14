@@ -243,10 +243,13 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-Nine rentals have been billed on this project and none produced a number. Eight died on an
-anonymous Docker Hub pull; the ninth proved a `ghcr.io` image pulls fine and then exposed a
-second blocker behind it. Both are fixed; that file records how, and what is still
-unproven.
+**Thirty-two rentals have been billed on this project and none has produced a number.**
+The early ones died on an anonymous Docker Hub pull and the blockers behind it; those are
+fixed. As of 2026-09-13 the failure has moved all the way to the end: the oracle gate
+passes on three independent hosts, correctness gates pass, memory is flat — and slot 0
+still cannot finish a cold `max-autotune` compile inside a session. `docs/GPU-ACCESS.md`
+records every blocker, how each was fixed, and which fixes are *proven on a GPU* rather
+than merely believed.
 
 ## 6. Recording the outcome — the part that matters
 

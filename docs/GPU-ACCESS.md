@@ -387,6 +387,10 @@ project have not been the loud ones.
 | 26 | 2026-09-10 | **past sshd and torch**, CUDA `Error 804` — blocker 11 | 6.08 min | $0.0353 |
 | 27 | 2026-09-10 | **GPU suite ran** — 11 fail on `Python.h`, oracle diverges | 88.55 min | $0.6242 |
 | 28 | 2026-09-12 | **authenticated pull worked**; oracle diverges *identically* on a 4090 with the pin | 7.12 min | $0.0478 |
+| 29 | 2026-09-13 | refused: no offer met the filters. Reported nothing for a day — blocker 12 | 0 min | $0 |
+| 30 | 2026-09-13 | **oracle gate passes**; host dropped ssh mid-slot-0 (exit 255) | 69.72 min | $0.5448 |
+| 31 | 2026-09-13 | **root cause found**: 2 slots, `BackendCompilerFailed` from live autograd — blocker 13 | 131.03 min | $0.8069 |
+| 32 | 2026-09-13 | crash fixed; slot 0 hit its 6980.9s cap. 47 MB of compile cache came home | 176.80 min | $1.3878 |
 
 Twenty-eight rentals, $2.361, **zero leaked instances** — every one destroyed cleanly by
 the trap, including two cancelled mid-flight with SIGTERM.
@@ -487,6 +491,50 @@ runs, the container is genuinely up and sshd is the only thing still missing.
 **The pattern, again:** every blocker in this file was cheap to fix and expensive to notice,
 and this one hid behind a plausible story about flaky hosts. A wrong explanation that
 predicts the observation is worse than no explanation, because it ends the investigation.
+
+## The twelfth blocker: a launch that reported nothing
+
+Rental 29 exited 4 three seconds after launch — no offer met the filters, so
+`provision.sh` refused correctly, created nothing and billed nothing. The session then
+reported nothing at all for a day. The monitor had been attached with `tail -n 0 -f`
+**6.5 seconds after the process already ended**, and `-n 0` discards the backlog, so it
+waited forever on a file that would never grow again.
+
+**Fixed, and proven:** `remote/launch.sh` always terminates the log with
+`[deltaforge] [launch] run exited N` and writes the status to a file; `--status` answers
+"is it still going?" at any moment. Proven on a GPU in the weakest possible sense and the
+strongest: rental 30's *first* launch attempt hit the identical exit-4 refusal and
+announced itself in seconds instead of vanishing.
+
+## The thirteenth blocker: the benchmark ran with autograd enabled
+
+`harness/bench.py` had no `no_grad` anywhere; `harness/correctness.py:120` did. So the
+correctness gates passed and only the benchmark failed. Rental 31, slot 0
+(`000-identity`, which installs nothing and *is* the reference): **3162s then
+`BackendCompilerFailed`**, the fp32 recurrent state's in-place update tripping autograd's
+version counter. Slot 1 failed identically in 3206s with a different kernel installed —
+the signature of a fault in the shared timing path.
+
+Inductor was compiling the backward graph as well as the forward. That also killed the
+one-core theory for rental 22's ~40-minute compile: rental 30 gave ~52 min on 64 cores,
+rental 31 gave ~53 min per slot on **256**.
+
+**Fixed in `f461025`** (`_inference_context()` around warmup, setups and timed calls),
+and **proven on a GPU by rental 32**: no `BackendCompilerFailed`, correctness gates
+passed, memory flat at 8.07 GiB.
+
+**Not fixed: the compile cost itself, which is worse than believed.** Rental 31's 3162s
+was *time-until-crash*, not a completed compile, so nothing ever established that one
+finishes in ~53 min. With the crash gone, rental 32's slot 0 ran the **full 6980.9s cap
+without completing** `max-autotune` on the reference and candidate columns. The 40-minute
+figure in `docs/BATCHES.md` measured a backward pass nothing needed; the real forward-only
+cost is still unmeasured and is now the single thing standing between this project and a
+number.
+
+**What rental 32 did bank:** 47 MB / 1800 inductor and triton entries, compiled *without*
+autograd and therefore reusable, against 312 KB from rental 31. Inductor caches per
+kernel, so a timed-out compile still makes progress. The next rental on this card starts
+genuinely warm, and whether that is enough is the next thing to measure.
 
 ## Current status
 
