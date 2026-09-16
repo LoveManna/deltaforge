@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from .batch import scoped_registry
-from .batches import BATCH_001, BATCH_002, BATCHES, get_batch
+from .batches import BATCH_001, BATCH_002, BATCH_003, BATCHES, get_batch
 from .config import tiny_config
 from .kernels import REGISTRY
 from .model import apply_champions
@@ -204,3 +204,114 @@ def test_batch_002_can_score_a_kernel_hypothesis():
 
 def test_batch_002_is_registered_and_fetchable():
     assert get_batch("002-compile-cost") is BATCH_002
+
+
+# -- batch 003: weight-only quantisation ---------------------------------------------
+
+
+def test_batch_003_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_003) <= 12
+    assert BATCH_003.hypotheses[0].is_identity
+    assert BATCH_003.calibration_slug == "000-identity"
+    assert get_batch("003-int8-weight-only") is BATCH_003
+
+
+def test_batch_003_names_registered_kernels_with_installers():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_003:
+        for name in hyp.kernels:
+            assert name in REGISTRY, f"{hyp.slug!r} names unregistered kernel {name!r}"
+            assert name in INSTALLERS, f"{hyp.slug!r} names {name!r}, which has no installer"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_003), ids=lambda h: h.slug)
+def test_every_003_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = module_classes(model)
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    after = module_classes(model)
+    if hypothesis.is_identity:
+        assert applied == ()
+        assert after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels)
+        assert after != before, f"{hypothesis.slug!r} installed {applied} but changed no module class"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_003), ids=lambda h: h.slug)
+def test_installing_a_003_hypothesis_is_idempotent(hypothesis, model):
+    registry = scoped_registry(hypothesis, REGISTRY)
+    apply_champions(model, registry)
+    once = module_classes(model)
+
+    apply_champions(model, registry)
+
+    assert module_classes(model) == once
+
+
+def test_the_003_slots_form_a_dose_response_ladder():
+    """011, 012 and 013 are the same kernel over increasing shares of the weight stream.
+
+    That is what makes them a test of the *mechanism* rather than three separate results:
+    if a larger share does not buy a larger win, the win is not coming from bytes. Two of
+    them accidentally covering the same sites would erase the ladder and nothing else
+    would notice, because each would still return a plausible ratio.
+    """
+    sites = {}
+    for slug in ("011-int8-mlp", "012-int8-all-linear", "013-int8-full"):
+        model = ReferenceModel(tiny_config())
+        before = module_classes(model)
+        apply_champions(model, scoped_registry(BATCH_003.get(slug), REGISTRY))
+        after = module_classes(model)
+        sites[slug] = frozenset(k for k in after if after.get(k) != before.get(k))
+
+    assert sites["011-int8-mlp"] < sites["012-int8-all-linear"] < sites["013-int8-full"]
+
+    ladder = ("011-int8-mlp", "012-int8-all-linear", "013-int8-full")
+    shares = [BATCH_003.get(slug).byte_share for slug in ladder]
+    assert shares == sorted(shares)
+
+
+def test_the_003_controls_are_not_predicted_to_win():
+    """A batch predicting a win everywhere is not a prediction, it is hope — and these two
+    are in the batch precisely to be the things a win is measured against."""
+    assert BATCH_003.get("009-gemv-bf16-control").prediction == "inconclusive"
+    assert BATCH_003.get("010-int8-dequant-torch").prediction == "loss"
+
+
+def test_the_bf16_control_attacks_no_bytes_at_all():
+    """Its whole point is that it moves exactly the bytes the baseline moves."""
+    assert BATCH_003.get("009-gemv-bf16-control").byte_share == 0.0
+
+
+def test_every_quantised_003_slot_registers_its_approximate_thresholds():
+    """A quantised candidate cannot match bf16 tokens, so it is gated on agreement and KL.
+
+    Those bars belong in this file, committed before the rental, for the same reason the
+    prediction does — and `Hypothesis.__post_init__` refuses an approximate slot without
+    them, so this test is really asserting that the *right* slots are approximate.
+    """
+    for hyp in BATCH_003:
+        quantised = any(name.startswith(("int8_", "int4_")) for name in hyp.kernels)
+        if quantised:
+            assert hyp.correctness == "approximate", f"{hyp.slug!r} quantises but is gated exactly"
+            assert hyp.top1_threshold is not None and hyp.kl_threshold is not None
+        else:
+            assert hyp.correctness == "exact", f"{hyp.slug!r} computes the same function; gate it exactly"
+
+
+def test_the_int4_slot_carries_the_loosest_bars_and_runs_last():
+    """Riskiest last, and honest about why it is riskiest."""
+    assert BATCH_003.hypotheses[-1].slug == "014-int4-full"
+    int4 = BATCH_003.get("014-int4-full")
+    int8 = BATCH_003.get("013-int8-full")
+    assert int4.top1_threshold < int8.top1_threshold
+    assert int4.kl_threshold > int8.kl_threshold
+
+
+def test_003_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_003:
+        assert hyp.prediction
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a rationale too thin to be a claim"

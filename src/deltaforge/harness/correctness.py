@@ -11,6 +11,16 @@ an exact token-sequence match against eager. This catches the case where every k
 passes in isolation but the assembled pipeline accumulates drift — which is the failure
 mode layer 1 structurally cannot see.
 
+**Layer 2, approximate.** Exact tokens are the right gate for a kernel that claims to
+compute the same function. They are the *wrong* gate for a kernel that deliberately
+computes a different one: a weight-only quantised candidate fails an exact match by
+construction, not by defect, and recording that as `incorrect` would say the kernel is
+broken when what it is, is approximate. `check_distribution` is the alternative
+`docs/HYPOTHESES.md` specifies — teacher-force both models over the reference's own greedy
+continuation and score top-1 agreement and mean KL — and the thresholds it is gated on are
+registered per hypothesis in `batches.py` before the rental, because a threshold chosen
+after seeing the number is not a gate.
+
 Failures are recorded, not discarded. A candidate that was fast but wrong is among the
 most valuable things a future session can read.
 """
@@ -27,9 +37,11 @@ from ..reference import ReferenceModel
 
 __all__ = [
     "CorrectnessReport",
+    "DistributionCheck",
     "EndToEndCheck",
     "KernelCheck",
     "TokenMatch",
+    "check_distribution",
     "check_end_to_end",
     "check_kernel",
     "error_magnitudes",
@@ -261,17 +273,141 @@ def check_end_to_end(
 
 
 @dataclass(frozen=True)
+class DistributionCheck:
+    """Layer 2 for a candidate that computes a deliberately different function.
+
+    Two statistics, both over the same teacher-forced positions:
+
+    ``top1_agreement`` — the fraction of positions where the candidate's argmax equals the
+    reference's. This is the number that says what the quantised model would actually
+    *emit*, and it is measured teacher-forced rather than by free-running decode on
+    purpose: once two decoders disagree once they are reading different text, so a
+    free-running agreement rate measures the first divergence and then nothing.
+
+    ``mean_kl`` — mean ``KL(P_reference || P_candidate)`` in nats. Agreement alone can hide
+    a distribution that has been shredded everywhere the argmax happens to be safe; KL sees
+    that and an argmax cannot.
+
+    Both thresholds are inputs, registered on the hypothesis before the rental.
+    """
+
+    top1_agreement: float
+    mean_kl: float
+    max_kl: float
+    num_positions: int
+    top1_threshold: float
+    kl_threshold: float
+    prompt_digest: str = ""
+    context_tokens: int = 0
+
+    @property
+    def passed(self) -> bool:
+        return self.top1_agreement >= self.top1_threshold and self.mean_kl <= self.kl_threshold
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "policy": "approximate",
+            "passed": self.passed,
+            "top1_agreement": self.top1_agreement,
+            "mean_kl": self.mean_kl,
+            "max_kl": self.max_kl,
+            "num_positions": self.num_positions,
+            "top1_threshold": self.top1_threshold,
+            "kl_threshold": self.kl_threshold,
+            "prompt_digest": self.prompt_digest,
+            "context_tokens": self.context_tokens,
+        }
+
+
+def _kl_and_agreement(
+    ref_logits: torch.Tensor, cand_logits: torch.Tensor
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``(kl_per_position, argmax_matches)`` for one prompt, computed in fp32.
+
+    In fp32 because a KL of 1e-3 nats is the interesting regime and bf16 cannot represent
+    the difference of two log-probabilities at that scale — the statistic would be
+    quantisation noise about quantisation noise.
+    """
+    ref = torch.log_softmax(ref_logits.float(), dim=-1)
+    cand = torch.log_softmax(cand_logits.float(), dim=-1)
+    kl = (ref.exp() * (ref - cand)).sum(dim=-1)
+    matches = ref.argmax(dim=-1) == cand.argmax(dim=-1)
+    return kl.reshape(-1), matches.reshape(-1)
+
+
+def check_distribution(
+    reference_model: ReferenceModel,
+    candidate_model: ReferenceModel,
+    prompt_token_ids: Sequence[Sequence[int]],
+    *,
+    top1_threshold: float,
+    kl_threshold: float,
+    max_new_tokens: int = 128,
+    prompt_digest: str = "",
+    device: torch.device | str | None = None,
+) -> DistributionCheck:
+    """Teacher-force both models over the reference's own continuation and compare.
+
+    The context is ``prompt + reference.greedy_decode(prompt)``, so the positions scored
+    are the ones the reference would really have visited — prompt text alone is a few
+    dozen positions of a distribution the model has not yet committed to, and the decode
+    regime is what the benchmark measures.
+    """
+    if not prompt_token_ids:
+        raise ValueError("no prompts supplied to the distribution gate")
+    device = device or next(reference_model.parameters()).device
+
+    kls: list[torch.Tensor] = []
+    matches: list[torch.Tensor] = []
+    context_tokens = 0
+    for index, ids in enumerate(prompt_token_ids):
+        if len(ids) == 0:
+            raise ValueError(f"prompt {index} is empty")
+        input_ids = torch.tensor([list(ids)], dtype=torch.long, device=device)
+        continuation = greedy_decode(reference_model, input_ids, max_new_tokens)
+        context = torch.cat((input_ids, continuation), dim=1)
+        context_tokens += int(context.shape[1])
+
+        with torch.no_grad():
+            ref_logits, _ = reference_model(context)
+            cand_logits, _ = candidate_model(context)
+        kl, match = _kl_and_agreement(ref_logits, cand_logits)
+        kls.append(kl)
+        matches.append(match)
+
+    all_kl = torch.cat(kls)
+    all_matches = torch.cat(matches)
+    return DistributionCheck(
+        top1_agreement=float(all_matches.float().mean()),
+        mean_kl=float(all_kl.mean()),
+        max_kl=float(all_kl.max()),
+        num_positions=int(all_kl.numel()),
+        top1_threshold=top1_threshold,
+        kl_threshold=kl_threshold,
+        prompt_digest=prompt_digest,
+        context_tokens=context_tokens,
+    )
+
+
+@dataclass(frozen=True)
 class CorrectnessReport:
     """Both gates together. ``passed`` requires both."""
 
     kernel_checks: tuple[KernelCheck, ...] = ()
     end_to_end: EndToEndCheck | None = None
+    #: Set instead of ``end_to_end`` for a hypothesis whose candidate is approximate by
+    #: design. Exactly one of the two is populated; a report with neither has no layer 2.
+    distribution: DistributionCheck | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
         layer1 = all(check.passed for check in self.kernel_checks)
-        layer2 = self.end_to_end.passed if self.end_to_end is not None else True
+        layer2 = True
+        if self.end_to_end is not None:
+            layer2 = layer2 and self.end_to_end.passed
+        if self.distribution is not None:
+            layer2 = layer2 and self.distribution.passed
         return layer1 and layer2
 
     @property
@@ -289,5 +425,7 @@ class CorrectnessReport:
             "worst_max_rel_err": self.worst_max_rel_err,
             "layer1_kernel_checks": [c.to_dict() for c in self.kernel_checks],
             "layer2_end_to_end": self.end_to_end.to_dict() if self.end_to_end else None,
+            "layer2_distribution": self.distribution.to_dict() if self.distribution else None,
+            "layer2_policy": "approximate" if self.distribution is not None else "exact",
             "metadata": dict(self.metadata),
         }

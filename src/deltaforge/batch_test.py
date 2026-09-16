@@ -418,3 +418,75 @@ def test_the_minimum_is_two_slots_because_calibration_alone_scores_nothing():
 
     assert one_slot is False
     assert two_slots is True
+
+
+# -- the approximate correctness policy ------------------------------------------------
+
+
+def _hypothesis(**overrides):
+    fields = dict(
+        slug="x",
+        kernels=("k",),
+        category="B",
+        byte_share=0.5,
+        mechanism="m",
+        prediction="win",
+        rationale="r",
+    )
+    fields.update(overrides)
+    return Hypothesis(**fields)
+
+
+def test_a_hypothesis_is_gated_exactly_by_default():
+    assert _hypothesis().correctness == "exact"
+
+
+def test_an_unknown_correctness_policy_is_refused():
+    with pytest.raises(ValueError, match="correctness must be one of"):
+        _hypothesis(correctness="vibes")
+
+
+def test_an_approximate_hypothesis_must_register_both_bars():
+    """An approximate gate with no bar passes everything, including a broken kernel."""
+    with pytest.raises(ValueError, match="before the rental"):
+        _hypothesis(correctness="approximate")
+    with pytest.raises(ValueError, match="before the rental"):
+        _hypothesis(correctness="approximate", top1_threshold=0.98)
+    with pytest.raises(ValueError, match="before the rental"):
+        _hypothesis(correctness="approximate", kl_threshold=0.01)
+
+
+def test_an_exact_hypothesis_may_not_carry_bars_nothing_would_read():
+    with pytest.raises(ValueError, match="scored exactly but carries approximate thresholds"):
+        _hypothesis(top1_threshold=0.98)
+
+
+def test_the_bars_are_range_checked():
+    with pytest.raises(ValueError, match="top1_threshold is a fraction"):
+        _hypothesis(correctness="approximate", top1_threshold=1.5, kl_threshold=0.01)
+    with pytest.raises(ValueError, match="cannot be negative"):
+        _hypothesis(correctness="approximate", top1_threshold=0.98, kl_threshold=-1.0)
+
+
+def test_the_identity_slot_may_not_be_gated_approximately():
+    """It is bit-identical to the reference. A calibration slot that could not match tokens
+    would calibrate nothing, and would hide a harness fault behind a tolerance."""
+    with pytest.raises(ValueError, match="must be gated exactly"):
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism="install nothing",
+            prediction="identity",
+            rationale="r",
+            correctness="approximate",
+            top1_threshold=0.9,
+            kl_threshold=0.1,
+        )
+
+
+def test_an_approximate_hypothesis_with_both_bars_is_accepted():
+    hypothesis = _hypothesis(correctness="approximate", top1_threshold=0.98, kl_threshold=0.01)
+    assert hypothesis.top1_threshold == 0.98
+    assert hypothesis.kl_threshold == 0.01

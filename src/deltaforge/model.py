@@ -195,3 +195,54 @@ register_installer("fused_rope", _install_fused_rope)
 register_installer("gqa_decode", _install_gqa_decode)
 register_installer("flash_decode_splitkv", _install_flash_decode_splitkv)
 register_installer("gated_delta_step", _install_gated_delta_step)
+
+
+# -- batch 003 installers: weight-only quantisation --------------------------------
+#
+# Keyed by kernel name like everything above, and here the reason is acute: five of these
+# six replace `decode_step`, so an op-keyed table would run one quantisation's checks
+# against another's weights and report `pass`.
+
+
+def _install_gemv_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_bf16_gemv  # noqa: PLC0415
+
+    install_bf16_gemv(model, entry)
+
+
+def _install_int8_dequant_torch(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_int8_dequant  # noqa: PLC0415
+
+    install_int8_dequant(model, entry)
+
+
+def _install_int8_mlp(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_int8_mlp  # noqa: PLC0415
+
+    install_int8_mlp(model, entry)
+
+
+def _install_int8_all_linear(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_int8_all_linear  # noqa: PLC0415
+
+    install_int8_all_linear(model, entry)
+
+
+def _install_int8_full(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_int8_full  # noqa: PLC0415
+
+    install_int8_full(model, entry)
+
+
+def _install_int4_full(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.quantised_linear import install_int4_full  # noqa: PLC0415
+
+    install_int4_full(model, entry)
+
+
+register_installer("gemv_bf16", _install_gemv_bf16)
+register_installer("int8_dequant_torch", _install_int8_dequant_torch)
+register_installer("int8_mlp", _install_int8_mlp)
+register_installer("int8_all_linear", _install_int8_all_linear)
+register_installer("int8_full", _install_int8_full)
+register_installer("int4_full", _install_int4_full)

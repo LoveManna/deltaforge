@@ -40,6 +40,7 @@ from .kernels import REGISTRY, KernelRegistry, KernelStatus, RegistryError
 __all__ = [
     "BATCH_OUTCOMES",
     "COLD_PHASE_ESTIMATES",
+    "CORRECTNESS_POLICIES",
     "PREDICTIONS",
     "Batch",
     "Hypothesis",
@@ -52,6 +53,17 @@ __all__ = [
     "session_fits_one_hypothesis",
 ]
 
+
+#: How a hypothesis's layer-2 gate is scored.
+#:
+#: `exact` — the candidate claims to compute the same function as the reference, so its
+#:           greedy token sequence must match it exactly. The right gate for every kernel
+#:           this project has written so far.
+#: `approximate` — the candidate deliberately computes a *different* function, and a
+#:           quantised one cannot match bf16 tokens however correct it is. Scored on top-1
+#:           agreement and mean KL against thresholds this hypothesis registers below.
+#:           `harness.correctness.check_distribution` measures them.
+CORRECTNESS_POLICIES = ("exact", "approximate")
 
 #: What a hypothesis may predict, recorded in the manifest before the rental.
 #:
@@ -95,8 +107,40 @@ class Hypothesis:
     rationale: str  # why we predict that, written before the measurement
     replaces: tuple[str, ...] = ()
     notes: str = ""
+    #: `exact` or `approximate` — see `CORRECTNESS_POLICIES`.
+    correctness: str = "exact"
+    #: Only for `approximate`. The floor on teacher-forced top-1 agreement with the
+    #: reference, and the ceiling on mean KL in nats. Registered here, before the rental,
+    #: for the same reason the prediction is: a bar moved after seeing the number is not a
+    #: bar. Both are read by `batch_run.BatchRunner._run_correctness`.
+    top1_threshold: float | None = None
+    kl_threshold: float | None = None
 
     def __post_init__(self) -> None:
+        if self.correctness not in CORRECTNESS_POLICIES:
+            raise ValueError(f"correctness must be one of {CORRECTNESS_POLICIES}, got {self.correctness!r}")
+        if self.correctness == "approximate":
+            if self.top1_threshold is None or self.kl_threshold is None:
+                raise ValueError(
+                    f"{self.slug!r} is scored approximately and must register both a "
+                    "top1_threshold and a kl_threshold before the rental. An approximate "
+                    "gate with no bar passes everything, including a broken kernel."
+                )
+            if not 0.0 <= self.top1_threshold <= 1.0:
+                raise ValueError(f"top1_threshold is a fraction, got {self.top1_threshold!r}")
+            if self.kl_threshold < 0.0:
+                raise ValueError(f"kl_threshold is in nats and cannot be negative, got {self.kl_threshold!r}")
+        elif self.top1_threshold is not None or self.kl_threshold is not None:
+            raise ValueError(
+                f"{self.slug!r} is scored exactly but carries approximate thresholds. "
+                "Exact means the token sequences match; a threshold there would never be read."
+            )
+        if self.is_identity and self.correctness != "exact":
+            raise ValueError(
+                f"{self.slug!r} installs nothing, so it is bit-identical to the reference and "
+                "must be gated exactly. An identity slot that could not match tokens would "
+                "calibrate nothing."
+            )
         if self.prediction not in PREDICTIONS:
             raise ValueError(f"prediction must be one of {PREDICTIONS}, got {self.prediction!r}")
         if not 0.0 <= self.byte_share <= 1.0:

@@ -383,3 +383,103 @@ REGISTRY.register(
 )
 register_checks("gated_delta_step", _gated_delta_step.correctness_checks)
 register_checks("flash_decode_splitkv", _flash_decode_splitkv.correctness_checks)
+
+# -- batch 003 kernels: weight-only quantisation ------------------------------------
+#
+# All six install across whole regions of the model rather than swapping one operation,
+# so five of them declare `decode_step` — the only replaceable op that means "the step
+# itself". `int8_mlp` declares `swiglu_mlp` because it genuinely touches nothing else,
+# which is what makes it the diagnostic that separates the MLP's 53.9% of weight bytes
+# from the rest.
+
+from . import quantised_linear as _quantised_linear  # noqa: E402
+
+REGISTRY.register(
+    "gemv_bf16",
+    impl=_quantised_linear.bf16_gemv,
+    replaces="decode_step",
+    status=KernelStatus.RETIRED,
+    hypothesis="009-gemv-bf16-control",
+    notes=(
+        "The control, not the hypothesis. The same hand-written GEMV as the int8 kernels "
+        "reading the reference's own bf16 weights, so it moves exactly the bytes cuBLAS "
+        "moves. Its ratio is the divisor that separates 'a hand-written GEMV is "
+        "competitive' from 'int8 moves fewer bytes' — without it a win at int8 cannot say "
+        "which of the two it is."
+    ),
+)
+register_checks("gemv_bf16", _quantised_linear.bf16_correctness_checks)
+
+REGISTRY.register(
+    "int8_dequant_torch",
+    impl=_quantised_linear.Int8DequantLinear,
+    replaces="decode_step",
+    status=KernelStatus.RETIRED,
+    hypothesis="010-int8-dequant-torch",
+    notes=(
+        "Weight-only int8 expressed the only way PyTorch can say it — materialise the "
+        "dequantised bf16 weight, then call cuBLAS — and handed to max-autotune. "
+        "docs/HYPOTHESES.md asserts inductor cannot fuse this and that the extra write "
+        "makes it SLOWER than bf16. That assertion has never been measured; this slot is "
+        "the measurement, and it is predicted to lose."
+    ),
+)
+register_checks("int8_dequant_torch", _quantised_linear.int8_dequant_correctness_checks)
+
+REGISTRY.register(
+    "int8_mlp",
+    impl=_quantised_linear.int8_gemv,
+    replaces="swiglu_mlp",
+    status=KernelStatus.RETIRED,
+    hypothesis="011-int8-mlp",
+    notes=(
+        "int8 weight-only on the three MLP projections only: 53.9% of the model's weight "
+        "bytes, and the cleanest large share in the model. Diagnostic for 012 — the "
+        "difference between them is what the attention and linear-attention projections "
+        "are worth."
+    ),
+)
+register_checks("int8_mlp", _quantised_linear.int8_correctness_checks)
+
+REGISTRY.register(
+    "int8_all_linear",
+    impl=_quantised_linear.int8_gemv,
+    replaces="decode_step",
+    status=KernelStatus.RETIRED,
+    hypothesis="012-int8-all-linear",
+    notes=(
+        "int8 weight-only on every projection inside a decoder layer: MLP, attention and "
+        "linear attention, 84.9% of weight bytes. The tied LM head is deliberately left "
+        "in bf16 so that 013 minus 012 is exactly what the head is worth."
+    ),
+)
+register_checks("int8_all_linear", _quantised_linear.int8_correctness_checks)
+
+REGISTRY.register(
+    "int8_full",
+    impl=_quantised_linear.int8_gemv,
+    replaces="decode_step",
+    status=KernelStatus.RETIRED,
+    hypothesis="013-int8-full",
+    notes=(
+        "012 plus the tied LM head, which is 15.1% of weight bytes and the single largest "
+        "GEMV in the model. 100% of the weight stream at 8 bits: the roofline ceiling is "
+        "1.85x. The embedding *lookup* stays bf16 — it reads one row, not the table."
+    ),
+)
+register_checks("int8_full", _quantised_linear.int8_correctness_checks)
+
+REGISTRY.register(
+    "int4_full",
+    impl=_quantised_linear.int4_gemv,
+    replaces="decode_step",
+    status=KernelStatus.RETIRED,
+    hypothesis="014-int4-full",
+    notes=(
+        "The same sites as 013 at 4 bits with per-group (128) scales, two values packed "
+        "per byte and unpacked in registers. Ceiling 3.21x, and the largest accuracy risk "
+        "in the batch: in_proj_a and in_proj_b feed an exponential, and 32 output channels "
+        "of 4-bit weights is where this breaks if it breaks."
+    ),
+)
+register_checks("int4_full", _quantised_linear.int4_correctness_checks)

@@ -320,7 +320,15 @@ class BatchRunner:
         return candidate
 
     def _run_correctness(self, hypothesis: Hypothesis, candidate) -> dict[str, Any]:
-        from .harness.correctness import CorrectnessReport, check_end_to_end
+        """Layer 1 always; layer 2 under whichever policy the hypothesis registered.
+
+        A quantised candidate cannot match bf16 tokens exactly however correct it is, so
+        forcing it through the exact gate would record `incorrect` for every weight-only
+        hypothesis this project will ever run — a gate that cannot distinguish "wrong" from
+        "different" reports nothing. `Hypothesis.correctness` chooses, and the thresholds
+        it is judged against were committed to `batches.py` before the rental.
+        """
+        from .harness.correctness import CorrectnessReport, check_distribution, check_end_to_end
         from .harness.prompts import PROMPT_DIGEST
         from .kernels import REGISTRY, build_kernel_checks
 
@@ -328,6 +336,24 @@ class BatchRunner:
         # Layer 1 runs against `self.reference`, whose modules no install has touched, so
         # each check compares the kernel against the operation it claims to replace.
         kernel_checks = build_kernel_checks(self.reference, registry=registry, device="cuda")
+
+        if hypothesis.correctness == "approximate":
+            distribution = check_distribution(
+                self.reference,
+                candidate,
+                self.prompt_ids,
+                top1_threshold=hypothesis.top1_threshold,
+                kl_threshold=hypothesis.kl_threshold,
+                max_new_tokens=self.max_new_tokens,
+                prompt_digest=PROMPT_DIGEST,
+            )
+            self.log(
+                f"[batch] {hypothesis.slug}: top-1 agreement {distribution.top1_agreement:.4f} "
+                f"(bar {distribution.top1_threshold}), mean KL {distribution.mean_kl:.5f} nats "
+                f"(bar {distribution.kl_threshold}) over {distribution.num_positions} positions"
+            )
+            return CorrectnessReport(kernel_checks=kernel_checks, distribution=distribution).to_dict()
+
         end_to_end = check_end_to_end(
             self.reference,
             candidate,

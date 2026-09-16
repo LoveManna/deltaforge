@@ -17,6 +17,7 @@ from .correctness import (
     CorrectnessReport,
     EndToEndCheck,
     TokenMatch,
+    check_distribution,
     check_end_to_end,
     check_kernel,
     error_magnitudes,
@@ -288,3 +289,116 @@ def test_report_surfaces_the_worst_magnitudes_across_kernels():
     data = report.to_dict()
     assert len(data["layer1_kernel_checks"]) == 2
     assert data["worst_max_abs_err"] == pytest.approx(0.009, rel=1e-4)
+
+
+# -- layer 2, approximate -------------------------------------------------------------
+
+
+def test_an_identical_model_agrees_perfectly_with_itself(model):
+    result = check_distribution(
+        model, model, [[1, 2, 3], [7, 8]], top1_threshold=1.0, kl_threshold=0.0, max_new_tokens=4
+    )
+
+    assert result.passed
+    assert result.top1_agreement == 1.0
+    assert result.mean_kl == pytest.approx(0.0, abs=1e-6)
+    assert result.num_positions > 0
+
+
+def test_the_scored_positions_are_the_prompt_plus_the_references_own_continuation(model):
+    """Teacher-forced over where the reference actually goes, not over the prompt alone.
+
+    The prompt is a handful of positions of a distribution the model has not committed to;
+    the decode regime is what the benchmark measures, so it is what the gate must score.
+    """
+    result = check_distribution(
+        model, model, [[1, 2, 3]], top1_threshold=1.0, kl_threshold=0.0, max_new_tokens=5
+    )
+
+    assert result.num_positions == 3 + 5
+    assert result.context_tokens == 3 + 5
+
+
+def test_a_perturbed_model_fails_on_agreement_and_reports_how_far(model):
+    perturbed = ReferenceModel(tiny_config()).to(torch.float32).eval()
+    perturbed.load_state_dict(model.state_dict())
+    with torch.no_grad():
+        perturbed.layers[1].mlp.down_proj.weight.add_(0.5)
+
+    result = check_distribution(
+        model, perturbed, [[1, 2, 3]], top1_threshold=0.98, kl_threshold=0.01, max_new_tokens=8
+    )
+
+    assert not result.passed
+    assert result.top1_agreement < 1.0
+    assert result.mean_kl > 0.0
+    assert result.max_kl >= result.mean_kl
+
+
+def test_agreement_alone_cannot_pass_a_shredded_distribution(model):
+    """Both statistics are required, and this is why.
+
+    A candidate can keep the argmax and still destroy everything under it. Gating on
+    agreement alone would call that correct; the KL bar is what sees it.
+    """
+
+    class HalfLogits(ReferenceModel):
+        """Scales the logits by 0.5. A monotone map, so every argmax is unchanged and the
+        agreement statistic is exactly 1.0 — while the distribution underneath is a
+        different one."""
+
+        def project_logits(self, hidden_states):
+            return super().project_logits(hidden_states) * 0.5
+
+    perturbed = HalfLogits(tiny_config()).to(torch.float32).eval()
+    perturbed.load_state_dict(model.state_dict())
+
+    result = check_distribution(
+        model, perturbed, [[1, 2, 3]], top1_threshold=1.0, kl_threshold=1e-4, max_new_tokens=6
+    )
+
+    assert result.top1_agreement == 1.0
+    assert result.mean_kl > 1e-4
+    assert not result.passed
+
+
+def test_the_distribution_gate_serialises_its_bars_alongside_its_numbers(model):
+    result = check_distribution(
+        model, model, [[1, 2]], top1_threshold=0.97, kl_threshold=0.02, max_new_tokens=3
+    )
+
+    payload = result.to_dict()
+    assert payload["policy"] == "approximate"
+    assert payload["top1_threshold"] == 0.97
+    assert payload["kl_threshold"] == 0.02
+    assert payload["passed"] is True
+
+
+def test_a_report_with_a_distribution_check_says_which_policy_it_used(model):
+    result = check_distribution(
+        model, model, [[1, 2]], top1_threshold=1.0, kl_threshold=0.0, max_new_tokens=2
+    )
+
+    report = CorrectnessReport(distribution=result)
+
+    assert report.passed
+    assert report.to_dict()["layer2_policy"] == "approximate"
+    assert report.to_dict()["layer2_end_to_end"] is None
+
+
+def test_a_failing_distribution_check_fails_the_report(model):
+    failing = check_distribution(
+        model, model, [[1, 2]], top1_threshold=1.1, kl_threshold=0.0, max_new_tokens=2
+    )
+
+    assert not CorrectnessReport(distribution=failing).passed
+
+
+def test_the_distribution_gate_rejects_an_empty_prompt_set(model):
+    with pytest.raises(ValueError, match="no prompts"):
+        check_distribution(model, model, [], top1_threshold=1.0, kl_threshold=0.0)
+
+
+def test_the_distribution_gate_rejects_an_empty_prompt(model):
+    with pytest.raises(ValueError, match="prompt 0 is empty"):
+        check_distribution(model, model, [[]], top1_threshold=1.0, kl_threshold=0.0)

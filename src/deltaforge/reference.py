@@ -683,6 +683,21 @@ class ReferenceModel(nn.Module):
         param = next(self.parameters())
         return DecodeCache(self.config, batch_size, max_seq_len, device=param.device, dtype=param.dtype)
 
+    def project_logits(self, hidden_states: Tensor) -> Tensor:
+        """The LM head projection, as a callable boundary a kernel can replace.
+
+        The expression is the one `forward` used inline, moved verbatim and nothing else.
+        It is here because the head is **15.1% of per-token weight bytes** and, with
+        ``tie_word_embeddings``, has no `nn.Linear` for a kernel to swap — every other
+        replaceable operation in this model is a module, and this one was a statement.
+
+        Extracting it is not the accommodation `AGENT.md` forbids: no kernel enters this
+        file, no arithmetic changes, and `reference_purity_test.py` still holds. What would
+        invalidate stored results is a change to what the baseline *computes*, and this
+        changes only where the same computation is written down.
+        """
+        return F.linear(hidden_states, self.lm_head_weight.to(hidden_states.dtype))
+
     def forward(
         self,
         input_ids: Tensor,
@@ -717,7 +732,7 @@ class ReferenceModel(nn.Module):
         hidden_states = self.norm(hidden_states)
         if num_logits_to_keep:
             hidden_states = hidden_states[:, -num_logits_to_keep:]
-        logits = F.linear(hidden_states, self.lm_head_weight.to(hidden_states.dtype))
+        logits = self.project_logits(hidden_states)
 
         if cache is not None:
             cache.advance(seq_len)

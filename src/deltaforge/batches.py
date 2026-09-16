@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from .batch import Batch, Hypothesis
 
-__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "get_batch"]
+__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "get_batch"]
 
 
 BATCH_001 = Batch(
@@ -312,8 +312,234 @@ BATCH_002 = Batch(
 )
 
 
+BATCH_003 = Batch(
+    batch_id="003-int8-weight-only",
+    description=(
+        "Weight-only quantisation with a fused dequantise-GEMV -- hypothesis 1 in "
+        "docs/HYPOTHESES.md, and the only open entry whose ceiling is above 1.0 rather "
+        "than below the noise band. Everything batch 001 measured attacks at most 6.23% "
+        "of per-token bytes; this attacks 91.85%, because at batch-1 decode the model IS "
+        "the weight stream. Two of the seven slots are controls rather than hypotheses, "
+        "and they are what make a win mean something: 009 asks whether a hand-written "
+        "GEMV is competitive with cuBLAS at all, and 010 asks whether the compiler could "
+        "have done this itself. A ratio without those two is a number; with them it is a "
+        "mechanism."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            replaces=(),
+            mechanism=(
+                "Install nothing. The candidate is then bit-identical to the reference, so "
+                "every column must measure the same thing."
+            ),
+            prediction="identity",
+            rationale=(
+                "It measured 1.0018 with an IQR of 0.0018 on rental 35, so unlike every "
+                "batch before this one there is a reason to expect it. That is exactly why "
+                "it still runs first: a calibration slot is worth nothing as a belief and "
+                "everything as a check, and the six slots behind it are the first numbers "
+                "this project would ever promote. If it misses, they are all void."
+            ),
+            notes=(
+                "It also tests the blocker 16 fix on a GPU for the first time. "
+                "`recompile_limit_for(7)` raises dynamo's limit to 22; every slot record "
+                "carries `graphs_compiled`, and a 0 anywhere in this batch means that "
+                "slot's ratio is not a comparison."
+            ),
+        ),
+        Hypothesis(
+            slug="009-gemv-bf16-control",
+            kernels=("gemv_bf16",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_step",),
+            mechanism=(
+                "The hand-written Triton GEMV reading the reference's own bf16 weights, on "
+                "every projection in every decoder layer. Identical bytes to cuBLAS; only "
+                "the author changes."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "Byte share 0.0 -- it moves not one byte fewer than the baseline, which is "
+                "the point. At batch 1 a GEMV is pure weight streaming, so both "
+                "implementations are pinned to the same roofline and should tie. This slot "
+                "is the divisor for the three int8 slots behind it: if 012 returns 1.6 and "
+                "this returns 1.0, the win is the bytes. If this returns 0.6, my kernel is "
+                "simply slow and int8's real margin is larger than it looks. No other slot "
+                "can separate those, and a quantisation result reported without this one is "
+                "a number whose cause is unknown."
+            ),
+        ),
+        Hypothesis(
+            slug="010-int8-dequant-torch",
+            kernels=("int8_dequant_torch",),
+            category="B",
+            byte_share=0.779,
+            replaces=("decode_step",),
+            mechanism=(
+                "The same int8 weights, dequantised the only way PyTorch can express it -- "
+                "materialise the bf16 weight, then call F.linear -- and handed to "
+                "torch.compile(max-autotune) like every other candidate."
+            ),
+            prediction="loss",
+            rationale=(
+                "docs/HYPOTHESES.md ASSERTS that inductor cannot fuse this: that it "
+                "materialises the full bf16 weight into global memory and calls cuBLAS, "
+                "ADDING an 8.4 GB write on top of the read and making the quantised version "
+                "slower than the bf16 baseline. The entry then says, in its own Watch-for: "
+                "'Verify the claim above before building on it... Either way, measure, do "
+                "not assume.' Nobody has. Recent inductor has prologue fusion into its mm "
+                "templates and might fuse some of the dequant -- though at M=1 it likely is "
+                "not using a template at all. So the prediction is a loss around 0.6-0.8x, "
+                "and the outcome that would matter most is the one that refutes it: if this "
+                "slot WINS, the compiler can express weight-only quantisation, the "
+                "hand-written kernels behind it are worth much less than claimed, and the "
+                "backlog's top entry needs rewriting."
+            ),
+            notes=(
+                "The correctness thresholds match 012 exactly, and so should the measured "
+                "numbers: it is the same arithmetic, so a divergence between the two would "
+                "mean one of the implementations is wrong rather than merely slower."
+            ),
+            correctness="approximate",
+            top1_threshold=0.98,
+            kl_threshold=0.01,
+        ),
+        Hypothesis(
+            slug="011-int8-mlp",
+            kernels=("int8_mlp",),
+            category="B",
+            byte_share=0.495,
+            replaces=("swiglu_mlp",),
+            mechanism=(
+                "int8 weight-only with a fused dequantise-GEMV on the three MLP "
+                "projections: the int8 weight is loaded and rescaled inside the K-loop, so "
+                "the dequantised bf16 weight is never written to memory at all."
+            ),
+            prediction="win",
+            rationale=(
+                "The MLP is 4.530 GB of the 8.411 GB of weights read per token -- 49.5% of "
+                "ALL per-token traffic, eight times the largest share batch 001 attacked. "
+                "Halving it saves 2.265 GB of 9.158, for a ceiling of 1.33x, which is two "
+                "orders of magnitude outside the harness's measured noise band of 0.002-0.004. "
+                "Category B: moving fewer bytes is a choice about representation, and a "
+                "scheduler is not entitled to make it. Predicted 1.15-1.30x -- short of the "
+                "ceiling because a GEMV at N=9216 puts only 144 programs on 170 SMs and the "
+                "int8 loads are not perfectly efficient at BLOCK_N=64."
+            ),
+            notes=(
+                "The cheap diagnostic before the expensive claim: 012 minus this is exactly "
+                "what the attention and linear-attention projections are worth, and if this "
+                "slot fails there is no point reading 012 or 013 at all."
+            ),
+            correctness="approximate",
+            top1_threshold=0.98,
+            kl_threshold=0.01,
+        ),
+        Hypothesis(
+            slug="012-int8-all-linear",
+            kernels=("int8_all_linear",),
+            category="B",
+            byte_share=0.779,
+            replaces=("decode_step",),
+            mechanism=(
+                "The same fused dequantise-GEMV on every projection inside a decoder layer: "
+                "MLP, gated attention and gated delta-net, 7.140 GB of the 8.411 GB of "
+                "weights."
+            ),
+            prediction="win",
+            rationale=(
+                "77.9% of per-token bytes at 8 bits saves 3.570 GB of 9.158, for a ceiling "
+                "of 1.64x. The mechanism is identical to 011 and the only thing that changes "
+                "is how much of the weight stream it covers, which makes the pair a dose-"
+                "response test rather than two separate experiments: if 011 wins and this "
+                "does not win by MORE, the win is not coming from bytes and the account is "
+                "wrong. Predicted 1.35-1.55x. Note the small-N sites here -- in_proj_a and "
+                "in_proj_b are 32 output channels against K=2560, so one BLOCK_N program "
+                "does the whole projection and the kernel is latency-bound rather than "
+                "bandwidth-bound on them. They are 0.03% of the bytes, so it does not "
+                "matter much, but it is the reason this may land below the dose-response "
+                "line rather than above it."
+            ),
+            correctness="approximate",
+            top1_threshold=0.98,
+            kl_threshold=0.01,
+        ),
+        Hypothesis(
+            slug="013-int8-full",
+            kernels=("int8_full",),
+            category="B",
+            byte_share=0.918,
+            replaces=("decode_step",),
+            mechanism=(
+                "012 plus the tied LM head, through `ReferenceModel.project_logits`. The "
+                "head is one 248320 x 2560 GEMV per token -- the single largest weight read "
+                "in the model -- and with tie_word_embeddings it had no nn.Linear to swap."
+            ),
+            prediction="win",
+            rationale=(
+                "The head is 1.271 GB, 15.1% of weight bytes, and quantising it takes the "
+                "batch to 100% of the weight stream at 8 bits: ceiling 1.85x, which is what "
+                "docs/roofline.py prints for fp8/int8 and the largest number in this "
+                "repository's backlog. Predicted 1.5-1.7x. It is placed after 012 rather "
+                "than folded into it because the head is the one site where quantisation is "
+                "genuinely risky for accuracy -- it is the last projection before the "
+                "argmax, so its error is not attenuated by anything downstream, and the "
+                "logit gaps this model produces are small enough that 001 and 002 flipped a "
+                "token on 2 bf16 ULP. If exactly one of 012 and 013 fails the distribution "
+                "gate, that is the finding."
+            ),
+            notes=(
+                "The embedding LOOKUP stays bf16. It reads one row of the table per token, "
+                "not the table, so it is not on the bandwidth path and quantising it would "
+                "add error for nothing."
+            ),
+            correctness="approximate",
+            top1_threshold=0.97,
+            kl_threshold=0.02,
+        ),
+        Hypothesis(
+            slug="014-int4-full",
+            kernels=("int4_full",),
+            category="B",
+            byte_share=0.918,
+            replaces=("decode_step",),
+            mechanism=(
+                "The same sites as 013 at 4 bits with per-group-of-128 scales, two values "
+                "packed per byte and unpacked in registers inside the K-loop."
+            ),
+            prediction="win",
+            rationale=(
+                "Ceiling 3.21x -- the largest in the repository. Riskiest and therefore "
+                "last, on two counts. Numerically: 4 bits is 16 levels, and in_proj_a and "
+                "in_proj_b feed an exponential through A_log, so a quantisation error there "
+                "is amplified rather than averaged; its thresholds are set loosest in the "
+                "batch for that reason and the honest outcome may be a fast candidate that "
+                "fails the gate, which is a result and is recorded as one. Mechanically: "
+                "the unpack costs shifts and masks in the inner loop, and at 4 bits the "
+                "kernel may stop being bandwidth-bound and start being ALU-bound, at which "
+                "point the extra halving buys nothing. Predicted 1.8-2.4x, well short of "
+                "3.21x, and predicted to have the widest gap between ceiling and measurement "
+                "of any slot here."
+            ),
+            correctness="approximate",
+            top1_threshold=0.85,
+            kl_threshold=0.15,
+        ),
+    ),
+)
+
+
 #: Every batch, by id.
-BATCHES: dict[str, Batch] = {BATCH_001.batch_id: BATCH_001, BATCH_002.batch_id: BATCH_002}
+BATCHES: dict[str, Batch] = {
+    BATCH_001.batch_id: BATCH_001,
+    BATCH_002.batch_id: BATCH_002,
+    BATCH_003.batch_id: BATCH_003,
+}
 
 
 def get_batch(batch_id: str) -> Batch:
