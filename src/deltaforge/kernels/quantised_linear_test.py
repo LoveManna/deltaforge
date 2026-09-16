@@ -370,3 +370,115 @@ def test_the_fake_kernels_give_dynamo_the_right_shape_and_dtype():
     )
     int8_out = _int8_gemv_fake(x, torch.empty(512, 256, dtype=torch.int8), torch.empty(512))
     assert int8_out.dtype is torch.bfloat16
+
+
+# -- the kernels' arithmetic, emulated ------------------------------------------------
+#
+# Triton is absent here, so the kernels themselves cannot run. Their *indexing* can be
+# executed though, and indexing is where these two are most likely to be wrong: the int4
+# kernel derives a scale-group index from a packing that pairs element j with element
+# j + K/2, and getting that off by one group would produce a plausible, slightly wrong
+# answer that no shape check would catch.
+#
+# These emulations follow the kernel bodies statement for statement. They are a real test
+# only so long as that stays true — if a kernel changes, the emulation beside it must.
+
+
+def _emulate_int8_gemv(x, qweight, scale, block_n, block_k):
+    n, k = qweight.shape
+    out = torch.zeros(x.shape[0], n, dtype=torch.float32)
+    for start in range(0, n, block_n):
+        offs_n = torch.arange(start, start + block_n)
+        mask_n = offs_n < n
+        rows = offs_n.clamp(max=n - 1)
+        acc = torch.zeros(x.shape[0], block_n, dtype=torch.float32)
+        for k0 in range(0, k, block_k):
+            offs_k = torch.arange(k0, k0 + block_k)
+            mask_k = offs_k < k
+            cols = offs_k.clamp(max=k - 1)
+            xb = x[:, cols].float() * mask_k
+            wb = qweight[rows][:, cols].float() * (mask_n[:, None] & mask_k[None, :])
+            acc += xb @ wb.T
+        out[:, rows[mask_n]] = (acc * scale[rows])[:, mask_n]
+    return out
+
+
+def _emulate_int4_gemv(x, packed, scale, group):
+    n, half = packed.shape
+    block_n = 16
+    out = torch.zeros(x.shape[0], n, dtype=torch.float32)
+    for start in range(0, n, block_n):
+        offs_n = torch.arange(start, min(start + block_n, n))
+        acc = torch.zeros(x.shape[0], len(offs_n), dtype=torch.float32)
+        for j0 in range(0, half, group):
+            offs_j = torch.arange(j0, j0 + group)
+            block = packed[offs_n][:, offs_j].to(torch.int16)
+            low = (block & 0x0F).float() - 8.0
+            high = ((block >> 4) & 0x0F).float() - 8.0
+            x_low = x[:, offs_j].float()
+            x_high = x[:, half + offs_j].float()
+            s_low = scale[offs_n, j0 // group]
+            s_high = scale[offs_n, (half + j0) // group]
+            acc += s_low * (x_low @ low.T) + s_high * (x_high @ high.T)
+        out[:, offs_n] = acc
+    return out
+
+
+@pytest.mark.parametrize(("n", "k"), [(64, 256), (48, 128), (33, 192)])
+def test_the_int8_kernels_blocked_indexing_reproduces_the_dense_product(n, k):
+    """Including a ragged N, which is what masks the tail block."""
+    torch.manual_seed(0)
+    weight = torch.randn(n, k)
+    quantised = quantise_int8_per_channel(weight)
+    x = torch.randn(3, k)
+
+    emulated = _emulate_int8_gemv(x, quantised.qweight, quantised.scale, block_n=16, block_k=64)
+    dense = torch.nn.functional.linear(x, dequantise_int8(quantised.qweight, quantised.scale))
+
+    assert torch.allclose(emulated, dense, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("k", [256, 512])
+def test_the_int4_kernels_group_indexing_reproduces_the_dense_product(k):
+    """The test that would catch a scale group read one group off.
+
+    The packing pairs element ``j`` with ``j + K/2``, so the high nibbles of a block belong
+    to a *different* scale group from the low ones. Swapping the two, or deriving both from
+    ``j0``, gives an answer that is wrong by a few percent and looks like quantisation
+    error rather than like a bug.
+    """
+    torch.manual_seed(0)
+    weight = torch.randn(48, k)
+    quantised = quantise_int4_grouped(weight)
+    x = torch.randn(2, k)
+
+    emulated = _emulate_int4_gemv(x, quantised.qweight, quantised.scale, quantised.group_size)
+    dense = torch.nn.functional.linear(
+        x, dequantise_int4(quantised.qweight, quantised.scale, group_size=quantised.group_size)
+    )
+
+    assert torch.allclose(emulated, dense, rtol=1e-5, atol=1e-4)
+
+
+def test_reading_both_int4_nibbles_from_the_low_group_is_caught():
+    """The emulation above only proves anything if it can fail. This is the mutation."""
+    torch.manual_seed(0)
+    weight = torch.randn(32, 512)
+    quantised = quantise_int4_grouped(weight)
+    x = torch.randn(1, 512)
+    half = quantised.qweight.shape[1]
+    group = quantised.group_size
+
+    wrong = torch.zeros(1, 32, dtype=torch.float32)
+    for j0 in range(0, half, group):
+        offs_j = torch.arange(j0, j0 + group)
+        block = quantised.qweight[:, offs_j].to(torch.int16)
+        low = (block & 0x0F).float() - 8.0
+        high = ((block >> 4) & 0x0F).float() - 8.0
+        s = quantised.scale[:, j0 // group]  # the bug: the high half uses the low group
+        wrong += s * (x[:, offs_j].float() @ low.T) + s * (x[:, half + offs_j].float() @ high.T)
+
+    dense = torch.nn.functional.linear(
+        x, dequantise_int4(quantised.qweight, quantised.scale, group_size=group)
+    )
+    assert not torch.allclose(wrong, dense, rtol=1e-5, atol=1e-4)

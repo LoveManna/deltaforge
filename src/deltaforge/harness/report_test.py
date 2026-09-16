@@ -421,3 +421,71 @@ def test_a_batch_record_carries_phase_timings_too():
     )
 
     assert record.to_dict()["phases"]["000-identity.bench"] == 180.0
+
+
+def test_an_approximate_gate_renders_its_numbers_beside_the_bars_it_had_to_clear():
+    """A result that lives only in JSON is a result nobody reads.
+
+    The bars were registered before the rental, so the rendered report must show both the
+    measurement and what it was asked to clear — a bare "passed" hides which of the two
+    was generous.
+    """
+    record = ResultRecord(
+        kind="hypothesis",
+        outcome="win",
+        config_name="qwen3.5-4b",
+        correctness={
+            "passed": True,
+            "worst_max_abs_err": 1e-3,
+            "worst_max_rel_err": 1e-3,
+            "layer1_kernel_checks": [],
+            "layer2_end_to_end": None,
+            "layer2_policy": "approximate",
+            "layer2_distribution": {
+                "policy": "approximate",
+                "passed": True,
+                "top1_agreement": 0.9934,
+                "mean_kl": 0.00241,
+                "max_kl": 0.0181,
+                "num_positions": 765,
+                "top1_threshold": 0.98,
+                "kl_threshold": 0.01,
+            },
+        },
+    )
+
+    rendered = render_markdown(record)
+
+    assert "Approximate gate passed" in rendered
+    assert "765 positions" in rendered
+    assert "0.9934" in rendered
+    assert ">= 0.98" in rendered
+    assert "<= 0.01" in rendered
+
+
+def test_a_failed_approximate_gate_says_so_loudly():
+    record = ResultRecord(
+        kind="hypothesis",
+        outcome="incorrect",
+        config_name="qwen3.5-4b",
+        correctness={
+            "passed": False,
+            "worst_max_abs_err": 0.0,
+            "worst_max_rel_err": 0.0,
+            "layer1_kernel_checks": [],
+            "layer2_end_to_end": None,
+            "layer2_policy": "approximate",
+            "layer2_distribution": {
+                "policy": "approximate",
+                "passed": False,
+                "top1_agreement": 0.71,
+                "mean_kl": 0.44,
+                "max_kl": 2.1,
+                "num_positions": 765,
+                "top1_threshold": 0.85,
+                "kl_threshold": 0.15,
+            },
+        },
+    )
+
+    assert "Approximate gate **FAILED**" in render_markdown(record)

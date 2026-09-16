@@ -318,6 +318,25 @@ def render_markdown(record: ResultRecord) -> str:
                     "",
                 ]
 
+        # The approximate gate, for a candidate that computes a deliberately different
+        # function. Rendered beside its bars, never as a bare pass: the bars were chosen
+        # in advance and a reader must be able to see both the number and what it was
+        # asked to clear.
+        distribution = correctness.get("layer2_distribution")
+        if distribution:
+            verdict = "passed" if distribution["passed"] else "**FAILED**"
+            lines += [
+                f"Approximate gate {verdict}, teacher-forced over {distribution['num_positions']} positions:",
+                "",
+                "| Statistic | Measured | Bar |",
+                "|---|---:|---:|",
+                f"| Top-1 agreement | {distribution['top1_agreement']:.4f} "
+                f"| >= {distribution['top1_threshold']} |",
+                f"| Mean KL (nats) | {distribution['mean_kl']:.5f} | <= {distribution['kl_threshold']} |",
+                f"| Max KL (nats) | {distribution['max_kl']:.5f} | — |",
+                "",
+            ]
+
     if cost:
         lines += [
             "### Cost",
