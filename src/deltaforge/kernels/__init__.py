@@ -439,7 +439,7 @@ REGISTRY.register(
         "are worth."
     ),
 )
-register_checks("int8_mlp", _quantised_linear.int8_correctness_checks)
+register_checks("int8_mlp", _quantised_linear.int8_mlp_correctness_checks)
 
 REGISTRY.register(
     "int8_all_linear",
@@ -467,7 +467,7 @@ REGISTRY.register(
         "1.85x. The embedding *lookup* stays bf16 — it reads one row, not the table."
     ),
 )
-register_checks("int8_full", _quantised_linear.int8_correctness_checks)
+register_checks("int8_full", _quantised_linear.int8_full_correctness_checks)
 
 REGISTRY.register(
     "int4_full",

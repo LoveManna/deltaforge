@@ -103,6 +103,14 @@ dequantise in fp32, matmul in fp32. The comparison is deliberately *not* against
 reference: that difference is the quantisation error, which is the hypothesis. Anything but
 near-ULP agreement at layer 1 is a kernel bug.
 
+**The probes are derived from the model, not hardcoded.** `_launch_shape` picks 8, 16 or 32
+rows per program by width, and each branch is a different tiling with a different tail mask.
+A fixed pair of probes — `gate_proj` and `down_proj` — covers the 32 and 16 branches and
+leaves the 8 branch (`k_proj`, `v_proj`, `in_proj_a`, `in_proj_b`) entirely untested, on a
+kernel that installs there in three of the seven slots. `_probe_weights` therefore groups
+the sites a hypothesis actually installs on by branch and takes the narrowest `N` in each,
+because the narrowest is the one whose last block is masked.
+
 **Layer 2 — `check_distribution`.** Teacher-force both models over the reference's own
 greedy continuation (prompt + 128 tokens, five prompts, ~765 positions) and score:
 
@@ -114,6 +122,14 @@ greedy continuation (prompt + 128 tokens, five prompts, ~765 positions) and scor
   shredded everywhere the argmax happens to be safe. A monotone rescaling of the logits
   keeps agreement at exactly 1.0 and is a different model; the KL bar sees it, and
   `correctness_test.py` demonstrates precisely that case.
+
+**The gate stays on the decode path.** The context goes through in 64-token chunks carried
+by the model's own cache, not in one 150-row pass. That is not a memory decision: above
+`GEMV_MAX_ROWS` the op takes its dense fallback, so a single-pass gate would score the
+fallback, the kernel would never run there, and the only thing between a wrong kernel and a
+reported win would be layer 1's probes. Chunked and whole-sequence are equivalent —
+`reference_test.py` pins that — and both models are chunked identically, so any residual
+rounding difference cancels in the comparison rather than entering it.
 
 **Both bars are registered per hypothesis, in `batches.py`, before the rental**, for the
 same reason the prediction is. `Hypothesis.__post_init__` refuses an approximate slot that
@@ -173,6 +189,22 @@ different kernel; they are 0.03% of per-token bytes and `012`'s rationale says s
   comparison, and the batch must say so rather than report it.
 * **Layer 1 fails.** Then the kernel is wrong and the ratios measure a wrong kernel. This is
   the gate that matters most for this batch and it is exact.
+
+### The near miss this design already had
+
+The first launch of this batch was killed two minutes in, at $0.014, before the checkpoint
+download. The gate as written fed the whole ~150-token context through in one pass, which is
+above `GEMV_MAX_ROWS`, so **layer 2 would have scored the dense fallback and never run the
+kernel at all** — and layer 1's two hardcoded probes missed the 8-row launch branch, which
+three slots install on. A wrong kernel on `k_proj`, `v_proj`, `in_proj_a` and `in_proj_b`
+would have passed both gates and reported a ratio. Both holes are closed above; the tests
+that pin them are `test_layer_one_probes_every_launch_shape_branch_the_kernel_will_take` and
+`test_the_approximate_gate_stays_on_the_decode_path`.
+
+The general shape is the one `AGENT.md` §8 keeps finding: **a gate whose subject was never
+reached.** Blocker 7 was a guard firing before its subject existed, blocker 9 one firing
+after its subject had succeeded, blocker 15 a cleanup whose justification nothing had
+exercised. This was a gate that would have passed without the thing it gates ever running.
 
 ## 7. What is deliberately not here
 

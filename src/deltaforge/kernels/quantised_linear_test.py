@@ -482,3 +482,79 @@ def test_reading_both_int4_nibbles_from_the_low_group_is_caught():
         x, dequantise_int4(quantised.qweight, quantised.scale, group_size=group)
     )
     assert not torch.allclose(wrong, dense, rtol=1e-5, atol=1e-4)
+
+
+# -- what layer 1 actually covers -----------------------------------------------------
+
+
+def _real_model():
+    from ..config import qwen3_5_4b_config
+
+    with torch.device("meta"):
+        return ReferenceModel(qwen3_5_4b_config())
+
+
+def test_layer_one_probes_every_launch_shape_branch_the_kernel_will_take():
+    """The hole this closes.
+
+    Two hardcoded probes — `gate_proj` and `down_proj` — exercise the 32- and 16-row
+    branches and leave the 8-row branch untested. That branch is `k_proj`, `v_proj`,
+    `in_proj_a` and `in_proj_b`, and layer 2 cannot cover for it: a hypothesis installing
+    on a branch no probe reaches could report a plausible win while computing the wrong
+    thing on eight sites per layer.
+    """
+    from .quantised_linear import _launch_shape, _layer_linears, _probe_weights
+
+    model = _real_model()
+    installed = {_launch_shape(int(m.out_features))[0] for m in _layer_linears(model)}
+    probed = {_launch_shape(int(w.shape[0]))[0] for w, _ in _probe_weights(model, sites="layers")}
+
+    assert probed == installed
+    assert 8 in probed, "the narrow branch is the one a hardcoded probe pair misses"
+
+
+def test_each_probe_is_the_narrowest_of_its_branch():
+    """The narrowest N in a branch is the one whose final block is masked, which is where
+    an off-by-one in the tail shows up."""
+    from .quantised_linear import _launch_shape, _layer_linears, _probe_weights
+
+    model = _real_model()
+    narrowest: dict[int, int] = {}
+    for module in _layer_linears(model):
+        branch = _launch_shape(int(module.out_features))[0]
+        narrowest[branch] = min(narrowest.get(branch, 1 << 30), int(module.out_features))
+
+    for weight, _ in _probe_weights(model, sites="layers"):
+        branch = _launch_shape(int(weight.shape[0]))[0]
+        assert int(weight.shape[0]) == narrowest[branch]
+
+
+def test_a_kernel_is_never_probed_on_a_site_its_hypothesis_leaves_alone():
+    """011 installs on the MLP only, so reporting a check for the LM head would claim
+    coverage of a projection that hypothesis never touches."""
+    from .quantised_linear import _probe_weights
+
+    model = _real_model()
+    mlp_widths = {int(w.shape[0]) for w, _ in _probe_weights(model, sites="mlp")}
+
+    assert mlp_widths == {2560, 9216}
+    assert model.lm_head_weight.shape[0] not in mlp_widths
+
+
+def test_only_the_full_probe_set_reaches_the_tied_head():
+    from .quantised_linear import _probe_weights
+
+    model = _real_model()
+    labels = [label for _, label in _probe_weights(model, sites="full")]
+
+    assert any("tied lm head" in label for label in labels)
+    assert not any("tied lm head" in label for _, label in _probe_weights(model, sites="layers"))
+
+
+def test_the_approximate_gate_stays_on_the_decode_path():
+    """`check_distribution` chunks the context so the op runs its kernel rather than its
+    dense fallback. If the chunk ever grew past the threshold, layer 2 would score the
+    fallback and a wrong kernel would have only layer 1 between it and a reported win."""
+    from ..harness.correctness import DEFAULT_CHUNK_TOKENS
+
+    assert DEFAULT_CHUNK_TOKENS <= GEMV_MAX_ROWS

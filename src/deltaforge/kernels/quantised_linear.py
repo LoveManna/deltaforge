@@ -736,15 +736,55 @@ def _decode_shapes(k: int) -> tuple[tuple[tuple[int, int, int], str], ...]:
     )
 
 
-def _probe_weights(model) -> tuple[tuple[Tensor, str], ...]:
-    """Two real weights spanning the K extremes the model actually contains.
+def _probe_weights(model, *, sites: str) -> tuple[tuple[Tensor, str], ...]:
+    """One real weight per distinct launch-shape branch among the sites a kernel installs on.
 
-    `gate_proj` is the narrow-K, wide-N shape (2560 -> 9216) and `down_proj` the reverse
-    (9216 -> 2560). A kernel that is right on one and wrong on the other is the usual
-    shape bug, and one probe would miss it.
+    **Not a fixed pair of shapes.** `_launch_shape` chooses 8, 16 or 32 rows per program by
+    ``N``, and each branch is a different tiling with a different tail mask. Probing
+    `gate_proj` and `down_proj` alone — 9216 and 2560 wide — exercises the 32 and 16 branches
+    and leaves the 8 branch, which is `k_proj`, `v_proj`, `in_proj_a` and `in_proj_b`,
+    completely untested.
+
+    That gap is not benign. Layer 2 catches a wrong kernel only if the kernel runs there,
+    and a hypothesis that installs on a branch no probe covers could report a plausible
+    win while computing the wrong thing on 8 of its sites. So the probes are *derived* from
+    the model rather than hardcoded: group the installed sites by branch and take the
+    narrowest ``N`` in each, because the narrowest is the one whose last block is masked.
+
+    ``sites`` mirrors what each installer touches, so a check never reports on a projection
+    its hypothesis left alone.
     """
-    mlp = model.layers[0].mlp
-    return ((mlp.gate_proj.weight, "gate_proj"), (mlp.down_proj.weight, "down_proj"))
+    linears = _mlp_linears(model) if sites == "mlp" else _layer_linears(model)
+
+    by_branch: dict[int, nn.Linear] = {}
+    for linear in linears:
+        branch = _launch_shape(int(linear.out_features))[0]
+        incumbent = by_branch.get(branch)
+        if incumbent is None or linear.out_features < incumbent.out_features:
+            by_branch[branch] = linear
+
+    probes = [
+        (linear.weight, f"N={linear.out_features} K={linear.in_features} (BLOCK_N={branch})")
+        for branch, linear in sorted(by_branch.items())
+    ]
+    if sites == "full":
+        # The tied LM head: 248320 wide, the largest GEMV in the model, and the only site
+        # whose error reaches the argmax with nothing downstream to attenuate it.
+        weight = model.lm_head_weight
+        probes.append((weight, f"N={weight.shape[0]} K={weight.shape[1]} (tied lm head)"))
+    return tuple(probes)
+
+
+def _linear_reference(x: Tensor, dequant, n: int, k: int) -> Tensor:
+    """``F.linear`` against a dequantised weight, in fp32, chunked over ``N``.
+
+    The layer-1 reference for every kernel here. Chunked because one of the probes is the
+    248320 x 2560 LM head, which dequantises to 2.5 GB of fp32 in one piece — a correctness
+    gate that OOMs reports nothing, and it would do it on the slot with the largest ceiling.
+    """
+    flat = x.reshape(-1, k)
+    out = _dequant_linear(flat, dequant, n, k)
+    return out.to(x.dtype).reshape(*x.shape[:-1], n)
 
 
 def bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
@@ -752,14 +792,15 @@ def bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model):
+    for weight, label in _probe_weights(model, sites="layers"):
         w = weight.detach()
-        for shape, note in _decode_shapes(w.shape[1]):
+        n, k = w.shape
+        for shape, note in _decode_shapes(k):
             x = torch.randn(shape, device=device, dtype=w.dtype, generator=generator)
             checks.append(
                 check_kernel(
                     f"quantised_linear.bf16_gemv[{label}]",
-                    lambda a, b: F.linear(a.float(), b.float()).to(a.dtype),
+                    lambda a, b, n=n, k=k: _linear_reference(a, lambda i, j: b[i:j].float(), n, k),
                     lambda a, b: bf16_gemv(a, b),
                     args=(x, w),
                     replaces="decode_step",
@@ -769,30 +810,37 @@ def bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
     return tuple(checks)
 
 
-def int8_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
-    """The Triton kernel against the identical quantised arithmetic, written in torch.
+def _int8_checks(model, *, device, seed, sites, kernel):
+    """Layer 1 for one int8 variant: the Triton kernel against the identical arithmetic.
 
-    The comparison is deliberately *not* against the bf16 reference. That difference is
-    the quantisation error, which is the hypothesis rather than a defect, and layer 2
-    measures it properly. What layer 1 must catch is a kernel that computes the quantised
-    product wrongly, so the reference here dequantises in fp32 and matmuls in fp32 — the
-    same numbers in the same order as the kernel.
+    The comparison is deliberately *not* against the bf16 reference. That difference is the
+    quantisation error, which is the hypothesis rather than a defect, and layer 2 measures
+    it properly. What layer 1 must catch is a kernel that computes the quantised product
+    wrongly, so the reference dequantises in fp32 and matmuls in fp32 — the same numbers in
+    the same order as the kernel.
     """
     from ..harness.correctness import check_kernel
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model):
+    for weight, label in _probe_weights(model, sites=sites):
         quantised = quantise_int8_per_channel(weight.detach())
-        qw = quantised.qweight.to(device)
-        scale = quantised.scale.to(device)
-        for shape, note in _decode_shapes(qw.shape[1]):
+        qw = quantised.qweight
+        scale = quantised.scale
+        n, k = qw.shape
+        for shape, note in _decode_shapes(k):
             x = torch.randn(shape, device=device, dtype=weight.dtype, generator=generator)
             checks.append(
                 check_kernel(
-                    f"quantised_linear.int8_gemv[{label}]",
-                    lambda a, q, s: F.linear(a.float(), dequantise_int8(q, s)).to(a.dtype),
-                    lambda a, q, s: int8_gemv(a, q, s),
+                    f"quantised_linear.{kernel}[{label}]",
+                    lambda a, q, s, n=n, k=k: _linear_reference(
+                        a, lambda i, j: dequantise_int8(q[i:j], s[i:j]), n, k
+                    ),
+                    (
+                        (lambda a, q, s: int8_gemv(a, q, s))
+                        if kernel == "int8_gemv"
+                        else (lambda a, q, s: F.linear(a, q.to(a.dtype) * s.to(a.dtype).unsqueeze(1)))
+                    ),
                     args=(x, qw, scale),
                     replaces="decode_step",
                     note=note,
@@ -801,35 +849,27 @@ def int8_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
     return tuple(checks)
 
 
+def int8_mlp_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    return _int8_checks(model, device=device, seed=seed, sites="mlp", kernel="int8_gemv")
+
+
+def int8_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    return _int8_checks(model, device=device, seed=seed, sites="layers", kernel="int8_gemv")
+
+
+def int8_full_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    return _int8_checks(model, device=device, seed=seed, sites="full", kernel="int8_gemv")
+
+
 def int8_dequant_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
     """The torch control against the same fp32 dequantised matmul.
 
     It is not a Triton kernel and cannot be wrong in the way one can, but recording an
     error magnitude for it makes the two int8 slots comparable: if `010` and `012` report
-    the same layer-1 error, they really are the same arithmetic run two ways, which is
-    what makes their *timings* a clean statement about materialisation.
+    the same layer-1 error, they really are the same arithmetic run two ways, which is what
+    makes their *timings* a clean statement about materialisation.
     """
-    from ..harness.correctness import check_kernel
-
-    checks = []
-    generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model):
-        quantised = quantise_int8_per_channel(weight.detach())
-        qw = quantised.qweight.to(device)
-        scale = quantised.scale.to(device)
-        shape, note = _decode_shapes(qw.shape[1])[0]
-        x = torch.randn(shape, device=device, dtype=weight.dtype, generator=generator)
-        checks.append(
-            check_kernel(
-                f"quantised_linear.int8_dequant[{label}]",
-                lambda a, q, s: F.linear(a.float(), dequantise_int8(q, s)).to(a.dtype),
-                lambda a, q, s: F.linear(a, q.to(a.dtype) * s.to(a.dtype).unsqueeze(1)),
-                args=(x, qw, scale),
-                replaces="decode_step",
-                note=note,
-            )
-        )
-    return tuple(checks)
+    return _int8_checks(model, device=device, seed=seed, sites="layers", kernel="int8_dequant")
 
 
 def int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
@@ -837,18 +877,20 @@ def int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model):
+    for weight, label in _probe_weights(model, sites="full"):
         quantised = quantise_int4_grouped(weight.detach())
-        packed = quantised.qweight.to(device)
-        scale = quantised.scale.to(device)
+        packed = quantised.qweight
+        scale = quantised.scale
         group = quantised.group_size
-        for shape, note in _decode_shapes(packed.shape[1] * 2):
+        n = packed.shape[0]
+        k = packed.shape[1] * 2
+        for shape, note in _decode_shapes(k):
             x = torch.randn(shape, device=device, dtype=weight.dtype, generator=generator)
             checks.append(
                 check_kernel(
                     f"quantised_linear.int4_gemv[{label}]",
-                    lambda a, p, s, g=group: F.linear(a.float(), dequantise_int4(p, s, group_size=g)).to(
-                        a.dtype
+                    lambda a, p, s, g=group, n=n, k=k: _linear_reference(
+                        a, lambda i, j: dequantise_int4(p[i:j], s[i:j], group_size=g), n, k
                     ),
                     lambda a, p, s, g=group: int4_gemv(a, p, s, g),
                     args=(x, packed, scale),

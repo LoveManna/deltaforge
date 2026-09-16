@@ -36,6 +36,7 @@ from ..model import greedy_decode
 from ..reference import ReferenceModel
 
 __all__ = [
+    "DEFAULT_CHUNK_TOKENS",
     "CorrectnessReport",
     "DistributionCheck",
     "EndToEndCheck",
@@ -49,6 +50,23 @@ __all__ = [
 
 DEFAULT_RTOL = 1e-2
 DEFAULT_ATOL = 1e-2
+
+#: How many positions the approximate gate teacher-forces per forward pass.
+#:
+#: Not a memory knob. A decode kernel is written for the decode shape, and a candidate
+#: whose op falls back to a dense implementation above some row count would be scored
+#: entirely on that fallback if the gate fed it the whole context in one pass — the gate
+#: would pass, the kernel would never have run, and the only thing standing between a
+#: wrong kernel and a reported win would be layer 1's handful of probe shapes.
+#:
+#: So the context goes through in chunks small enough to stay on the decode path, carried
+#: by the model's own cache. That is exactly equivalent to one pass — `reference_test.py`
+#: pins that step-by-step, whole-sequence and chunk-by-chunk agree — and both models are
+#: chunked identically, so any residual rounding difference cancels in the comparison
+#: rather than entering it.
+#:
+#: `kernels/quantised_linear_test.py` asserts this stays at or below `GEMV_MAX_ROWS`.
+DEFAULT_CHUNK_TOKENS = 64
 
 
 @dataclass(frozen=True)
@@ -335,6 +353,19 @@ def _kl_and_agreement(
     return kl.reshape(-1), matches.reshape(-1)
 
 
+def _teacher_forced_logits(model: ReferenceModel, context: torch.Tensor, chunk_tokens: int) -> torch.Tensor:
+    """Logits at every position of ``context``, fed through in decode-sized chunks.
+
+    See `DEFAULT_CHUNK_TOKENS` for why this is not one call.
+    """
+    cache = model.new_cache(int(context.shape[0]), int(context.shape[1]))
+    pieces = []
+    for start in range(0, int(context.shape[1]), chunk_tokens):
+        logits, _ = model(context[:, start : start + chunk_tokens], cache)
+        pieces.append(logits)
+    return torch.cat(pieces, dim=1)
+
+
 def check_distribution(
     reference_model: ReferenceModel,
     candidate_model: ReferenceModel,
@@ -345,6 +376,7 @@ def check_distribution(
     max_new_tokens: int = 128,
     prompt_digest: str = "",
     device: torch.device | str | None = None,
+    chunk_tokens: int = DEFAULT_CHUNK_TOKENS,
 ) -> DistributionCheck:
     """Teacher-force both models over the reference's own continuation and compare.
 
@@ -369,8 +401,8 @@ def check_distribution(
         context_tokens += int(context.shape[1])
 
         with torch.no_grad():
-            ref_logits, _ = reference_model(context)
-            cand_logits, _ = candidate_model(context)
+            ref_logits = _teacher_forced_logits(reference_model, context, chunk_tokens)
+            cand_logits = _teacher_forced_logits(candidate_model, context, chunk_tokens)
         kl, match = _kl_and_agreement(ref_logits, cand_logits)
         kls.append(kl)
         matches.append(match)
