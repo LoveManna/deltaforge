@@ -209,4 +209,7 @@ precondition failed is a different fact from `not_run` because the clock ran out
 flattening them would erase the evidence.
 
 The first user is already written: `docs/HYPOTHESES.md` entry 6 carries the gate **"the bf16
-GEMV control must reach ≥ 0.90 before any quantised slot is worth running."**
+GEMV control must reach ≥ 0.56 before any quantised slot is worth running"**, and
+`docs/superpowers/plans/2026-09-17-bandwidth-bound-gemv.md` Task 2 specifies the
+`Precondition` type, the `precondition_failed` outcome and the fail-closed rule for a slot
+that errored and therefore has no ratio at all.

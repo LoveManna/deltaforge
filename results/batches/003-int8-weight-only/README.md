@@ -263,12 +263,18 @@ Concrete targets, from this rental's own numbers:
 
 **So the gating criterion for the next batch is not a quantisation result at all:**
 
-> **`009-gemv-bf16-control` must reach ≥ 0.90 before any quantised slot is worth running.**
+> **`009-gemv-bf16-control` must reach ≥ 0.56 before any quantised slot is worth running.**
 
-A bf16 GEMV moves exactly cuBLAS's bytes; if it cannot tie cuBLAS, nothing built on it can
-win, and five slots of this rental were determined the moment `009` returned 0.2801. That is
-the most expensive structural lesson here and it is fixable in the framework rather than by
-discipline — see `docs/BATCHES.md` on conditional slots.
+A bf16 GEMV moves exactly cuBLAS's bytes, so it is the direct read on whether the kernel is
+memory-bound at all, and five slots of this rental were determined the moment it returned
+0.2801. That is the most expensive structural lesson here and it is fixable in the framework
+rather than by discipline — see `docs/BATCHES.md` on conditional slots.
+
+**This section first said ≥ 0.90, which was wrong.** The bar is not "tie cuBLAS": quantisation
+halves the bytes, so int8 ties the baseline at half the baseline's byte rate, which reads as
+0.562 on a control that moves the full bf16 bytes. Setting the gate at 0.90 would have
+cancelled a batch capable of 1.5×. The derivation and the full table are in
+`docs/superpowers/plans/2026-09-17-bandwidth-bound-gemv.md`.
 
 Ranked ideas, in `docs/HYPOTHESES.md` as entries 5-7:
 

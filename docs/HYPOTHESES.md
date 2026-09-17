@@ -242,9 +242,16 @@ rather than by instruction issue:
   output channel — `in_proj_a`/`in_proj_b` are 32 wide and get 4 programs at any tile size.
 
 **It cannot win, and it is still the most valuable slot in the next batch**, because it is
-the precondition for entries 1, 4 and 7. **Gate: it must reach ≥ 0.90 before any quantised
-slot is worth running.** Batch 003 spent five slots on quantisation variants whose outcome
-was already determined when this control returned 0.2801.
+the precondition for entries 1, 4 and 7. Batch 003 spent five slots on quantisation variants
+whose outcome was already determined when this control returned 0.2801.
+
+**Gate: the bf16 control must reach ≥ 0.56 before any quantised slot is worth running** —
+and ≥ 0.75 to expect a comfortable win. **The ≥ 0.90 first written here was wrong**, and
+wrong in the expensive direction: it would have cancelled a batch that could have won.
+Quantisation halves the bytes, so int8 *ties* the baseline when the kernel reaches half the
+baseline's byte rate (`f` = 0.50), and that shows up on the bf16 control — which moves the
+full bf16 bytes — as only **0.562**. The full table is in
+`docs/superpowers/plans/2026-09-17-bandwidth-bound-gemv.md`.
 
 ### 7. fp8 rather than int8, on Blackwell's conversion path
 
