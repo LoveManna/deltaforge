@@ -448,3 +448,63 @@ def test_progress_is_optional():
     result = run_interleaved(timer.bind(columns), BenchConfig(rounds=3, warmup_rounds=2), timer=timer)
 
     assert result.labels == ("compiled",)
+
+
+# -- achieved bandwidth ---------------------------------------------------------------
+
+
+def test_a_column_reports_the_bandwidth_it_achieved():
+    """The number that says whether a kernel is memory-bound or issue-bound.
+
+    Batch 003's kernels all lost; only GB/s distinguished "moved fewer bytes and still lost"
+    from "never reached the bus". A candidate that achieves the same GB/s as the reference
+    while moving half the bytes is bandwidth-bound and winning; one whose GB/s falls as its
+    bytes fall is issue-bound, which is a different problem with a different fix.
+    """
+    config = BenchConfig(
+        rounds=3,
+        warmup_rounds=0,
+        decode_tokens=128,
+        bytes_per_token={"compiled": 9158.23, "candidate_compiled": 5588.0},
+    )
+    columns, _log = make_columns(["compiled", "candidate_compiled"])
+    timer = ScriptedTimer({label: [977.0] * 3 for label in columns})
+
+    result = run_interleaved(timer.bind(columns), config, timer=timer)
+
+    # 9158.23 MB/token x 128 tokens in 977 ms is 1200 GB/s; the candidate moves 39% fewer
+    # bytes in the same wall clock, so it achieves 39% less bandwidth.
+    assert result.achieved_gbps["compiled"] == pytest.approx(1199.8, rel=0.01)
+    assert result.achieved_gbps["candidate_compiled"] == pytest.approx(732.1, rel=0.01)
+
+
+def test_bandwidth_is_absent_rather_than_guessed_when_bytes_are_not_supplied():
+    """A column with no byte model must report nothing, not zero — zero is a measurement."""
+    columns, _log = make_columns(["compiled"])
+    timer = ScriptedTimer({"compiled": [1.0] * 3})
+
+    result = run_interleaved(timer.bind(columns), BenchConfig(rounds=3, warmup_rounds=0), timer=timer)
+
+    assert result.achieved_gbps == {}
+
+
+def test_only_the_columns_with_a_byte_model_report_bandwidth():
+    """A batch supplies bytes for the two scoring columns and not for `eager`."""
+    config = BenchConfig(rounds=3, warmup_rounds=0, decode_tokens=4, bytes_per_token={"compiled": 100.0})
+    columns, _log = make_columns(["compiled", "eager"])
+    timer = ScriptedTimer({"compiled": [2.0] * 3, "eager": [8.0] * 3})
+
+    result = run_interleaved(timer.bind(columns), config, timer=timer)
+
+    assert list(result.achieved_gbps) == ["compiled"]
+    assert result.achieved_gbps["compiled"] == pytest.approx(200.0)
+
+
+def test_bytes_without_a_token_count_are_refused_rather_than_assumed():
+    """`decode_tokens` is what turns a per-token byte model into a rate.
+
+    Defaulting it to 1 would produce a number 128x too small that still looks like a
+    measurement, which is the failure mode this project keeps paying for.
+    """
+    with pytest.raises(ValueError, match="decode_tokens"):
+        BenchConfig(bytes_per_token={"compiled": 9158.23})

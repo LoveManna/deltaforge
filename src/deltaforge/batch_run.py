@@ -28,7 +28,7 @@ import contextlib
 import gc
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -384,6 +384,30 @@ class BatchRunner:
             "correctness_max_new_tokens": self.max_new_tokens,
         }
 
+    def _bytes_per_token(self, hypothesis: Hypothesis) -> dict[str, float]:
+        """MB/token for the two scoring columns, so the slot record carries a bandwidth.
+
+        The reference streams bf16 weights by definition; the candidate streams whatever
+        its manifest says it re-encodes. A config with no published tensor manifest -- the
+        CPU `tiny_config`, for instance -- gets no byte model rather than an invented one.
+        """
+        from .harness.bytes_model import decode_bytes_per_token
+
+        shape = dict(
+            context_length=self.workload["context_length"],
+            decode_tokens=self.workload["decode_tokens"],
+            batch=self.workload["batch_size"],
+        )
+        try:
+            return {
+                self.bench_config.baseline: decode_bytes_per_token(self.config, weight_bits={}, **shape),
+                # bf16 until a hypothesis can declare what it re-encodes.
+                CANDIDATE_COLUMN: decode_bytes_per_token(self.config, weight_bits={}, **shape),
+            }
+        except ValueError as exc:
+            self.log(f"[batch] {hypothesis.slug}: no byte model ({exc}); bandwidth not reported")
+            return {}
+
     def run_slot(self, hypothesis: Hypothesis, cap_s: float = 0.0) -> SlotResult:
         """Measure one hypothesis. Never raises: a failure becomes an `error` outcome.
 
@@ -444,10 +468,16 @@ class BatchRunner:
                         f"{elapsed_ms:.1f} ms ({since:.0f}s into the benchmark)"
                     )
 
+                bench_config = replace(
+                    self.bench_config,
+                    bytes_per_token=self._bytes_per_token(hypothesis),
+                    decode_tokens=self.workload["decode_tokens"],
+                )
+
                 with graphs_compiled_during() as graphs:
                     result = run_interleaved(
                         columns,
-                        self.bench_config,
+                        bench_config,
                         timer=CudaEventTimer(),
                         setups=setups,
                         metadata=self._slot_metadata(hypothesis),
@@ -455,6 +485,11 @@ class BatchRunner:
                     )
                 phase("bench", mark)
                 self.log(f"[batch] {hypothesis.slug}: dynamo compiled {graphs.compiled} graph(s)")
+            if result.achieved_gbps:
+                self.log(
+                    f"[batch] {hypothesis.slug}: achieved "
+                    + ", ".join(f"{k} {v:.0f} GB/s" for k, v in result.achieved_gbps.items())
+                )
                 if graphs.compiled == 0:
                     self.log(
                         f"[batch] {hypothesis.slug}: WARNING nothing compiled during this "

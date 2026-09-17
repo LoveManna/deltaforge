@@ -10,6 +10,9 @@ decides whether a hypothesis is worth renting a GPU for costs nothing.
 
 The ceiling of a hypothesis is the share of bytes it touches. An entry whose share is
 below the harness's noise band is unmeasurable, however good the kernel is.
+
+The arithmetic itself lives in ``deltaforge.harness.bytes_model`` so that the ceiling
+printed here and the achieved bandwidth the benchmark records cannot drift apart.
 """
 
 from __future__ import annotations
@@ -17,10 +20,8 @@ from __future__ import annotations
 import argparse
 import json
 
-from deltaforge.config import DEFAULT_REPO_ID, MODELS, ModelConfig, model_config
-from deltaforge.weights import load_manifest, map_checkpoint_name
-
-BYTES = {"BF16": 2, "F16": 2, "F32": 4, "F8_E4M3": 1, "I64": 8}
+from deltaforge.config import DEFAULT_REPO_ID, MODELS, model_config
+from deltaforge.harness.bytes_model import traffic, weight_bytes
 
 #: name -> (TB/s of HBM bandwidth, GB of memory). Bandwidth is the vendor peak; real
 #: kernels reach 75-90% of it, so treat these as a ceiling rather than a prediction.
@@ -31,89 +32,6 @@ GPUS = {
     "H100 SXM": (3.350, 80),
     "H200": (4.800, 141),
 }
-
-
-def _tensor_bytes(meta: dict) -> int:
-    n = 1
-    for dim in meta["shape"]:
-        n *= dim
-    return n * BYTES.get(meta["dtype"], 2)
-
-
-def weight_bytes(repo_id: str) -> dict[str, int]:
-    """Decode-path weight bytes, grouped. Vision tower and MTP head are excluded."""
-    groups: dict[str, int] = {}
-    for name, meta in load_manifest(repo_id)["tensors"].items():
-        if map_checkpoint_name(name) is None:
-            continue  # vision tower or MTP head: not in the decode path
-        size = _tensor_bytes(meta)
-        if "embed_tokens" in name:
-            key = "embeddings"
-        elif name.startswith("lm_head"):
-            key = "lm_head"
-        elif ".mlp." in name:
-            key = "mlp"
-        elif "linear_attn" in name:
-            key = "linear_attn"
-        elif "self_attn" in name:
-            key = "full_attn"
-        else:
-            key = "norms"
-        groups[key] = groups.get(key, 0) + size
-    return groups
-
-
-def traffic(config: ModelConfig, groups: dict[str, int], batch: int, context: int) -> dict[str, int]:
-    """Bytes moved per decoded token, by what moves them."""
-    hidden, inter = config.hidden_size, config.intermediate_size
-    layers = config.num_hidden_layers
-    full = len(config.layer_indices("full_attention"))
-    linear = len(config.layer_indices("linear_attention"))
-    bf = 2
-
-    weights = sum(groups.values())
-    if config.tie_word_embeddings:
-        # One tensor serves both; it is read in full for the lm_head matmul, and the
-        # embedding lookup reads a single row. Counting it once is correct.
-        pass
-    else:
-        # The embedding matrix is read one row per token, not in full.
-        weights -= groups.get("embeddings", 0)
-
-    kv = full * 2 * config.num_key_value_heads * context * config.head_dim * bf * batch
-    # `repeat_interleave` to expand KV heads to query heads materialises `groups` copies,
-    # written then read back by the attention matmul.
-    expand = kv * config.num_key_value_groups * 2
-    state = (
-        linear
-        * config.linear_num_value_heads
-        * config.linear_key_head_dim
-        * config.linear_value_head_dim
-        * 4  # fp32, fixed by mamba_ssm_dtype
-        * 2  # read + write
-        * batch
-    )
-    # Two residual+norm pairs per layer: add reads x and residual and writes residual,
-    # then the norm reads and writes.
-    norms = 2 * layers * (hidden * bf * 3 + hidden * bf * 2) * batch
-    swiglu = layers * 4 * inter * bf * batch
-    qkv = (
-        full
-        * 2
-        * (2 * config.num_attention_heads + 2 * config.num_key_value_heads)
-        * config.head_dim
-        * bf
-        * batch
-    )
-    return {
-        "weights, streamed once": weights,
-        "GQA repeat_interleave materialisation": expand,
-        "recurrent state, read + write": state,
-        "KV cache read": kv,
-        "SwiGLU intermediates": swiglu,
-        "norm + residual": norms,
-        "QKV / RoPE intermediates": qkv,
-    }
 
 
 def main() -> int:

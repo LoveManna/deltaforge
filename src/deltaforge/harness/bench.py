@@ -88,6 +88,14 @@ class BenchConfig:
     #: rounds already absorb compilation, and adding hidden warmup would deviate from
     #: the documented methodology.
     untimed_warmup_calls: int = 0
+    #: MB moved per decoded token, per column — from ``harness.bytes_model``. Only the
+    #: columns named here report an achieved bandwidth; a column with no byte model
+    #: reports nothing, because zero would be a measurement.
+    bytes_per_token: dict[str, float] = field(default_factory=dict)
+    #: Tokens one timed call decodes. Required whenever ``bytes_per_token`` is supplied,
+    #: and deliberately not defaulted: a silent 1 here would report a rate 128x too small
+    #: that still looks like a measurement.
+    decode_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.rounds <= self.warmup_rounds:
@@ -97,6 +105,11 @@ class BenchConfig:
             )
         if self.warmup_rounds < 0 or self.untimed_warmup_calls < 0:
             raise ValueError("round counts must be non-negative")
+        if self.bytes_per_token and not self.decode_tokens:
+            raise ValueError(
+                "bytes_per_token needs decode_tokens: a per-token byte model is not a rate "
+                "until it is told how many tokens one timed call decodes"
+            )
 
     @property
     def scoring_rounds(self) -> int:
@@ -193,6 +206,30 @@ class BenchResult:
     def median_ms(self) -> dict[str, float]:
         return {label: median(times) for label, times in self.scoring_timings_ms.items()}
 
+    @property
+    def achieved_gbps(self) -> dict[str, float]:
+        """Bytes per second each column actually moved, for the columns that declared bytes.
+
+        This is the number batch 003 lacked. A ratio says a kernel lost; GB/s says whether
+        it lost on bandwidth or on instruction issue, and those have different fixes. A
+        memory-bound kernel holds the same GB/s as it removes bytes; an issue-bound one
+        sheds bandwidth as it sheds bytes, which is exactly what 332 -> 141 -> 65 was.
+
+        SI units, matching the vendor peak every result is scored against.
+        """
+        per_token = self.config.bytes_per_token
+        if not per_token:
+            return {}
+        tokens = self.config.decode_tokens
+        out: dict[str, float] = {}
+        for label, megabytes in per_token.items():
+            times = self.scoring_timings_ms.get(label)
+            if not times:
+                continue
+            # MB/token x tokens / ms is already GB/s: 1e6 bytes over 1e-3 s is 1e9 B/s.
+            out[label] = megabytes * tokens / median(times)
+        return out
+
     def to_dict(self) -> dict[str, object]:
         return {
             "labels": list(self.labels),
@@ -202,6 +239,7 @@ class BenchResult:
             "timings_ms": {k: list(v) for k, v in self.timings_ms.items()},
             "scoring_timings_ms": {k: list(v) for k, v in self.scoring_timings_ms.items()},
             "median_ms": self.median_ms,
+            "achieved_gbps": self.achieved_gbps,
             "ratios": {k: list(v) for k, v in self.ratios.items()},
             "median_ratio": self.median_ratio,
             "iqr_ratio": self.iqr_ratio,
@@ -267,6 +305,9 @@ def run_interleaved(
     unknown = set(setups) - set(labels)
     if unknown:
         raise ValueError(f"setups given for unknown columns: {sorted(unknown)}")
+    unknown = set(config.bytes_per_token) - set(labels)
+    if unknown:
+        raise ValueError(f"bytes_per_token given for unknown columns: {sorted(unknown)}")
 
     def _setup(label: str) -> None:
         setup = setups.get(label)

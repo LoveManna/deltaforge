@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from .batch import Batch, Hypothesis, SlotBudget
 from .batch_run import SlotResult, release_compiled_state, run_batch
 
@@ -597,3 +599,46 @@ def test_graph_counting_survives_a_torch_that_does_not_offer_the_counter():
         pass
 
     assert count.compiled is None
+
+
+# -- the byte model a slot scores its bandwidth against -------------------------------
+
+
+def _runner_for(config):
+    """A `BatchRunner` with nothing but the fields the byte model reads."""
+    from .batch_run import BatchRunner
+    from .harness.bench import BenchConfig
+
+    return BatchRunner(
+        config=config,
+        reference=None,
+        prompt=None,
+        prompt_ids=None,
+        workload={"batch_size": 1, "context_length": 2048, "decode_tokens": 128},
+        weights_dtype=None,
+        bench_config=BenchConfig(rounds=3, warmup_rounds=1),
+        max_new_tokens=8,
+        columns=("compiled", "candidate_compiled"),
+        log=silent,
+    )
+
+
+def test_a_slot_scores_both_columns_against_the_checkpoints_own_byte_count():
+    """Without this the slot record carries a ratio and no way to read it.
+
+    Batch 003's whole finding -- that the kernel was issue-bound, not bandwidth-bound --
+    had to be reconstructed by hand from two files after the rental was over.
+    """
+    from .config import qwen3_5_4b_config
+
+    per_token = _runner_for(qwen3_5_4b_config())._bytes_per_token(hyp("a"))
+
+    assert set(per_token) == {"compiled", "candidate_compiled"}
+    assert per_token["compiled"] == pytest.approx(9158.23, abs=1.0)
+
+
+def test_a_config_with_no_published_manifest_reports_no_bytes_rather_than_a_guess():
+    """`tiny_config` is a CPU fixture, not a checkpoint. No manifest means no byte model."""
+    from .config import tiny_config
+
+    assert _runner_for(tiny_config())._bytes_per_token(hyp("a")) == {}
