@@ -483,3 +483,25 @@ REGISTRY.register(
     ),
 )
 register_checks("int4_full", _quantised_linear.int4_correctness_checks)
+
+# Batch 004. Registered under its own name rather than replacing `gemv_bf16`: 009's
+# measurement is the control this one is read against, and `CHECK_BUILDERS` keys by kernel
+# name because both replace `decode_step` and an op-keyed table would run one's checks
+# against the other's weights and report `pass`.
+
+from . import tiled_gemv as _tiled_gemv  # noqa: E402
+
+REGISTRY.register(
+    "tiled_gemv_bf16",
+    impl=_tiled_gemv.tiled_gemv_bf16,
+    replaces="decode_step",
+    hypothesis="015-tiled-gemv-bf16",
+    notes=(
+        "009's kernel rewritten around a tl.dot accumulator with a K-major weight layout "
+        "and split-K, which removes the per-K-iteration cross-lane reduction that took "
+        "batch 003 from ~1200 GB/s to 332. Moves exactly cuBLAS's bytes, so its ratio is "
+        "the divisor for every quantised slot behind it and 0.2801 is the number it has "
+        "to beat. Tying is the honest expectation; its job is to be the divisor."
+    ),
+)
+register_checks("tiled_gemv_bf16", _tiled_gemv.tiled_bf16_correctness_checks)

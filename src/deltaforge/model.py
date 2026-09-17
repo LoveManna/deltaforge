@@ -246,3 +246,15 @@ register_installer("int8_mlp", _install_int8_mlp)
 register_installer("int8_all_linear", _install_int8_all_linear)
 register_installer("int8_full", _install_int8_full)
 register_installer("int4_full", _install_int4_full)
+
+
+# -- batch 004 installers: a GEMV that can reach the bus ----------------------------
+
+
+def _install_tiled_gemv_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_bf16  # noqa: PLC0415
+
+    install_tiled_bf16(model, entry)
+
+
+register_installer("tiled_gemv_bf16", _install_tiled_gemv_bf16)
