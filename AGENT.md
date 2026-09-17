@@ -248,14 +248,20 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Thirty-five rentals have been billed. The harness is calibrated and no hypothesis has an
-admissible ratio yet.** As of 2026-09-14 rental 35 ran all nine slots of batch 001: the
-oracle gate passes, the identity champion measures 1.0018 against an IQR of 0.0018, memory
-is flat at 8.07 GiB of 31.36, and six of eight kernels failed the correctness gate — which
-is a real result and the first this project has. The remaining obstacle is blocker 16 (§8):
-dynamo stopped compiling candidates part-way through the batch, so six slots timed an eager
-candidate and their ratios are void. The fix is written and tested on CPU and has never run
-on a GPU. `docs/GPU-ACCESS.md` records every blocker, how each was fixed, and which fixes
+**Thirty-seven rentals have been billed, $6.157 lifetime, zero leaked. The harness is
+calibrated, blocker 16 is closed, and this project now has admissible ratios — seven of
+them, all losses.** Batch 003 (2026-09-16) is the first batch where every slot compiled,
+every slot was scored and nothing was voided. What it does not have is a kernel that beats
+the compiler, which is a scientific problem rather than an infrastructural one and is the
+first time that has been true. The baseline is now characterised too: **1308 GB/s, 73% of a
+5090's peak**, which is the denominator every hypothesis is divided by. See
+`results/batches/003-int8-weight-only/README.md`.
+
+Rental 35 (2026-09-14) is where the infrastructure chain ended: it ran all nine slots of
+batch 001, the oracle gate passed and the identity champion measured 1.0018, but dynamo hit
+`recompile_limit` inside slot 2 and six ratios were void. Batch 003 closed that. Memory has
+been flat across both batches — 8.07 GiB of 31.36 at bf16, 12.9 GiB with int8 copies
+resident. `docs/GPU-ACCESS.md` records every blocker, how each was fixed, and which fixes
 are *proven on a GPU* rather than merely believed.
 
 ## 6. Recording the outcome — the part that matters
@@ -479,6 +485,48 @@ Nothing failed. The ratios looked like results. `recompile_limit_for` in `batch_
 raises the limit to cover the batch, and every slot record carries `graphs_compiled` — a `0`
 there means the number beside it is not a comparison. **Widening a batch means widening that
 limit too.**
+
+**A gate is only a gate if it can resolve the thing it measures.** Batch 003 failed four
+slots that were working correctly, on a top-1 agreement bar of 0.98 over **264** teacher-forced
+positions. Agreement there quantises to 1/264 = 0.0038, and `013-int8-full` missed its bar by
+**0.000303 — eight hundredths of one token**. A threshold an order of magnitude finer than one
+sample is not a decision procedure. The binomial 95% CI on the measured 8/264 is roughly
+[1.3%, 5.9%], so the bar and the measurement were never distinguishable.
+
+Two rules follow. **Prefer a continuous statistic**: mean KL has no resolution floor, behaved
+perfectly across int8 (0.0011 nats) and int4 (0.0919), and would have passed every slot that
+deserved to pass. **And derive a bar from something this repository has measured**, not from
+general knowledge — batch 003's 0.98 came from priors about int8 being mild. It is mild; it
+still flips 3% of argmaxes on this checkpoint, because the top-2 logit gaps are narrow, and
+`test_report_the_first_greedy_divergence` already computes exactly that distribution for free.
+
+**Do not gate a kernel `exact` unless it is bit-identical by construction.** `009` computes
+the same *function* as the reference — bf16 in, fp32 accumulate, bf16 out — and matched 1 of
+5 prompts. Summing K in a different order from cuBLAS lands one bf16 ULP away, and one ULP
+flips an argmax on this model. Computing the same function and producing the same bits are
+different properties, and only the identity champion has the second one. This is the third
+time the project has paid for it (§7a, rental 35's slots 001 and 002, now `009`).
+
+**A shared correctness reference is only shared if the implementations share their rounding.**
+`010`'s layer 1 was the batch's only layer-1 failure and it is not a kernel: `Int8DequantLinear`
+rounds the dequantised weight to bf16 before the matmul, as any real PyTorch implementation
+would, while the reference both it and `012` were checked against dequantises in fp32. The
+check reported a relative error of 0.45 for a computation doing exactly what it should.
+
+**Removing bytes from a kernel that is not memory-bound makes it slower, and the control is
+the only thing that can tell you which you have.** Batch 003's kernels got slower as they
+moved less: 26.90 → 38.68 → 42.49 ms/token for 9158 → 5588 → 2850 MB/token, achieving 332,
+141 and 65 GB/s against the compiled baseline's **1308 GB/s, 73% of peak**. The cause was in
+the source all along — `acc += tl.sum(w * x[None, :], axis=1)` is a cross-lane reduction run
+*once per K-iteration*, 20 times for K=2560 and 72 for K=9216, where the standard form
+accumulates a tile and reduces once.
+
+Without `009-gemv-bf16-control` — the same kernel on unquantised weights, moving exactly
+cuBLAS's bytes — the honest reading of `012` at 0.1962 would have been "weight-only
+quantisation does not help", which is false and would have closed the backlog's best
+hypothesis for the wrong reason. **Put the mechanism's control in the batch, and put it
+early**: five of batch 003's seven slots were determined the moment `009` returned 0.2801,
+and nothing in the framework could act on that. See `docs/BATCHES.md` on conditional slots.
 
 **A reclaim can have a premise that was never true.** `release_compiled_state` called
 `reset_cudagraph_trees` between slots, its docstring asserting the reference would

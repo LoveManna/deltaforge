@@ -1,0 +1,284 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "incorrect",
+  "timestamp": "2026-09-16T22:56:22.919569+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "010-int8-dequant-torch",
+    "batch": "003-int8-weight-only",
+    "statement": "The same int8 weights, dequantised the only way PyTorch can express it -- materialise the bf16 weight, then call F.linear -- and handed to torch.compile(max-autotune) like every other candidate.",
+    "prediction": "loss",
+    "rationale": "docs/HYPOTHESES.md ASSERTS that inductor cannot fuse this: that it materialises the full bf16 weight into global memory and calls cuBLAS, ADDING an 8.4 GB write on top of the read and making the quantised version slower than the bf16 baseline. The entry then says, in its own Watch-for: 'Verify the claim above before building on it... Either way, measure, do not assume.' Nobody has. Recent inductor has prologue fusion into its mm templates and might fuse some of the dequant -- though at M=1 it likely is not using a template at all. So the prediction is a loss around 0.6-0.8x, and the outcome that would matter most is the one that refutes it: if this slot WINS, the compiler can express weight-only quantisation, the hand-written kernels behind it are worth much less than claimed, and the backlog's top entry needs rewriting.",
+    "category": "B",
+    "byte_share": 0.779,
+    "kernels": [
+      "int8_dequant_torch"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.16694708494469523,
+    "correctness": 9.723303909995593,
+    "compile_candidate_compiled": 0.0053898830665275455,
+    "bench": 417.6513524319744
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
+    "hostname": "700468921d5d",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.126.09",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2610,
+      "memory": 13801,
+      "observed_at": "2026-09-16T22:56:22.987687+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        967.9369506835938,
+        996.779541015625,
+        972.9165649414062,
+        982.7935180664062,
+        976.5003662109375,
+        973.431884765625,
+        972.5075073242188
+      ],
+      "candidate_compiled": [
+        296924.3125,
+        978.581787109375,
+        983.4578857421875,
+        977.1377563476562,
+        971.3363037109375,
+        989.1531372070312,
+        997.7264404296875
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        972.9165649414062,
+        982.7935180664062,
+        976.5003662109375,
+        973.431884765625,
+        972.5075073242188
+      ],
+      "candidate_compiled": [
+        983.4578857421875,
+        977.1377563476562,
+        971.3363037109375,
+        989.1531372070312,
+        997.7264404296875
+      ]
+    },
+    "median_ms": {
+      "compiled": 973.431884765625,
+      "candidate_compiled": 983.4578857421875
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.9892813704037504,
+        1.0057880904529675,
+        1.0053164516555912,
+        0.9841063513322146,
+        0.9747235994922538
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.9892813704037504
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.02121010032337667
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "010-int8-dequant-torch",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": false,
+    "worst_max_abs_err": 0.0625,
+    "worst_max_rel_err": 0.7262499928474426,
+    "layer1_kernel_checks": [
+      {
+        "name": "quantised_linear.int8_dequant[N=32 K=2560 (BLOCK_N=8)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.019108280539512634,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          32
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 0,
+        "total_elements": 32,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int8_dequant[N=32 K=2560 (BLOCK_N=8)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.14835165441036224,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          32
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 22,
+        "total_elements": 1024,
+        "note": "secondary decode step: batch 32, one token"
+      },
+      {
+        "name": "quantised_linear.int8_dequant[N=2560 K=4096 (BLOCK_N=16)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.2751091718673706,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 21,
+        "total_elements": 2560,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int8_dequant[N=2560 K=4096 (BLOCK_N=16)]",
+        "replaces": "decode_step",
+        "passed": false,
+        "max_abs_err": 0.0625,
+        "max_rel_err": 0.4457831382751465,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 854,
+        "total_elements": 81920,
+        "note": "secondary decode step: batch 32, one token"
+      },
+      {
+        "name": "quantised_linear.int8_dequant[N=8192 K=2560 (BLOCK_N=32)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.23770491778850555,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 106,
+        "total_elements": 8192,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int8_dequant[N=8192 K=2560 (BLOCK_N=32)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0625,
+        "max_rel_err": 0.7262499928474426,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3304,
+        "total_elements": 262144,
+        "note": "secondary decode step: batch 32, one token"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": false,
+      "top1_agreement": 0.9696969985961914,
+      "mean_kl": 0.0011384068056941032,
+      "max_kl": 0.013489410281181335,
+      "num_positions": 264,
+      "top1_threshold": 0.98,
+      "kl_threshold": 0.01,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

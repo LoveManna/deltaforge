@@ -10,23 +10,44 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**None yet — but the harness is calibrated, and eight kernels have now run on a GPU.**
+**No champion. Fifteen kernels have run on a GPU and the compiler has beaten all of them.**
 
-On 2026-09-14 (rental 35) all nine slots of batch 001 executed on an RTX 5090. The identity
-champion — a candidate bit-identical to the reference, which must therefore measure 1.00 —
-came back at **1.0018 with an IQR of 0.0018** and exact correctness. That was the
-precondition for every number this project will ever report, and it had never been met.
+On 2026-09-16 (rental 37) batch 003 returned **seven admissible ratios** — `calibrated:
+true`, every slot compiled, nothing voided, for the first time in this project. The identity
+champion measured **1.0024 with an IQR of 0.0190**. Every other slot lost.
 
-**No hypothesis has an admissible ratio.** Six of the eight kernels failed the correctness
-gate, which is a real result and is recorded as one. Of the two that passed, both ran after
-dynamo had hit its `recompile_limit` and stopped compiling candidates, so what their numbers
-compare is an eager candidate against a compiled reference — not a kernel against inductor.
-Those ratios are labelled void rather than deleted, and the fix is written and awaiting a
-rental.
+The most useful number the project has produced is not a ratio. It is the baseline:
+
+> **`torch.compile(mode="max-autotune")` runs this model's decode at 6.84 ms/token —
+> 1308 GB/s, 73% of an RTX 5090's 1790 GB/s vendor peak**, against a 5.11 ms/token roofline.
+
+That reframes the whole exercise. The compiler is already three quarters of the way to the
+memory wall, so the headroom for *any* kernel is 1.37× from efficiency alone, and the only
+large win left is to move fewer bytes.
+
+Batch 003 tried exactly that — weight-only int8 and int4 with the dequantisation fused into
+the GEMV's K-loop, attacking the 91.85% of per-token bytes that are weights — and produced
+a clean negative result with its cause attached. **The kernels were never bandwidth-bound:
+as they removed bytes they got slower**, 26.90 → 38.68 → 42.49 ms/token while traffic fell
+9158 → 5588 → 2850 MB/token. A cross-lane reduction ran once per K-iteration where it should
+run once per output, and the dequantisation landed on an already-saturated issue port. The
+1.85× ceiling is real arithmetic and unreachable by an implementation that is not spending
+its time on memory in the first place.
+
+Two things that only a control slot could have established, and both change the backlog:
+
+* **Weight-only int8 written in plain PyTorch costs the same as bf16** — 0.9893, IQR 0.0212.
+  This repository had asserted for two weeks that inductor materialises the dequantised
+  weight and is therefore *slower*. That story needs 2525 GB/s on a 1790 GB/s card, so it is
+  refuted by arithmetic alone.
+* **None of the six `incorrect` verdicts was a kernel bug.** Every Triton kernel passed its
+  numerics gate at every probe, worst relative error 7.8e-3 — one bf16 ULP. The failures were
+  three defects in the gates themselves, including a threshold set finer than the statistic
+  could resolve: one slot missed its bar by eight hundredths of a single token.
 
 There are no estimated, placeholder or illustrative numbers anywhere in this repo. Every
 number here came off a real card, and the ones that do not mean what they appear to mean say
-so. `LEADERBOARD.md` and `results/batches/001-calibration/README.md` carry the detail.
+so. `LEADERBOARD.md` and `results/batches/003-int8-weight-only/README.md` carry the detail.
 
 ## What is being claimed
 

@@ -16,6 +16,15 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-16 (rental 37): the first fully admissible batch, and it changes this file.**
+> Batch 003 ran seven slots with `calibrated: true` and `graphs_compiled` non-zero on every
+> one. Hypothesis 1 below is **amended, not closed**: its ceiling arithmetic survives intact
+> and one of its stated mechanisms is **refuted by measurement**. The batch also produced
+> the number this file never had — **the compiled baseline reaches 1308 GB/s, 73% of a
+> 5090's vendor peak** — which is the denominator every entry here is implicitly divided by.
+> Three new entries (5, 6, 7) come out of it. See
+> `results/batches/003-int8-weight-only/README.md`.
+
 > **2026-09-14: eight of these ran on a GPU, and nothing here changes status yet.** Rental
 > 35 executed all nine slots of batch 001. The batch is calibrated, so the harness is sound
 > — but six of the eight kernels failed the correctness gate, and the two that passed were
@@ -93,20 +102,40 @@ arithmetic with them, so the model runs at the bandwidth roofline. You cannot be
 roofline with a better kernel; you beat it by moving fewer bytes. Storing weights at 4 or 8
 bits and dequantising them *inside* the GEMV's K-loop cuts weight traffic by 2–4×.
 
-The compiler cannot do this, and it fails in a specific, checkable way: given
-`dequant(W_int4, scales) @ x`, inductor materialises the full bf16 weight tensor into
-global memory and then calls into cuBLAS. That *adds* an 8.4 GB write on top of the read,
-making the quantised version **slower** than bf16. The hand-written kernel never
-materialises anything.
+~~The compiler cannot do this, and it fails in a specific, checkable way.~~ **Refuted on
+rental 37.** This entry asserted that given `dequant(W_int4, scales) @ x`, inductor
+materialises the full bf16 weight into global memory and calls cuBLAS, *adding* an 8.4 GB
+write and making the quantised version **slower** than bf16.
+`010-int8-dequant-torch` measured exactly that program under `max-autotune`: **0.9893, IQR
+0.0212** — the same speed as bf16, inside the noise band.
+
+The materialisation story is refuted outright by a bandwidth budget, with no profiler
+needed. It would require 19868 MB/token at the measured 7.68 ms/token, which is **2525 GB/s
+on a card whose vendor peak is 1790** — physically impossible. Inductor therefore either
+fuses the dequantisation into the matmul prologue or keeps the transient in the 96 MB L2.
+
+**What is still unexplained is why a 39% cut in DRAM traffic bought 0% of time**, and the
+`TORCH_LOGS=output_code` dump this file already calls mandatory is what would answer it. It
+was skipped before rental 37; entry 5 exists so that stops being possible.
+
+So the compiler is not *worse* at weight-only quantisation than a hand-written kernel. It is
+**exactly as good as doing nothing** — a different claim, and a more useful one, because it
+moves the question from "can the compiler express this" to "why does halving the weight
+stream not show up on the clock".
 
 **Replaces.** `swiglu_mlp`, `qkv_projection_rope`, and the linear-attention input
 projections — 91.8% of weight bytes sit behind those three.
 
+**Measured on rental 37: the ceiling is intact and out of reach of a naive kernel.** The
+1.85× is real arithmetic. It is collectable only by an implementation that is *itself*
+bandwidth-bound, and batch 003's was not — as it removed bytes it got **slower** (26.90 →
+38.68 → 42.49 ms/token for 9158 → 5588 → 2850 MB/token), because a cross-lane `tl.sum` ran
+once per K-iteration and the int8→fp32 conversion landed on an already-saturated issue port.
+An int8 GEMV needs **715 GB/s just to tie** the compiled baseline and ~1170 GB/s to win;
+batch 003's reached **141**. Entry 6 is the prerequisite for retrying this one.
+
 **Watch for.**
-* **Verify the claim above before building on it.** Dump inductor's code for a small
-  quantised linear first. Recent inductor has prologue fusion into its mm templates and may
-  fuse *some* of the dequant; at M = 1 it likely is not using a template at all. Either way,
-  measure, do not assume.
+* **The `output_code` dump is still mandatory and has still never been done.** See entry 5.
 * **Your real competition is Marlin / machete / AWQ kernels, not torch.compile.** Beating
   the compiler here is easy and proves little. Record the comparison against a published
   int4 kernel as an unscored column. If you are at 0.6× Marlin, say so.
@@ -176,6 +205,66 @@ softmax results manufactures parallelism a scheduler will not invent.
 **Watch for.** Both are worthless at 2048 tokens. Pair this with a 32k or 128k workload or
 do not run it. At 128k the KV cache alone exceeds the weights, which inverts the whole
 table above — recompute it for the context you intend to measure.
+
+### 5. Read what the compiler actually emits — the free diagnostic this file keeps demanding
+
+**Share of bytes: none. It is not a kernel.** Category: prerequisite.
+
+**Mechanism.** `TORCH_LOGS=output_code` on both scoring columns, plus one profile of the
+decode step, as a *step inside* the next rental rather than a rental of its own. It answers
+three open questions, each worth more than a slot:
+
+1. **Why did `010` move 39% fewer bytes for 0% less time?** A fused prologue, or an
+   L2-resident transient? The answer decides whether weight-only quantisation is reachable
+   *through the compiler* — which would be worth more than reaching it through a kernel.
+2. **Where does the baseline's remaining 27% go?** It runs at 1308 GB/s of 1790. That gap is
+   a 1.37× hypothesis in its own right and nobody knows what is in it.
+3. **Does inductor fold the GQA `repeat_interleave`?** Entry 2 has been explicitly
+   conditional on this since it was written, and the condition has never been checked.
+
+**Why this is an entry and not a chore.** This file says in bold that reading the generated
+code "is not optional". Batch 003 skipped it, went straight to a rental, and came back with
+a number whose mechanism it cannot name. Making it numbered makes it schedulable.
+
+### 6. A GEMV that is actually bandwidth-bound
+
+**Share of bytes: 0%. Ceiling: 1.0 by construction.** Category **A**.
+
+**Mechanism.** The same bf16 GEMV as `009`, rewritten so that its time is set by memory
+rather than by instruction issue:
+
+* **Accumulate a `(BLOCK_N, BLOCK_K)` tile and reduce once**, instead of a cross-lane
+  `tl.sum` per K-iteration — 20 reductions for K=2560 and 72 for K=9216 collapse to one.
+* **`tl.dot` with M padded to 16**, so the MMA pipeline schedules the loads. The 16× flop
+  waste is free: arithmetic intensity at batch-1 decode is ~2 flop/byte against a machine
+  balance near 150.
+* **Split-K with a second reduction pass**, for projections that cannot fill the card by
+  output channel — `in_proj_a`/`in_proj_b` are 32 wide and get 4 programs at any tile size.
+
+**It cannot win, and it is still the most valuable slot in the next batch**, because it is
+the precondition for entries 1, 4 and 7. **Gate: it must reach ≥ 0.90 before any quantised
+slot is worth running.** Batch 003 spent five slots on quantisation variants whose outcome
+was already determined when this control returned 0.2801.
+
+### 7. fp8 rather than int8, on Blackwell's conversion path
+
+**Share of bytes: 91.85%. Ceiling: 1.85×.** Category **B**.
+
+**Mechanism.** The same byte saving as int8 without the tax that made int8 *slower* than
+bf16 in batch 003. On an RTX 5090 (sm_120) e4m3 feeds the MMA path directly, so the
+conversion happens inside the tensor-core pipeline rather than as ALU instructions on the
+critical path. Batch 003 measured that tax precisely: **int8 cost 1.438× the time of bf16**
+in the same kernel on the same sites, and int4 a further **1.046×** for its nibble unpack.
+
+**Strictly after entry 6.** fp8 removes a conversion cost from the inner loop and does
+nothing about a loop that is issue-bound for other reasons. Running it first would reproduce
+batch 003 with a different dtype.
+
+**Watch for.** e4m3 carries 3 mantissa bits against int8's effective 7 at per-channel scale,
+so expect accuracy between batch 003's int8 (0.0011 nats, 8/264 flips) and its int4 (0.0919
+nats, 38/264). **Derive the gate from those two measured points, not from priors** — batch
+003's priors were wrong in exactly this way, and its thresholds failed four slots that were
+working correctly.
 
 ---
 

@@ -13,8 +13,15 @@
 | Last verified on | — |
 | Result record | — |
 
-**No benchmark has ever run.** Nothing here is estimated, projected, or placeheld. The
-first session to get a working GPU records the baseline; until then this table stays empty.
+**Still no champion — but for the first time the reason is a measurement rather than a
+defect.** On 2026-09-16 (rental 37) batch 003 returned **seven admissible ratios**:
+`calibrated: true`, `graphs_compiled` non-zero on every slot, no slot voided. Every one of
+them lost. Nothing here is estimated, projected, or placeheld.
+
+**The baseline is now characterised, which it never was.** The compiled reference runs at
+**6.84 ms/token — 1308 GB/s, 73% of an RTX 5090's 1790 GB/s vendor peak** — against a
+5.11 ms/token roofline. That number is the denominator for every hypothesis in the backlog
+and it says the compiler is already most of the way to the wall.
 
 **The reference's reading of the weight *values* is no longer settled** — it matched
 HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10 and again on
@@ -98,16 +105,17 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 13 | The oracle's greedy decode no longer matches HuggingFace | **closed** — agrees token-for-token on rentals 30-32 and 34-35, zero tie-breaks |
 | 14 | A cold `max-autotune` compile never finishes inside a session | fixed, **proven** — the unrolled prefill scan; 6980.9s (unfinished) → 267.5s → 57.4s warm |
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | fixed, **proven** — it emptied rental 34, and rental 35 ran all nine slots |
-| 16 | Dynamo's `recompile_limit` (8) makes a batch silently time **eager** candidates | fix written, **untested** — cost six of rental 35's nine slots |
+| 16 | Dynamo's `recompile_limit` (8) makes a batch silently time **eager** candidates | fixed, **proven** — batch 003 ran seven slots with `graphs_compiled: 3` on every one |
 
 Blocker 7 is worth reading even though it is closed: it had been costing rentals since 11
 while wearing a convincing disguise as flaky hosts, and the "2 in 17 rentals go to hosts
 that never answer sshd" line this file used to carry has been withdrawn.
 
-**The next session starts on blocker 16**, which is the only thing between this project
-and its first admissible ratio. The fix — `recompile_limit_for` in `batch_run.py`, plus a
-`graphs_compiled` count in every slot record so a candidate that did not compile says so —
-is written and tested on CPU, and has never run on a GPU.
+**Blocker 16 is closed.** `recompile_limit_for(7)` raised dynamo's limit to 22 on rental 37
+and every one of batch 003's seven slots reported `graphs_compiled: 3`. This project now has
+admissible ratios; what it does not have is a kernel that beats the compiler, which is a
+scientific problem rather than an infrastructural one and is the first time that has been
+true.
 
 Note what blockers 14, 15 and 16 have in common: none of them could be seen until the one
 before it was fixed. 14 stopped any slot finishing, so 15 (which only fires *between* two
@@ -192,6 +200,51 @@ arithmetic still stands as the *prediction*; what changed is that the prediction
 falsifiable in practice. Same for 004 and 005. **None of them is graveyarded on this
 rental either**: a kernel whose candidate never compiled has not been shown to be slow, and
 a kernel that fails an exact-token gate at 2 ULP has not been shown to be wrong.
+
+### Batch 003 — weight-only quantisation, 2026-09-16 (rental 37)
+
+**Seven admissible ratios, seven losses, and no kernel bugs.** The first batch in this
+project where every slot compiled, every slot was scored, and nothing was voided. Predictions
+scored **1 correct of 7**, and the one that was right is the identity slot.
+
+| ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
+|---|---|---|---:|---:|---|---|---|---|
+| 000 | Identity champion | — | **1.0024** | 0.0190 | RTX 5090 | 5/5 exact | calibrated | [dir](results/batches/003-int8-weight-only/) |
+| 009 | Hand-written bf16 GEMV (control) | `decode_step` | 0.2801 | 0.0106 | RTX 5090 | **fail** — exact gate, 1 of 5 prompts | `incorrect` | [dir](results/batches/003-int8-weight-only/) |
+| 010 | Weight-only int8 via PyTorch dequant (control) | `decode_step` | 0.9893 | 0.0212 | RTX 5090 | **fail** — layer 1, see below | `incorrect` | [dir](results/batches/003-int8-weight-only/) |
+| 011 | int8 fused dequant-GEMV, MLP only | `swiglu_mlp` | 0.4669 | 0.0254 | RTX 5090 | 256/264, KL 0.00082 | `incorrect` | [dir](results/batches/003-int8-weight-only/) |
+| 012 | int8 fused dequant-GEMV, all layer projections | `decode_step` | 0.1962 | 0.0042 | RTX 5090 | 255/264, KL 0.00110 | `incorrect` | [dir](results/batches/003-int8-weight-only/) |
+| 013 | 012 plus the tied LM head | `decode_step` | 0.1878 | 0.0026 | RTX 5090 | 256/264, KL 0.00122 | `incorrect` | [dir](results/batches/003-int8-weight-only/) |
+| 014 | int4 group-128 fused dequant-GEMV, all sites | `decode_step` | 0.1797 | 0.0040 | RTX 5090 | 226/264, KL 0.09185 | **`loss`** | [dir](results/batches/003-int8-weight-only/) |
+
+**Read the `incorrect` column with care: not one of them is a kernel bug.** Every Triton
+kernel passed layer 1 at every probe, worst relative error 7.8e-3 — about one bf16 ULP. The
+six failures are three defects in the *gates*:
+
+* **009** was gated `exact` on the reasoning that it computes the same function as the
+  reference. It does; it does not compute the same *bits*. fp32 accumulation in a different
+  order from cuBLAS lands one bf16 ULP away, and this model's top-2 logit gaps flip an argmax
+  on that. `AGENT.md` §7a already records this trap and rental 35 already paid for it.
+* **010-013** missed a top-1 agreement bar chosen from priors rather than from measurement,
+  and set finer than the statistic can resolve. At n=264 positions agreement quantises to
+  1/264 = 0.0038; **013 missed its bar by 0.000303 — eight hundredths of one token.**
+* **010**'s layer 1 failed against a reference it never claimed to match: `Int8DequantLinear`
+  rounds the dequantised weight to bf16 as any real PyTorch implementation would, while the
+  shared layer-1 reference dequantises in fp32.
+
+**Why the kernels lost is a single fact.** They were never bandwidth-bound. As they removed
+bytes they got *slower* — 26.90 → 38.68 → 42.49 ms/token while traffic fell 9158 → 5588 →
+2850 MB/token — because a cross-lane `tl.sum` reduction ran once per K-iteration and the
+dequantisation landed on an already-saturated issue port. Achieved bandwidth: **332 GB/s at
+bf16, 141 at int8, 65 at int4, against the compiled baseline's 1308.**
+
+**And a two-week-old claim in the backlog is refuted.** `docs/HYPOTHESES.md` asserted that
+inductor materialises the dequantised weight and is therefore *slower* than bf16. Measured:
+0.9893 ± 0.0212 — the same. The materialisation story needs 2525 GB/s on a 1790 GB/s card,
+so it is impossible; inductor either fuses the dequant or keeps the transient in L2.
+
+Full account, including the bandwidth table and the ranked plan that follows from it:
+[`results/batches/003-int8-weight-only/README.md`](results/batches/003-int8-weight-only/README.md).
 
 ### Column definitions
 

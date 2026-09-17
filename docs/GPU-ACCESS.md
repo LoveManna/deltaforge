@@ -1,10 +1,11 @@
 # GPU access: a chain of blockers, each hiding behind the last
 
-Thirty-five rentals have been billed on this project. **The harness is calibrated as of
-rental 34** — an identity champion measuring 1.00 within noise — and rental 35 ran all nine
-slots of batch 001 to completion. No hypothesis has an admissible ratio yet; blocker 16 is
-why. Each rental that got further than its predecessor did so by exposing the next problem
-in the chain:
+Thirty-seven rentals have been billed on this project, **$6.157 lifetime, zero leaked.**
+**The chain is finished.** The harness has been calibrated since rental 34, rental 35 ran a
+full batch, and rental 37 closed the last blocker in the table: batch 003 returned **seven
+admissible ratios with nothing voided**. What stands between this project and a champion is
+now a kernel, not a blocker. Each rental that got further than its predecessor did so by
+exposing the next problem in the chain:
 
 | | Blocker | Found by | Fixed by | Proven? |
 |---|---|---|---|---|
@@ -23,13 +24,23 @@ in the chain:
 | 13 | The oracle's greedy decode no longer matches HuggingFace | rental 27 | resolved without a named cause — agrees on rentals 30-32, 34, 35 | yes, five hosts, zero tie-breaks |
 | 14 | A cold `max-autotune` compile never finishes inside a session | rentals 22, 30-32 | the unrolled prefill scan is not compiled; it is untimed setup | yes — 6980.9s unfinished → 267.5s → 57.4s warm |
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
-| 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **no** |
+| 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
-recorded as proven on rental 27 and rental 33 disproved it. **Blocker 16's fix has never
-run on a GPU**, and it is the only thing between this project and its first admissible
-ratio.
+recorded as proven on rental 27 and rental 33 disproved it.
+
+**Blocker 16 is closed.** It was recorded here as "the only thing between this project and
+its first admissible ratio", and that was right: rental 37 raised the limit to 22 for a
+seven-slot batch, every slot reported `graphs_compiled: 3`, and all seven ratios are
+compiled-against-compiled. Batch 003 is the first batch in this project with no voided slot.
+
+The counter is the durable part of that fix, not the limit. A raised limit stops *this*
+failure; `graphs_compiled` in every slot record is what makes the next one visible, because
+a candidate dynamo has stopped compiling still produces a median, an IQR and a ratio that
+look like results. **Widening a batch means widening the limit** — `recompile_limit_for`
+derives it from the slot count, so that happens automatically, but a batch that ever reports
+a `0` there must say so rather than report the number beside it.
 
 Blockers 14, 15 and 16 arrived in that order on one day, and could not have arrived in any
 other: 14 stopped any slot from finishing, which hid 15 (it only fires *between* two slots),

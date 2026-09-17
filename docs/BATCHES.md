@@ -161,3 +161,52 @@ The batch is not finished when the instance is destroyed.
 9. **Then the rest of the docs** — `AGENT.md` §6.1 lists which, and when each is worth
    touching. Void batches are written up too: `results/batches/001-calibration/` is what a
    batch that produced no ratio at all still owes the next session.
+
+
+## Measured costs, rental 37 (2026-09-16) — batch 003, seven slots
+
+The first batch to run end to end with nothing voided, so these are the numbers to cost the
+next one with. RTX 5090, **warm** compile cache pulled from rental 35.
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **55.55 minutes, $0.3786** at $0.4089/hr |
+| Fixed cost before slot 0 | ~19 minutes (image, torch, 9.32 GB checkpoint, GPU suite) |
+| Slot 0 — identity, includes the reference compile | **179 s** |
+| Slots 1-6 | **293-428 s**, median 306 s |
+| Of which the approximate correctness gate | 10-19 s |
+| Of which the benchmark | 164-418 s |
+| Peak memory | 9.0 GiB bf16, **12.9 GiB** with int8 copies resident, of 31.36 |
+
+**A seven-slot batch fits comfortably in a 180-minute session** — it used 55. The earlier
+estimate of 173-376 s per slot from rental 35 held; the cap is memory and reading time, not
+the clock. Note that the candidate *compile* no longer shows as a separate phase: with a
+warm cache `compile_candidate_compiled` rounds to 0 s and the cost has moved inside the
+benchmark's first warmup round.
+
+**The `compiled` column drifted 875 → 987 ms across the batch, 13%.** That is thermal, it is
+expected, and it is exactly why the score is a within-slot ratio and absolute times are
+provenance only. A batch that compared slot 6's candidate against slot 0's reference would
+have invented a 13% effect out of the cooling fan.
+
+## The gap this batch found: slots cannot be conditional
+
+Batch 003 spent **five of seven slots** on quantisation variants whose outcome was fully
+determined the moment slot 1 returned 0.2801. `009-gemv-bf16-control` moves exactly cuBLAS's
+bytes; at 0.28 it says the kernel is nowhere near the roofline, and therefore that no
+byte-saving variant built on it can win. Every slot after it re-measured that fact at a
+different bit width.
+
+Nothing in `Batch` or `run_batch` can express "stop here". The ordering rule — calibration
+first, cheapest and most diagnostic next, riskiest last — already encodes the *intent* that
+early slots inform later ones, but the runner cannot act on it.
+
+**What to add:** an optional predicate per hypothesis, evaluated against the slots already
+finished, that turns the remaining slots into `not_run` with a recorded reason rather than
+running them. It belongs in `batch.py` beside `SlotBudget`, which is the existing precedent
+for a slot the batch declines to start, and it should record *why* — `not_run` because a
+precondition failed is a different fact from `not_run` because the clock ran out, and
+flattening them would erase the evidence.
+
+The first user is already written: `docs/HYPOTHESES.md` entry 6 carries the gate **"the bf16
+GEMV control must reach ≥ 0.90 before any quantised slot is worth running."**

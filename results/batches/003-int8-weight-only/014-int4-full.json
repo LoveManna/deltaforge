@@ -1,0 +1,320 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-16T23:17:57.717538+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "014-int4-full",
+    "batch": "003-int8-weight-only",
+    "statement": "The same sites as 013 at 4 bits with per-group-of-128 scales, two values packed per byte and unpacked in registers inside the K-loop.",
+    "prediction": "win",
+    "rationale": "Ceiling 3.21x -- the largest in the repository. Riskiest and therefore last, on two counts. Numerically: 4 bits is 16 levels, and in_proj_a and in_proj_b feed an exponential through A_log, so a quantisation error there is amplified rather than averaged; its thresholds are set loosest in the batch for that reason and the honest outcome may be a fast candidate that fails the gate, which is a result and is recorded as one. Mechanically: the unpack costs shifts and masks in the inner loop, and at 4 bits the kernel may stop being bandwidth-bound and start being ALU-bound, at which point the extra halving buys nothing. Predicted 1.8-2.4x, well short of 3.21x, and predicted to have the widest gap between ceiling and measurement of any slot here.",
+    "category": "B",
+    "byte_share": 0.918,
+    "kernels": [
+      "int4_full"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.19824304000940174,
+    "correctness": 11.877336684963666,
+    "compile_candidate_compiled": 0.005659047979861498,
+    "bench": 295.52350758900866
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
+    "hostname": "700468921d5d",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.126.09",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2467,
+      "memory": 13801,
+      "observed_at": "2026-09-16T23:17:57.778317+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        986.8703002929688,
+        960.2842407226562,
+        954.1240234375,
+        966.418212890625,
+        969.1122436523438,
+        1017.4198608398438,
+        978.983154296875
+      ],
+      "candidate_compiled": [
+        149164.390625,
+        5410.337890625,
+        5407.904296875,
+        5309.68408203125,
+        5443.31982421875,
+        5438.8759765625,
+        5448.01806640625
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        954.1240234375,
+        966.418212890625,
+        969.1122436523438,
+        1017.4198608398438,
+        978.983154296875
+      ],
+      "candidate_compiled": [
+        5407.904296875,
+        5309.68408203125,
+        5443.31982421875,
+        5438.8759765625,
+        5448.01806640625
+      ]
+    },
+    "median_ms": {
+      "compiled": 969.1122436523438,
+      "candidate_compiled": 5438.8759765625
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.17643138100443975,
+        0.1820104921422964,
+        0.1780369838532196,
+        0.18706436131733187,
+        0.17969528411322888
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.17969528411322888
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.003973508289076805
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "014-int4-full",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.015625,
+    "worst_max_rel_err": 0.0078125,
+    "layer1_kernel_checks": [
+      {
+        "name": "quantised_linear.int4_gemv[N=32 K=2560 (BLOCK_N=8)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          32
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 0,
+        "total_elements": 32,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=32 K=2560 (BLOCK_N=8)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          32
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 20,
+        "total_elements": 1024,
+        "note": "secondary decode step: batch 32, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=2560 K=4096 (BLOCK_N=16)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 9.5367431640625e-07,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 34,
+        "total_elements": 2560,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=2560 K=4096 (BLOCK_N=16)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.00671140942722559,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 859,
+        "total_elements": 81920,
+        "note": "secondary decode step: batch 32, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=8192 K=2560 (BLOCK_N=32)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.00048828125,
+        "max_rel_err": 0.005780346691608429,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 97,
+        "total_elements": 8192,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=8192 K=2560 (BLOCK_N=32)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.007462686393409967,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3201,
+        "total_elements": 262144,
+        "note": "secondary decode step: batch 32, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.007692307699471712,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 2956,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token"
+      },
+      {
+        "name": "quantised_linear.int4_gemv[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 95881,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.8560606241226196,
+      "mean_kl": 0.09185391664505005,
+      "max_kl": 1.542747139930725,
+      "num_positions": 264,
+      "top1_threshold": 0.85,
+      "kl_threshold": 0.15,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

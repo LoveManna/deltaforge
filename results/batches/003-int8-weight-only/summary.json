@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "kind": "batch",
+  "batch_id": "003-int8-weight-only",
+  "session_id": "batch003-20260916T222255Z",
+  "description": "Weight-only quantisation with a fused dequantise-GEMV -- hypothesis 1 in docs/HYPOTHESES.md, and the only open entry whose ceiling is above 1.0 rather than below the noise band. Everything batch 001 measured attacks at most 6.23% of per-token bytes; this attacks 91.85%, because at batch-1 decode the model IS the weight stream. Two of the seven slots are controls rather than hypotheses, and they are what make a win mean something: 009 asks whether a hand-written GEMV is competitive with cuBLAS at all, and 010 asks whether the compiler could have done this itself. A ratio without those two is a number; with them it is a mechanism.",
+  "timestamp": "2026-09-16T23:17:57.784871+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "000-identity.candidate_build": 0.05266305198892951,
+    "000-identity.correctness": 14.960041180020198,
+    "000-identity.compile_candidate_compiled": 0.006063740933313966,
+    "000-identity.bench": 163.64287723100279,
+    "009-gemv-bf16-control.candidate_build": 0.06006992200855166,
+    "009-gemv-bf16-control.correctness": 19.326254897052422,
+    "009-gemv-bf16-control.compile_candidate_compiled": 0.008213280001655221,
+    "009-gemv-bf16-control.bench": 306.23058963997755,
+    "010-int8-dequant-torch.candidate_build": 0.16694708494469523,
+    "010-int8-dequant-torch.correctness": 9.723303909995593,
+    "010-int8-dequant-torch.compile_candidate_compiled": 0.0053898830665275455,
+    "010-int8-dequant-torch.bench": 417.6513524319744,
+    "011-int8-mlp.candidate_build": 0.09830391989089549,
+    "011-int8-mlp.correctness": 11.054658315028064,
+    "011-int8-mlp.compile_candidate_compiled": 0.005712112062610686,
+    "011-int8-mlp.bench": 352.8310377099551,
+    "012-int8-all-linear.candidate_build": 0.1406035419786349,
+    "012-int8-all-linear.correctness": 10.269358749967068,
+    "012-int8-all-linear.compile_candidate_compiled": 0.008181974990293384,
+    "012-int8-all-linear.bench": 298.6144633980002,
+    "013-int8-full.candidate_build": 0.14459085301496089,
+    "013-int8-full.correctness": 9.934388076071627,
+    "013-int8-full.compile_candidate_compiled": 0.005669935024343431,
+    "013-int8-full.bench": 293.461226100917,
+    "014-int4-full.candidate_build": 0.19824304000940174,
+    "014-int4-full.correctness": 11.877336684963666,
+    "014-int4-full.compile_candidate_compiled": 0.005659047979861498,
+    "014-int4-full.bench": 295.52350758900866
+  },
+  "calibrated": true,
+  "counts": {
+    "inconclusive": 1,
+    "incorrect": 5,
+    "loss": 1
+  },
+  "predictions": [
+    {
+      "slug": "000-identity",
+      "predicted": "identity",
+      "outcome": "inconclusive",
+      "correct": true
+    },
+    {
+      "slug": "009-gemv-bf16-control",
+      "predicted": "inconclusive",
+      "outcome": "incorrect",
+      "correct": false
+    },
+    {
+      "slug": "010-int8-dequant-torch",
+      "predicted": "loss",
+      "outcome": "incorrect",
+      "correct": false
+    },
+    {
+      "slug": "011-int8-mlp",
+      "predicted": "win",
+      "outcome": "incorrect",
+      "correct": false
+    },
+    {
+      "slug": "012-int8-all-linear",
+      "predicted": "win",
+      "outcome": "incorrect",
+      "correct": false
+    },
+    {
+      "slug": "013-int8-full",
+      "predicted": "win",
+      "outcome": "incorrect",
+      "correct": false
+    },
+    {
+      "slug": "014-int4-full",
+      "predicted": "win",
+      "outcome": "loss",
+      "correct": false
+    }
+  ],
+  "prediction_record": {
+    "correct": 1,
+    "scored": 7
+  },
+  "slots": [
+    {
+      "slug": "000-identity",
+      "outcome": "inconclusive",
+      "prediction": "identity",
+      "category": "calibration",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [],
+      "mechanism": "Install nothing. The candidate is then bit-identical to the reference, so every column must measure the same thing.",
+      "rationale": "It measured 1.0018 with an IQR of 0.0018 on rental 35, so unlike every batch before this one there is a reason to expect it. That is exactly why it still runs first: a calibration slot is worth nothing as a belief and everything as a check, and the six slots behind it are the first numbers this project would ever promote. If it misses, they are all void.",
+      "median_ratio": 1.0024229978862227,
+      "iqr_ratio": 0.01903537694435009,
+      "error": null,
+      "duration_s": 178.66208088200074,
+      "peak_memory_mb": 9024,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.05266305198892951,
+        "correctness": 14.960041180020198,
+        "compile_candidate_compiled": 0.006063740933313966,
+        "bench": 163.64287723100279
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "009-gemv-bf16-control",
+      "outcome": "incorrect",
+      "prediction": "inconclusive",
+      "category": "A",
+      "byte_share": 0.0,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "gemv_bf16"
+      ],
+      "mechanism": "The hand-written Triton GEMV reading the reference's own bf16 weights, on every projection in every decoder layer. Identical bytes to cuBLAS; only the author changes.",
+      "rationale": "Byte share 0.0 -- it moves not one byte fewer than the baseline, which is the point. At batch 1 a GEMV is pure weight streaming, so both implementations are pinned to the same roofline and should tie. This slot is the divisor for the three int8 slots behind it: if 012 returns 1.6 and this returns 1.0, the win is the bytes. If this returns 0.6, my kernel is simply slow and int8's real margin is larger than it looks. No other slot can separate those, and a quantisation result reported without this one is a number whose cause is unknown.",
+      "median_ratio": 0.280133724242469,
+      "iqr_ratio": 0.010648004948307088,
+      "error": null,
+      "duration_s": 325.62547159800306,
+      "peak_memory_mb": 9024,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.06006992200855166,
+        "correctness": 19.326254897052422,
+        "compile_candidate_compiled": 0.008213280001655221,
+        "bench": 306.23058963997755
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "010-int8-dequant-torch",
+      "outcome": "incorrect",
+      "prediction": "loss",
+      "category": "B",
+      "byte_share": 0.779,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int8_dequant_torch"
+      ],
+      "mechanism": "The same int8 weights, dequantised the only way PyTorch can express it -- materialise the bf16 weight, then call F.linear -- and handed to torch.compile(max-autotune) like every other candidate.",
+      "rationale": "docs/HYPOTHESES.md ASSERTS that inductor cannot fuse this: that it materialises the full bf16 weight into global memory and calls cuBLAS, ADDING an 8.4 GB write on top of the read and making the quantised version slower than the bf16 baseline. The entry then says, in its own Watch-for: 'Verify the claim above before building on it... Either way, measure, do not assume.' Nobody has. Recent inductor has prologue fusion into its mm templates and might fuse some of the dequant -- though at M=1 it likely is not using a template at all. So the prediction is a loss around 0.6-0.8x, and the outcome that would matter most is the one that refutes it: if this slot WINS, the compiler can express weight-only quantisation, the hand-written kernels behind it are worth much less than claimed, and the backlog's top entry needs rewriting.",
+      "median_ratio": 0.9892813704037504,
+      "iqr_ratio": 0.02121010032337667,
+      "error": null,
+      "duration_s": 427.5474362629466,
+      "peak_memory_mb": 12432,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.16694708494469523,
+        "correctness": 9.723303909995593,
+        "compile_candidate_compiled": 0.0053898830665275455,
+        "bench": 417.6513524319744
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "011-int8-mlp",
+      "outcome": "incorrect",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.495,
+      "replaces": [
+        "swiglu_mlp"
+      ],
+      "kernels": [
+        "int8_mlp"
+      ],
+      "mechanism": "int8 weight-only with a fused dequantise-GEMV on the three MLP projections: the int8 weight is loaded and rescaled inside the K-loop, so the dequantised bf16 weight is never written to memory at all.",
+      "rationale": "The MLP is 4.530 GB of the 8.411 GB of weights read per token -- 49.5% of ALL per-token traffic, eight times the largest share batch 001 attacked. Halving it saves 2.265 GB of 9.158, for a ceiling of 1.33x, which is two orders of magnitude outside the harness's measured noise band of 0.002-0.004. Category B: moving fewer bytes is a choice about representation, and a scheduler is not entitled to make it. Predicted 1.15-1.30x -- short of the ceiling because a GEMV at N=9216 puts only 144 programs on 170 SMs and the int8 loads are not perfectly efficient at BLOCK_N=64.",
+      "median_ratio": 0.4669362860788794,
+      "iqr_ratio": 0.025428559721699828,
+      "error": null,
+      "duration_s": 363.99006005807314,
+      "peak_memory_mb": 11187,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.09830391989089549,
+        "correctness": 11.054658315028064,
+        "compile_candidate_compiled": 0.005712112062610686,
+        "bench": 352.8310377099551
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "012-int8-all-linear",
+      "outcome": "incorrect",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.779,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int8_all_linear"
+      ],
+      "mechanism": "The same fused dequantise-GEMV on every projection inside a decoder layer: MLP, gated attention and gated delta-net, 7.140 GB of the 8.411 GB of weights.",
+      "rationale": "77.9% of per-token bytes at 8 bits saves 3.570 GB of 9.158, for a ceiling of 1.64x. The mechanism is identical to 011 and the only thing that changes is how much of the weight stream it covers, which makes the pair a dose-response test rather than two separate experiments: if 011 wins and this does not win by MORE, the win is not coming from bytes and the account is wrong. Predicted 1.35-1.55x. Note the small-N sites here -- in_proj_a and in_proj_b are 32 output channels against K=2560, so one BLOCK_N program does the whole projection and the kernel is latency-bound rather than bandwidth-bound on them. They are 0.03% of the bytes, so it does not matter much, but it is the reason this may land below the dose-response line rather than above it.",
+      "median_ratio": 0.19621310951264234,
+      "iqr_ratio": 0.004176341280335727,
+      "error": null,
+      "duration_s": 309.03295100596733,
+      "peak_memory_mb": 12432,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.1406035419786349,
+        "correctness": 10.269358749967068,
+        "compile_candidate_compiled": 0.008181974990293384,
+        "bench": 298.6144633980002
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "013-int8-full",
+      "outcome": "incorrect",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.918,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int8_full"
+      ],
+      "mechanism": "012 plus the tied LM head, through `ReferenceModel.project_logits`. The head is one 248320 x 2560 GEMV per token -- the single largest weight read in the model -- and with tie_word_embeddings it had no nn.Linear to swap.",
+      "rationale": "The head is 1.271 GB, 15.1% of weight bytes, and quantising it takes the batch to 100% of the weight stream at 8 bits: ceiling 1.85x, which is what docs/roofline.py prints for fp8/int8 and the largest number in this repository's backlog. Predicted 1.5-1.7x. It is placed after 012 rather than folded into it because the head is the one site where quantisation is genuinely risky for accuracy -- it is the last projection before the argmax, so its error is not attenuated by anything downstream, and the logit gaps this model produces are small enough that 001 and 002 flipped a token on 2 bf16 ULP. If exactly one of 012 and 013 fails the distribution gate, that is the finding.",
+      "median_ratio": 0.1878195380686211,
+      "iqr_ratio": 0.0026197345915873194,
+      "error": null,
+      "duration_s": 303.54624932201114,
+      "peak_memory_mb": 13168,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.14459085301496089,
+        "correctness": 9.934388076071627,
+        "compile_candidate_compiled": 0.005669935024343431,
+        "bench": 293.461226100917
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "014-int4-full",
+      "outcome": "loss",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.918,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int4_full"
+      ],
+      "mechanism": "The same sites as 013 at 4 bits with per-group-of-128 scales, two values packed per byte and unpacked in registers inside the K-loop.",
+      "rationale": "Ceiling 3.21x -- the largest in the repository. Riskiest and therefore last, on two counts. Numerically: 4 bits is 16 levels, and in_proj_a and in_proj_b feed an exponential through A_log, so a quantisation error there is amplified rather than averaged; its thresholds are set loosest in the batch for that reason and the honest outcome may be a fast candidate that fails the gate, which is a result and is recorded as one. Mechanically: the unpack costs shifts and masks in the inner loop, and at 4 bits the kernel may stop being bandwidth-bound and start being ALU-bound, at which point the extra halving buys nothing. Predicted 1.8-2.4x, well short of 3.21x, and predicted to have the widest gap between ceiling and measurement of any slot here.",
+      "median_ratio": 0.17969528411322888,
+      "iqr_ratio": 0.003973508289076805,
+      "error": null,
+      "duration_s": 307.6051139200572,
+      "peak_memory_mb": 11155,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.19824304000940174,
+        "correctness": 11.877336684963666,
+        "compile_candidate_compiled": 0.005659047979861498,
+        "bench": 295.52350758900866
+      },
+      "prediction_correct": false
+    }
+  ],
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
+    "hostname": "700468921d5d",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.126.09",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2467,
+      "memory": 13801,
+      "observed_at": "2026-09-16T23:17:57.844371+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "cost": {
+    "instance_id": "51253059",
+    "hourly_rate_usd": 0.4088888888888889,
+    "gpu_model": null,
+    "actual_minutes": null,
+    "actual_cost_usd": null
+  },
+  "notes": ""
+}
