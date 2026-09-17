@@ -17,6 +17,7 @@ from __future__ import annotations
 import pytest
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from ..batch import scoped_registry
 from ..batches import BATCH_003
@@ -32,6 +33,7 @@ from .quantised_linear import (
     Int4GemvLinear,
     Int8DequantLinear,
     Int8GemvLinear,
+    _linear_reference,
     dequantise_int4,
     dequantise_int8,
     group_size_for,
@@ -558,3 +560,55 @@ def test_the_approximate_gate_stays_on_the_decode_path():
     from ..harness.correctness import DEFAULT_CHUNK_TOKENS
 
     assert DEFAULT_CHUNK_TOKENS <= GEMV_MAX_ROWS
+
+
+# -- a shared reference is only shared if the implementations share their rounding -----
+
+
+def test_the_two_int8_references_differ_and_must_not_be_collapsed():
+    """`010-int8-dequant-torch` was the only layer-1 failure in batch 003 and it is not a bug.
+
+    `Int8DequantLinear` computes `q.to(bf16) * scale.to(bf16)` and then `F.linear`, rounding
+    the dequantised weight to bf16 before the matmul, as any practical PyTorch
+    implementation would. The Triton kernels dequantise in fp32. Checking both against one
+    fp32 reference reported a relative error of 0.45 for a computation doing exactly what it
+    should. The two references are different arithmetic and this asserts they stay that way.
+    """
+    torch.manual_seed(0)
+    weight = torch.randn(64, 128, dtype=torch.bfloat16)
+    quantised = quantise_int8_per_channel(weight)
+    x = torch.randn(1, 128, dtype=torch.bfloat16)
+
+    fp32 = _linear_reference(
+        x, lambda i, j: dequantise_int8(quantised.qweight[i:j], quantised.scale[i:j]), 64, 128
+    )
+    rounded = _linear_reference(
+        x,
+        lambda i, j: dequantise_int8(quantised.qweight[i:j], quantised.scale[i:j]),
+        64,
+        128,
+        weight_dtype=torch.bfloat16,
+    )
+
+    assert not torch.equal(fp32, rounded), "rounding the weight to bf16 must change the product"
+
+
+def test_the_torch_control_is_checked_against_the_rounding_it_performs():
+    """The control's reference must round the weight as the control does, or the check
+    measures the dtype discipline rather than the arithmetic."""
+    torch.manual_seed(0)
+    weight = torch.randn(64, 128, dtype=torch.bfloat16)
+    quantised = quantise_int8_per_channel(weight)
+    x = torch.randn(1, 128, dtype=torch.bfloat16)
+
+    reference = _linear_reference(
+        x,
+        lambda i, j: dequantise_int8(quantised.qweight[i:j], quantised.scale[i:j]),
+        64,
+        128,
+        weight_dtype=torch.bfloat16,
+    )
+    control = F.linear(x, quantised.qweight.to(x.dtype) * quantised.scale.to(x.dtype).unsqueeze(1))
+
+    max_abs = (reference.float() - control.float()).abs().max()
+    assert max_abs < 0.05 * control.float().abs().max(), max_abs

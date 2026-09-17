@@ -62,6 +62,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="001-fused-rmsnorm-residual",
             kernels=("fused_rmsnorm_residual",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00018,
             replaces=("rms_norm_residual", "rms_norm"),
@@ -81,6 +82,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="002-rmsnorm-only",
             kernels=("rmsnorm_hidden",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00018,
             replaces=("rms_norm",),
@@ -99,6 +101,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="003-qk-norm-triton",
             kernels=("rmsnorm_qk",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00001,
             replaces=("rms_norm",),
@@ -120,6 +123,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="004-fused-swiglu",
             kernels=("fused_swiglu",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00026,
             replaces=("swiglu_mlp",),
@@ -138,6 +142,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="005-fused-qkv-rope",
             kernels=("fused_rope",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00004,
             replaces=("qkv_projection_rope",),
@@ -157,6 +162,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="006-gqa-no-expand",
             kernels=("gqa_decode",),
+            historical_exact_gate=True,
             category="B",
             byte_share=0.0623,
             replaces=("gqa_attention", "kv_cache_update"),
@@ -185,6 +191,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="007-gated-delta-fused-step",
             kernels=("gated_delta_step",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.0110,
             replaces=("gated_delta_rule",),
@@ -206,6 +213,7 @@ BATCH_001 = Batch(
         Hypothesis(
             slug="008-flash-decode-splitkv",
             kernels=("flash_decode_splitkv",),
+            historical_exact_gate=True,
             category="C",
             byte_share=0.0078,
             replaces=("gqa_attention",),
@@ -271,6 +279,7 @@ BATCH_002 = Batch(
         Hypothesis(
             slug="003-qk-norm-triton",
             kernels=("rmsnorm_qk",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00001,
             replaces=("rms_norm",),
@@ -292,6 +301,7 @@ BATCH_002 = Batch(
         Hypothesis(
             slug="002-rmsnorm-only",
             kernels=("rmsnorm_hidden",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.00018,
             replaces=("rms_norm",),
@@ -354,6 +364,7 @@ BATCH_003 = Batch(
         Hypothesis(
             slug="009-gemv-bf16-control",
             kernels=("gemv_bf16",),
+            historical_exact_gate=True,
             category="A",
             byte_share=0.0,
             replaces=("decode_step",),

@@ -36,7 +36,23 @@ def make_hypothesis(**overrides) -> Hypothesis:
         "rationale": "because the compiler cannot change the representation",
     }
     base.update(overrides)
-    return Hypothesis(**base)
+    return Hypothesis(**_with_a_gate_it_can_hold(base))
+
+
+def _with_a_gate_it_can_hold(fields: dict) -> dict:
+    """Fill in a gate the hypothesis is allowed to carry, unless the test named one.
+
+    `exact` asserts bit-identity, which only the candidate installing nothing has. So a
+    builder that defaults every hypothesis to `exact` would produce an invalid one every
+    time it was handed a kernel, and every test using it would fail on the gate rather
+    than on what it meant to assert.
+    """
+    fields = dict(fields)
+    fields.setdefault("correctness", "exact" if not fields["kernels"] else "approximate")
+    if fields["correctness"] == "approximate":
+        fields.setdefault("top1_threshold", 0.9)
+        fields.setdefault("kl_threshold", 0.01)
+    return fields
 
 
 def make_registry() -> KernelRegistry:
@@ -436,11 +452,30 @@ def _hypothesis(**overrides):
         rationale="r",
     )
     fields.update(overrides)
+    return Hypothesis(**_with_a_gate_it_can_hold(fields))
+
+
+def _raw_hypothesis(**overrides):
+    """`_hypothesis` without the gate defaults, for tests about the gate fields themselves."""
+    fields = dict(
+        slug="x",
+        kernels=("k",),
+        category="B",
+        byte_share=0.5,
+        mechanism="m",
+        prediction="win",
+        rationale="r",
+    )
+    fields.update(overrides)
     return Hypothesis(**fields)
 
 
 def test_a_hypothesis_is_gated_exactly_by_default():
-    assert _hypothesis().correctness == "exact"
+    """And `exact` is now reachable only by the candidate that installs nothing."""
+    identity = _hypothesis(kernels=(), prediction="identity")
+
+    assert identity.correctness == "exact"
+    assert Hypothesis.__dataclass_fields__["correctness"].default == "exact"
 
 
 def test_an_unknown_correctness_policy_is_refused():
@@ -451,21 +486,21 @@ def test_an_unknown_correctness_policy_is_refused():
 def test_an_approximate_hypothesis_must_register_both_bars():
     """An approximate gate with no bar passes everything, including a broken kernel."""
     with pytest.raises(ValueError, match="before the rental"):
-        _hypothesis(correctness="approximate")
+        _raw_hypothesis(correctness="approximate")
     with pytest.raises(ValueError, match="before the rental"):
-        _hypothesis(correctness="approximate", top1_threshold=0.98)
+        _raw_hypothesis(correctness="approximate", top1_threshold=0.98)
     with pytest.raises(ValueError, match="before the rental"):
-        _hypothesis(correctness="approximate", kl_threshold=0.01)
+        _raw_hypothesis(correctness="approximate", kl_threshold=0.01)
 
 
 def test_an_exact_hypothesis_may_not_carry_bars_nothing_would_read():
     with pytest.raises(ValueError, match="scored exactly but carries approximate thresholds"):
-        _hypothesis(top1_threshold=0.98)
+        _raw_hypothesis(top1_threshold=0.98)
 
 
 def test_the_bars_are_range_checked():
     with pytest.raises(ValueError, match="top1_threshold is a fraction"):
-        _hypothesis(correctness="approximate", top1_threshold=1.5, kl_threshold=0.01)
+        _raw_hypothesis(correctness="approximate", top1_threshold=1.5, kl_threshold=0.01)
     with pytest.raises(ValueError, match="cannot be negative"):
         _hypothesis(correctness="approximate", top1_threshold=0.98, kl_threshold=-1.0)
 
@@ -562,3 +597,55 @@ def test_a_precondition_skipped_slot_scores_no_prediction():
     scores = score_predictions(batch, {"a": "loss", "b": "precondition_failed"})
 
     assert [s.correct for s in scores] == [False, None]
+
+
+# -- gates that can resolve what they claim -------------------------------------------
+
+
+def test_only_the_identity_champion_may_be_gated_exactly():
+    """009 was gated `exact` because it computes the same function as the reference. It does;
+    it does not compute the same *bits*. fp32 accumulation in a different order from cuBLAS
+    lands one bf16 ULP away, and one ULP flips an argmax on this model -- it matched 1 of 5
+    prompts. Bit-identity is a property of the implementation, and only installing nothing
+    has it. This is the third time the project has paid for the distinction."""
+    with pytest.raises(ValueError, match="only the identity champion is bit-identical"):
+        make_hypothesis(slug="015-gemv-bf16", kernels=("tiled_gemv_bf16",), correctness="exact")
+
+
+def test_the_identity_champion_is_still_gated_exactly():
+    """The rule cuts one way only: installing nothing must still be held to the tokens."""
+    hypothesis = make_hypothesis(slug="000-identity", kernels=(), prediction="identity")
+
+    assert hypothesis.correctness == "exact"
+
+
+def test_a_top1_bar_finer_than_the_sample_can_resolve_is_refused():
+    """013 missed its bar by 0.000303 at n=264, where agreement quantises to 1/264 = 0.0038.
+    A threshold an order of magnitude below one sample is not a decision procedure."""
+    with pytest.raises(ValueError, match="finer than one sample"):
+        make_hypothesis(
+            correctness="approximate",
+            top1_threshold=0.97,
+            kl_threshold=0.02,
+            correctness_positions=264,
+        )
+
+
+def test_a_top1_bar_that_lands_on_an_achievable_count_is_accepted():
+    """256/264 is 0.969697. A bar a sample can actually land on is a decision procedure."""
+    hypothesis = make_hypothesis(
+        correctness="approximate",
+        top1_threshold=256 / 264,
+        kl_threshold=0.02,
+        correctness_positions=264,
+    )
+
+    assert hypothesis.correctness_positions == 264
+
+
+def test_a_bar_with_no_declared_sample_size_is_not_checked_for_resolution():
+    """`correctness_positions` is what the batch expects to score; without it there is
+    nothing to compare the bar against, and inventing an n would be worse than not checking."""
+    hypothesis = make_hypothesis(correctness="approximate", top1_threshold=0.97, kl_threshold=0.02)
+
+    assert hypothesis.correctness_positions is None

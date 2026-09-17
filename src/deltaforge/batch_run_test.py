@@ -27,6 +27,10 @@ def hyp(slug: str, prediction: str = "inconclusive", kernels=("k",), requires=No
         mechanism="does a thing",
         prediction=prediction,
         rationale="a rationale long enough to be a claim rather than a label, stated up front",
+        # `exact` asserts bit-identity, which only a candidate installing nothing has.
+        correctness="exact" if not kernels else "approximate",
+        top1_threshold=None if not kernels else 0.9,
+        kl_threshold=None if not kernels else 0.01,
     )
 
 

@@ -260,6 +260,10 @@ def _slot(slug: str, duration_s: float, outcome: str = "inconclusive", error: st
             mechanism="does a thing",
             prediction="inconclusive",
             rationale="a rationale long enough to be a claim rather than a label, stated up front",
+            # A kernel cannot be bit-identical, so `exact` is not available to it.
+            correctness="approximate",
+            top1_threshold=0.9,
+            kl_threshold=0.01,
         ),
         outcome=outcome,
         duration_s=duration_s,

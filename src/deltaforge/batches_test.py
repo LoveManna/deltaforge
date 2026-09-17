@@ -315,3 +315,21 @@ def test_003_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_003:
         assert hyp.prediction
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a rationale too thin to be a claim"
+
+
+def test_only_batches_001_to_003_carry_the_pre_2026_09_17_exact_gate():
+    """`exact` asserts bit-identity, which only the candidate installing nothing has.
+
+    Batches 001-003 registered it for kernels that merely compute the same *function*, and
+    it cost `009-gemv-bf16-control` its slot: one bf16 ULP of reordered accumulation flips
+    an argmax on this model, and it matched 1 of 5 prompts. Those manifests keep the gate
+    they actually ran under -- rewriting it would falsify the record as surely as
+    rewriting a prediction would -- and nothing written after them may use it.
+    """
+    for batch_id, batch in BATCHES.items():
+        if batch_id in ("001-calibration", "002-compile-cost", "003-int8-weight-only"):
+            continue
+        for hypothesis in batch:
+            assert not hypothesis.historical_exact_gate, (
+                f"{batch_id}/{hypothesis.slug} claims a gate this project has retired"
+            )

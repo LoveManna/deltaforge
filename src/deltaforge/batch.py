@@ -156,6 +156,19 @@ class Hypothesis:
     #: bar. Both are read by `batch_run.BatchRunner._run_correctness`.
     top1_threshold: float | None = None
     kl_threshold: float | None = None
+    #: How many teacher-forced positions the batch expects to score this hypothesis over.
+    #: Declaring it is what lets `__post_init__` refuse a bar the sample cannot resolve.
+    #: `None` means undeclared, and an undeclared n is not checked: inventing one would be
+    #: worse than not checking.
+    correctness_positions: int | None = None
+    #: Registered before 2026-09-17, when `exact` was still accepted for a kernel that
+    #: computes the same *function* as the reference. Batch 003 proved that is not the same
+    #: property as producing the same *bits*, and the gate is now refused — but batches 001
+    #: to 003 ran under it, and rewriting a gate a rental already ran under would falsify
+    #: the record exactly as rewriting a prediction would. This flag keeps those manifests
+    #: constructible and says why. **Never set it on a new hypothesis**; `batches_test`
+    #: asserts that nothing after batch 003 does.
+    historical_exact_gate: bool = False
     #: A floor an earlier slot in the same batch must clear for this one to be worth
     #: running. `None` means the slot runs whenever the clock allows.
     requires: Precondition | None = None
@@ -174,6 +187,7 @@ class Hypothesis:
                 raise ValueError(f"top1_threshold is a fraction, got {self.top1_threshold!r}")
             if self.kl_threshold < 0.0:
                 raise ValueError(f"kl_threshold is in nats and cannot be negative, got {self.kl_threshold!r}")
+            self._check_top1_resolution()
         elif self.top1_threshold is not None or self.kl_threshold is not None:
             raise ValueError(
                 f"{self.slug!r} is scored exactly but carries approximate thresholds. "
@@ -184,6 +198,15 @@ class Hypothesis:
                 f"{self.slug!r} installs nothing, so it is bit-identical to the reference and "
                 "must be gated exactly. An identity slot that could not match tokens would "
                 "calibrate nothing."
+            )
+        if self.correctness == "exact" and not self.is_identity and not self.historical_exact_gate:
+            raise ValueError(
+                f"{self.slug!r} installs {self.kernels} and is gated 'exact', but only the "
+                "identity champion is bit-identical to the reference. Computing the same "
+                "function and producing the same bits are different properties: summing K in "
+                "a different order from cuBLAS lands one bf16 ULP away, and one ULP flips an "
+                "argmax on this model. 009-gemv-bf16-control matched 1 of 5 prompts on exactly "
+                "this. Gate it 'approximate' and set a KL bar."
             )
         if self.prediction not in PREDICTIONS:
             raise ValueError(f"prediction must be one of {PREDICTIONS}, got {self.prediction!r}")
@@ -210,6 +233,30 @@ class Hypothesis:
             raise ValueError(
                 f"{self.slug!r} carries a precondition with no reason. The reason is the only "
                 "thing a `precondition_failed` record says; without it the skip is unreadable."
+            )
+
+    def _check_top1_resolution(self) -> None:
+        """A top-1 bar must be a count the sample can actually land on.
+
+        `013-int8-full` missed a 0.97 bar at n = 264 by 0.000303, where one position is
+        0.0038. 0.97 x 264 is 256.08, so the bar written as "97%" really meant "at most 7
+        flips" — 0.92 of a sample away from where it was written, and the slot failed in
+        that gap. A bar expressible as an exact k/n says which count it means; one that is
+        not is claiming a precision the statistic does not have.
+        """
+        n = self.correctness_positions
+        if n is None:
+            return
+        if n <= 0:
+            raise ValueError(f"correctness_positions must be positive, got {n!r}")
+        exact = self.top1_threshold * n
+        if abs(exact - round(exact)) > 1e-9:
+            nearest = round(exact)
+            raise ValueError(
+                f"{self.slug!r} sets top1_threshold={self.top1_threshold!r} over "
+                f"{n} positions, which is finer than one sample: agreement quantises to "
+                f"1/{n} and the bar falls at {exact:.4f} positions. Write it as a count, "
+                f"e.g. {nearest}/{n}."
             )
 
     @property

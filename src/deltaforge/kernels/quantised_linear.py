@@ -255,7 +255,7 @@ def dequantise_int4(qweight: Tensor, scale: Tensor, *, group_size: int) -> Tenso
     return (q * scale.unsqueeze(2)).reshape(n, k)
 
 
-def _dequant_linear(x: Tensor, dequant, n: int, k: int) -> Tensor:
+def _dequant_linear(x: Tensor, dequant, n: int, k: int, weight_dtype=None) -> Tensor:
     """``F.linear`` against a dequantised weight, materialised a row block at a time.
 
     Only ever reached above `GEMV_MAX_ROWS` — the untimed prefill, and the distribution
@@ -269,7 +269,12 @@ def _dequant_linear(x: Tensor, dequant, n: int, k: int) -> Tensor:
     x32 = x.float()
     for start in range(0, n, step):
         stop = min(start + step, n)
-        out[:, start:stop] = F.linear(x32, dequant(start, stop))
+        block = dequant(start, stop)
+        if weight_dtype is not None:
+            # Round the dequantised weight before the matmul, the way a torch
+            # implementation that materialises it in the activation dtype does.
+            block = block.to(weight_dtype).float()
+        out[:, start:stop] = F.linear(x32, block)
     return out
 
 
@@ -775,15 +780,23 @@ def _probe_weights(model, *, sites: str) -> tuple[tuple[Tensor, str], ...]:
     return tuple(probes)
 
 
-def _linear_reference(x: Tensor, dequant, n: int, k: int) -> Tensor:
+def _linear_reference(x: Tensor, dequant, n: int, k: int, weight_dtype=None) -> Tensor:
     """``F.linear`` against a dequantised weight, in fp32, chunked over ``N``.
 
-    The layer-1 reference for every kernel here. Chunked because one of the probes is the
+    The layer-1 reference for the kernels here. Chunked because one of the probes is the
     248320 x 2560 LM head, which dequantises to 2.5 GB of fp32 in one piece — a correctness
     gate that OOMs reports nothing, and it would do it on the slot with the largest ceiling.
+
+    ``weight_dtype`` rounds the dequantised weight before the matmul, and exists because
+    **a shared reference is only shared if the implementations share their rounding.**
+    `Int8DequantLinear` computes ``q.to(bf16) * scale.to(bf16)`` and then ``F.linear``, as
+    any practical torch implementation would; the Triton kernels dequantise in fp32.
+    Checking both against one fp32 reference reported a relative error of 0.45 for a
+    computation doing exactly what it should — batch 003's only layer-1 failure, and not a
+    kernel bug. Leave it ``None`` for a kernel that dequantises in fp32.
     """
     flat = x.reshape(-1, k)
-    out = _dequant_linear(flat, dequant, n, k)
+    out = _dequant_linear(flat, dequant, n, k, weight_dtype=weight_dtype)
     return out.to(x.dtype).reshape(*x.shape[:-1], n)
 
 
@@ -811,30 +824,37 @@ def bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
 
 
 def _int8_checks(model, *, device, seed, sites, kernel):
-    """Layer 1 for one int8 variant: the Triton kernel against the identical arithmetic.
+    """Layer 1 for one int8 variant: the implementation against the identical arithmetic.
 
     The comparison is deliberately *not* against the bf16 reference. That difference is the
     quantisation error, which is the hypothesis rather than a defect, and layer 2 measures
-    it properly. What layer 1 must catch is a kernel that computes the quantised product
-    wrongly, so the reference dequantises in fp32 and matmuls in fp32 — the same numbers in
-    the same order as the kernel.
+    it properly. What layer 1 must catch is an implementation that computes the quantised
+    product wrongly, so the reference performs the same dequantisation the implementation
+    does — fp32 for the Triton kernels, and bf16-rounded for the torch control, which
+    materialises the weight in the activation dtype.
     """
     from ..harness.correctness import check_kernel
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
+    # The torch control rounds the dequantised weight to the activation dtype; the Triton
+    # kernels do not. One reference cannot serve both, and batch 003 proved it by failing
+    # the control at a relative error of 0.45 for arithmetic doing exactly what it should.
+    rounds_the_weight = kernel == "int8_dequant"
     for weight, label in _probe_weights(model, sites=sites):
         quantised = quantise_int8_per_channel(weight.detach())
         qw = quantised.qweight
         scale = quantised.scale
         n, k = qw.shape
+        # The activation dtype, which is what the control materialises the weight in.
+        weight_dtype = weight.dtype if rounds_the_weight else None
         for shape, note in _decode_shapes(k):
             x = torch.randn(shape, device=device, dtype=weight.dtype, generator=generator)
             checks.append(
                 check_kernel(
                     f"quantised_linear.{kernel}[{label}]",
-                    lambda a, q, s, n=n, k=k: _linear_reference(
-                        a, lambda i, j: dequantise_int8(q[i:j], s[i:j]), n, k
+                    lambda a, q, s, n=n, k=k, wd=weight_dtype: _linear_reference(
+                        a, lambda i, j: dequantise_int8(q[i:j], s[i:j]), n, k, weight_dtype=wd
                     ),
                     (
                         (lambda a, q, s: int8_gemv(a, q, s))
