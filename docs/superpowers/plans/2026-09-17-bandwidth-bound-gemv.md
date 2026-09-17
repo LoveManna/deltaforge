@@ -1,6 +1,10 @@
 # Bandwidth-Bound GEMV — Implementation Plan (batch 004)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+>
+> **Read [`2026-09-17-HANDOFF.md`](2026-09-17-HANDOFF.md) first** if you have not worked on
+> this repo before. It carries the ground rules, the existing test helpers this plan reuses,
+> the money limits, and the point at which to stop and ask a human.
 
 **Goal:** Produce DeltaForge's first champion — a hand-written Triton kernel whose median
 ratio against `torch.compile(mode="max-autotune")` exceeds 1.0 by more than the IQR — by
@@ -215,13 +219,15 @@ def test_a_column_reports_the_bandwidth_it_achieved():
     while moving half the bytes is bandwidth-bound and winning; one whose GB/s falls as its
     bytes fall is issue-bound, which is a different problem with a different fix.
     """
-    config = BenchConfig(rounds=3, warmup_rounds=0, bytes_per_token={"compiled": 9158.23,
-                                                                    "candidate_compiled": 5588.0})
-    result = run_interleaved(
-        {"compiled": lambda: None, "candidate_compiled": lambda: None},
-        config,
-        timer=_FakeTimer({"compiled": 7.64 * 128, "candidate_compiled": 7.64 * 128}),
+    config = BenchConfig(
+        rounds=3,
+        warmup_rounds=0,
+        workload={"decode_tokens": 128},
+        bytes_per_token={"compiled": 9158.23, "candidate_compiled": 5588.0},
     )
+    columns = make_columns(("compiled", "candidate_compiled"))
+    timer = ScriptedTimer({label: [977.0] * 3 for label in columns})
+    result = run_interleaved(columns, config, timer=timer)
 
     # Same wall clock, 39% fewer bytes -> 39% lower achieved bandwidth.
     assert result.achieved_gbps["compiled"] == pytest.approx(1171, rel=0.01)
@@ -230,13 +236,18 @@ def test_a_column_reports_the_bandwidth_it_achieved():
 
 def test_bandwidth_is_absent_rather_than_guessed_when_bytes_are_not_supplied():
     """A column with no byte model must report nothing, not zero — zero is a measurement."""
-    result = run_interleaved({"compiled": lambda: None}, BenchConfig(rounds=3, warmup_rounds=0),
-                             timer=_FakeTimer({"compiled": 1.0}))
+    columns = make_columns(("compiled",))
+    result = run_interleaved(
+        columns, BenchConfig(rounds=3, warmup_rounds=0), timer=ScriptedTimer({"compiled": [1.0] * 3})
+    )
     assert result.achieved_gbps == {}
 ```
 
-Match `_FakeTimer` to whatever `bench_test.py` already uses; reuse the existing fixture
-rather than adding a second one.
+`ScriptedTimer` and `make_columns` already exist at the top of `bench_test.py` — reuse them
+rather than adding a second fixture. `ScriptedTimer` takes a **list** of durations per label
+and pops one per call, so supply `rounds` of them. Check how `BenchConfig` currently carries
+the workload before adding `workload=`; if it does not, pass `decode_tokens` to
+`run_interleaved` the way the existing tests do and divide by that instead.
 
 - [ ] **Step 7: Run it and watch it fail**
 
@@ -303,7 +314,7 @@ later ones; the runner cannot act on it.
 # in src/deltaforge/batch_test.py
 def test_a_slot_can_require_an_earlier_slots_ratio():
     p = Precondition(slug="015-gemv-bf16", floor=0.56, reason="quantisation cannot tie below this")
-    hypothesis = _hypothesis(slug="017-fp8", requires=p)
+    hypothesis = make_hypothesis(slug="017-fp8", requires=p)
     assert hypothesis.requires.floor == 0.56
 
 
@@ -311,8 +322,8 @@ def test_a_precondition_naming_a_slot_that_is_not_earlier_in_the_batch_is_refuse
     """A forward reference would silently never fire, which is worse than not having one."""
     with pytest.raises(ValueError, match="must name an earlier slot"):
         Batch(batch_id="x", hypotheses=(
-            _hypothesis(slug="a", requires=Precondition(slug="b", floor=0.5, reason="r")),
-            _hypothesis(slug="b"),
+            make_hypothesis(slug="a", requires=Precondition(slug="b", floor=0.5, reason="r")),
+            make_hypothesis(slug="b"),
         ))
 
 
@@ -329,6 +340,10 @@ def test_a_precondition_on_a_slot_that_errored_fails_closed():
     assert precondition_holds(Precondition("a", 0.56, "r"), {"a": None}) is False
 ```
 
+`batch_run_test.py` already has `hyp(slug, ...)`, `batch_of(*hypotheses)`, `FakeRunner`
+(whose `.ran` list records the slugs it was asked to run) and `silent`. Extend `hyp` to
+forward a `requires` keyword rather than writing a second builder.
+
 ```python
 # in src/deltaforge/batch_run_test.py
 def test_a_failed_precondition_records_why_rather_than_running_the_slot():
@@ -338,17 +353,21 @@ def test_a_failed_precondition_records_why_rather_than_running_the_slot():
     this means the batch decided the slot could not tell us anything. Flattening them would
     erase the evidence for whether the gate was set correctly.
     """
-    batch = Batch(batch_id="t", hypotheses=(
-        _slot("015-gemv-bf16"),
-        _slot("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "kernel not memory-bound")),
-    ))
-    runner = FakeRunner({"015-gemv-bf16": 0.28})
+    control = hyp("015-gemv-bf16")
+    batch = batch_of(
+        control,
+        hyp("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "kernel not memory-bound")),
+    )
+    runner = FakeRunner(
+        {"015-gemv-bf16": SlotResult(hypothesis=control, outcome="loss", median_ratio=0.28,
+                                     iqr_ratio=0.01, duration_s=100.0)}
+    )
 
-    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=time.time() + 3600))
+    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=1e12), log=silent)
 
     assert [r.outcome for r in results] == ["loss", "precondition_failed"]
     assert "kernel not memory-bound" in results[1].error
-    assert runner.slots_run == ["015-gemv-bf16"]
+    assert runner.ran == ["015-gemv-bf16"], "the skipped slot must not have been run"
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
@@ -438,37 +457,55 @@ def test_only_the_identity_champion_may_be_gated_exactly():
     prompts. Bit-identity is a property of the implementation, and only installing nothing
     has it. This is the third time the project has paid for the distinction."""
     with pytest.raises(ValueError, match="only the identity champion is bit-identical"):
-        _hypothesis(slug="015-gemv-bf16", kernels=("tiled_gemv_bf16",), correctness="exact")
+        make_hypothesis(slug="015-gemv-bf16", kernels=("tiled_gemv_bf16",), correctness="exact")
 
 
 def test_a_top1_bar_finer_than_the_sample_can_resolve_is_refused():
     """013 missed its bar by 0.000303 at n=264, where agreement quantises to 1/264 = 0.0038.
     A threshold an order of magnitude below one sample is not a decision procedure."""
     with pytest.raises(ValueError, match="finer than one sample"):
-        _hypothesis(correctness="approximate", top1_threshold=0.97, kl_threshold=0.02,
-                    correctness_positions=264)
+        make_hypothesis(correctness="approximate", top1_threshold=0.97, kl_threshold=0.02,
+                        correctness_positions=264)
 ```
 
 ```python
 # in src/deltaforge/harness/correctness_test.py
-def test_agreement_is_reported_with_the_interval_it_is_known_to():
-    """8 flips in 264 is 3.0% [1.3%, 5.9%] at 95%. Reporting 0.9697 alone invites a reader
-    to compare it against a bar it cannot be distinguished from."""
+def test_the_wilson_interval_brackets_the_agreement_it_reports():
+    """8 flips in 264 is 3.0% [1.3%, 5.9%] at 95%. Reporting 0.9697 alone invites a reader to
+    compare it against a bar it cannot be distinguished from. Uses the existing `model`
+    fixture, which is a float32 tiny_config ReferenceModel compared against itself."""
     result = check_distribution(model, model, [[1, 2, 3]], top1_threshold=0.9,
                                 kl_threshold=1.0, max_new_tokens=5)
+
     low, high = result.top1_interval
     assert 0.0 <= low <= result.top1_agreement <= high <= 1.0
 
 
-def test_kl_is_the_gate_and_agreement_is_reported_beside_it(model):
-    """KL is continuous and has no resolution floor; agreement quantises to 1/n. Batch 003
-    passed every KL bar by an order of magnitude and failed four slots on agreement."""
-    perturbed = _slightly_perturbed(model)
-    result = check_distribution(perturbed_pair(model, perturbed), top1_threshold=0.99,
-                                kl_threshold=1.0, max_new_tokens=8)
-    assert result.mean_kl <= result.kl_threshold
-    assert result.top1_agreement < result.top1_threshold
-    assert result.passed, "a slot inside its KL bar must not fail on a sub-resolution agreement bar"
+def test_a_sub_resolution_agreement_miss_does_not_fail_a_slot_inside_its_kl_bar():
+    """Batch 003's 013 failed by 0.000303 at n=264, where one sample is 0.0038.
+
+    Constructed rather than measured, because reproducing a miss that small on the tiny
+    config is not possible: this asserts the policy directly on the recorded numbers.
+    """
+    check = DistributionCheck(
+        top1_agreement=256 / 264, mean_kl=0.001216, max_kl=0.0091, num_positions=264,
+        top1_threshold=0.97, kl_threshold=0.02,
+    )
+
+    assert check.mean_kl <= check.kl_threshold
+    assert check.top1_agreement < check.top1_threshold
+    assert check.passed, "the KL bar was cleared and the agreement miss is inside the interval"
+
+
+def test_an_agreement_miss_outside_the_interval_still_fails():
+    """The relaxation must not make the agreement bar decorative. int4 at 226/264 against a
+    0.97 bar is a real miss: the interval does not reach it."""
+    check = DistributionCheck(
+        top1_agreement=226 / 264, mean_kl=0.001, max_kl=0.01, num_positions=264,
+        top1_threshold=0.97, kl_threshold=0.02,
+    )
+
+    assert not check.passed
 ```
 
 - [ ] **Step 2: Run them and watch them fail**
