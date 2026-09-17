@@ -1337,9 +1337,15 @@ def test_a_batch_run_invokes_the_batch_command_with_a_deadline(workdir):
     assert "deltaforge.cli batch" in result.stderr
     assert "--batch '001-calibration'" in result.stderr
     assert "--deadline-epoch" in result.stderr
-    # The batch replaces both single-hypothesis steps rather than running alongside them.
+    # The batch replaces both single-hypothesis *scored* steps rather than running
+    # alongside them. The one `cli bench` a batch run still makes is the output_code dump,
+    # which scores nothing: it writes into results/diagnostics, takes one round with no
+    # warmup, and is guarded so it cannot fail the run.
     assert "deltaforge.cli correctness" not in result.stderr
-    assert "deltaforge.cli bench" not in result.stderr
+    bench_steps = [line for line in result.stderr.splitlines() if "deltaforge.cli bench" in line]
+    assert len(bench_steps) == 1
+    assert "TORCH_LOGS=output_code" in bench_steps[0]
+    assert "results/diagnostics" in bench_steps[0]
 
 
 def test_a_single_hypothesis_run_still_takes_the_old_path(workdir):
@@ -2348,3 +2354,32 @@ def test_without_a_key_the_most_pessimistic_card_wins(tmp_path):
 def test_no_measured_phases_says_nothing_rather_than_zero(tmp_path):
     """Silence leaves the caller's cold defaults in place. A zero would read as free."""
     assert _phase_estimates(tmp_path) == {}
+
+
+# -- reading what we are trying to beat ------------------------------------------------
+
+
+def test_the_run_dumps_inductor_output_code_before_the_batch():
+    """Not a nicety. The one open question from rental 37 is what inductor emits for a
+    quantised linear -- 010 cut DRAM traffic 39% for 0% of time and the mechanism is still
+    unnamed -- and it costs a step rather than a rental. docs/HYPOTHESES.md has called this
+    mandatory since it was written; batch 003 skipped it."""
+    script = (REMOTE / "run_remote.sh").read_text()
+
+    assert "TORCH_LOGS=output_code" in script
+    assert script.index("TORCH_LOGS=output_code") < script.index("cli batch")
+
+
+def test_the_dump_is_pulled_home_with_the_results():
+    script = (REMOTE / "run_remote.sh").read_text()
+
+    assert "inductor-output-code" in script
+    assert "results/diagnostics" in script
+
+
+def test_the_dump_cannot_take_the_rental_with_it():
+    """A diagnostic that fails must cost the diagnostic, not the batch behind it."""
+    script = (REMOTE / "run_remote.sh").read_text()
+    line = next(line for line in script.splitlines() if "TORCH_LOGS=output_code" in line)
+
+    assert "|| true" in line

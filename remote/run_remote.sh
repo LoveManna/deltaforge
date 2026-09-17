@@ -95,6 +95,10 @@ DF_BENCH_TIMEOUT="${DF_BENCH_TIMEOUT:-2400}"
 # setup and the 12-minute reserve is already ~155 — or this backstop would become the thing
 # that ends healthy batches.
 DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-9600}"
+# The output_code dump is a diagnostic, not a measurement, so it gets a tight ceiling of
+# its own: it must never be able to eat the batch's clock. Two cold `max-autotune`
+# compiles measured 268 s each on rental 35, so 1200 s is generous.
+DF_DUMP_TIMEOUT="${DF_DUMP_TIMEOUT:-1200}"
 # Torch's fx-graph and autotune caches are enabled by default but write to
 # /tmp/torchinductor_<user> on a box that gets destroyed, so every rental this project has
 # ever run compiled cold -- and rental 22 spent ~40 minutes doing it. Point them somewhere
@@ -698,6 +702,19 @@ if df_stage_should_fail gputests; then
 fi
 df_log "running the GPU test suite: weight-value oracle and kernel numerics"
 remote_sh "DELTAFORGE_WEIGHTS_DIR='$DF_WEIGHTS_DIR' python -m pytest -m gpu -q"
+
+# Read what we are trying to beat, inside the rental that tries to beat it.
+#
+# `docs/HYPOTHESES.md` has said in bold since it was written that dumping inductor's
+# generated code "is not optional". Batch 003 skipped it, went straight to a rental, and
+# came back with `010-int8-dequant-torch` at 0.9893 -- a 39% cut in DRAM traffic for 0% of
+# time -- whose mechanism it still cannot name. It costs a step rather than a rental, and
+# both compiles land in the shared fx-graph and autotune caches, so the batch behind it
+# starts warm on the reference and on its identity slot.
+#
+# Guarded with `|| true`: a diagnostic that fails must cost the diagnostic, not the batch.
+df_log "dumping the code inductor generates (diagnostic; failures do not stop the run)"
+remote_sh "mkdir -p '$DF_REMOTE_DIR/results/diagnostics' && $DF_COMPILE_ENV TORCH_LOGS=output_code timeout ${DF_DUMP_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --rounds 1 --warmup-rounds 0 --output '$DF_REMOTE_DIR/results/diagnostics/inductor-dump-record.json' > '$DF_REMOTE_DIR/results/diagnostics/inductor-output-code.txt' 2>&1 || true"
 
 if [ -n "$DF_BATCH" ]; then
     # Batch mode runs the gates and the benchmark per hypothesis inside one process, so
