@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 
 from .batch import scoped_registry
-from .batches import BATCH_001, BATCH_002, BATCH_003, BATCHES, get_batch
+from .batches import BATCH_001, BATCH_002, BATCH_003, BATCH_004, BATCHES, get_batch
 from .config import tiny_config
 from .kernels import REGISTRY
 from .model import apply_champions
@@ -333,3 +333,150 @@ def test_only_batches_001_to_003_carry_the_pre_2026_09_17_exact_gate():
             assert not hypothesis.historical_exact_gate, (
                 f"{batch_id}/{hypothesis.slug} claims a gate this project has retired"
             )
+
+
+# -- batch 004 ------------------------------------------------------------------------
+
+
+def test_batch_004_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_004) <= 12
+    assert not BATCH_004.is_calibration
+    assert BATCH_004.hypotheses[0].is_identity
+    assert BATCH_004.calibration_slug == "000-identity"
+    assert get_batch("004-bandwidth-bound-gemv") is BATCH_004
+
+
+def test_batch_004_names_registered_kernels_with_installers():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_004:
+        for name in hyp.kernels:
+            assert name in REGISTRY, f"{hyp.slug!r} names unregistered kernel {name!r}"
+            assert name in INSTALLERS, f"{hyp.slug!r} names {name!r}, which has no installer"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_004), ids=lambda h: h.slug)
+def test_every_004_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = module_classes(model)
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    after = module_classes(model)
+    if hypothesis.is_identity:
+        assert applied == ()
+        assert after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels)
+        assert after != before, f"{hypothesis.slug!r} installed {applied} but changed no module class"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_004), ids=lambda h: h.slug)
+def test_installing_a_004_hypothesis_is_idempotent(hypothesis, model):
+    registry = scoped_registry(hypothesis, REGISTRY)
+    apply_champions(model, registry)
+    once = module_classes(model)
+
+    apply_champions(model, registry)
+
+    assert module_classes(model) == once
+
+
+def test_batch_004_gates_every_quantised_slot_on_the_bf16_control():
+    """Batch 003 spent five slots on variants its first slot had already settled."""
+    for hyp in BATCH_004:
+        if hyp.weight_bits:
+            assert hyp.requires is not None, f"{hyp.slug!r} would run regardless of the control"
+            assert hyp.requires.floor >= 0.56
+
+
+def test_the_bf16_control_is_not_predicted_to_win():
+    control = BATCH_004.get("015-tiled-gemv-bf16")
+
+    assert control.prediction == "inconclusive"
+    assert control.weight_bits == {}
+    assert control.byte_share == 0.0, "it moves not one byte fewer than the baseline"
+
+
+def test_every_004_slot_is_gated_approximately_except_the_identity():
+    for hyp in BATCH_004:
+        assert (hyp.correctness == "exact") == hyp.is_identity
+        assert not hyp.historical_exact_gate
+
+
+def test_004_byte_shares_agree_with_the_byte_model():
+    """A manifest's byte_share and its weight_bits must describe the same candidate.
+
+    `byte_share` in this repo is the share of per-token bytes a hypothesis *attacks*, not
+    the share it saves -- 012 carried 0.779 for the layer projections it quantised, not the
+    0.390 it removed. Deriving it from the same arithmetic the bench now uses stops the two
+    drifting.
+    """
+    from .config import qwen3_5_4b_config
+    from .harness.bytes_model import decode_bytes_per_token
+
+    config = qwen3_5_4b_config()
+    full = decode_bytes_per_token(config, weight_bits={}, context_length=2048)
+    for hyp in BATCH_004:
+        if not hyp.weight_bits:
+            continue
+        # Zero-width stand-in: bits=0 removes the attacked regions entirely, so the
+        # difference from bf16 is exactly the bytes those regions contribute.
+        without = decode_bytes_per_token(
+            config, weight_bits=dict.fromkeys(hyp.weight_bits, 0), context_length=2048
+        )
+        assert abs(hyp.byte_share - (full - without) / full) < 0.01, hyp.slug
+
+
+def test_the_004_fp8_slots_form_a_dose_response_ladder():
+    """018, 016 and 017 are one kernel over increasing shares of the weight stream.
+
+    A larger share buying a larger win is what distinguishes "the mechanism works" from
+    "something else moved". Two of them accidentally covering the same sites would erase
+    the ladder and nothing else would notice: each would still return a plausible ratio.
+    """
+    ladder = [BATCH_004.get(slug) for slug in ("018-fp8-mlp", "016-fp8-all-linear", "017-fp8-full")]
+    shares = [hyp.byte_share for hyp in ladder]
+
+    assert shares == sorted(shares), shares
+    assert len(set(shares)) == 3
+
+
+def test_the_int8_slot_attacks_exactly_the_sites_the_fp8_slot_does():
+    """019 minus 016 is the int8 conversion tax and nothing else. Batch 003 measured that
+    tax at 1.438x the time of bf16; if the two slots differed in sites it would measure
+    something else entirely."""
+    fp8 = BATCH_004.get("016-fp8-all-linear")
+    int8 = BATCH_004.get("019-int8-all-linear")
+
+    assert fp8.weight_bits == int8.weight_bits
+    assert fp8.byte_share == int8.byte_share
+    assert fp8.replaces == int8.replaces
+
+
+def test_the_int4_slot_waits_for_fp8_to_show_the_pipeline_is_clear():
+    """int4's extra unpack is only worth trying once 8 bits has actually won something."""
+    int4 = BATCH_004.get("020-int4-full")
+
+    assert int4.requires.slug == "016-fp8-all-linear"
+    assert int4.requires.floor >= 1.0
+    assert BATCH_004.hypotheses[-1] is int4, "the riskiest kernel runs last"
+
+
+def test_every_004_bar_is_derived_from_a_measured_point():
+    """Batch 003's bars came from priors about int8 being mild. It is mild; it still flips
+    3% of argmaxes on this checkpoint. Every bar here is written as a count out of the 264
+    positions batch 003 actually scored, so the number a reader checks is a number of
+    tokens rather than a fraction that looks precise."""
+    for hyp in BATCH_004:
+        if hyp.correctness != "approximate":
+            continue
+        assert hyp.correctness_positions == 264
+        assert hyp.kl_threshold is not None
+        flips = round((1.0 - hyp.top1_threshold) * 264)
+        assert 0 < flips < 264, hyp.slug
+
+
+def test_004_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_004:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"

@@ -20,9 +20,9 @@ them as fixed; several grow with the KV cache.
 
 from __future__ import annotations
 
-from .batch import Batch, Hypothesis
+from .batch import Batch, Hypothesis, Precondition
 
-__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "get_batch"]
+__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "BATCH_004", "get_batch"]
 
 
 BATCH_001 = Batch(
@@ -546,10 +546,262 @@ BATCH_003 = Batch(
 
 
 #: Every batch, by id.
+BATCH_004 = Batch(
+    batch_id="004-bandwidth-bound-gemv",
+    description=(
+        "Batch 003 produced seven admissible ratios and every one was a loss -- and it "
+        "produced the cause too: the hand-written GEMV ran at 332 GB/s against a compiled "
+        "baseline near 1200, and got *slower* as it removed bytes, which is the signature "
+        "of a kernel bound by instruction issue rather than bandwidth. This batch fixes "
+        "that kernel and then quantises on top of it. Slot 1 is the whole result: it moves "
+        "exactly cuBLAS's bytes, so its ratio is the divisor every quantised slot behind it "
+        "is read against, and every one of them is gated on it clearing 0.56 -- the point "
+        "below which halving the weight stream cannot even tie."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band. If it does not, the harness is "
+                "measuring something other than the kernel under test and every other "
+                "number in this batch is void -- which is a statement about the rental, not "
+                "about any hypothesis, and the writeup has to say so rather than reporting "
+                "the rest as findings."
+            ),
+        ),
+        Hypothesis(
+            slug="015-tiled-gemv-bf16",
+            kernels=("tiled_gemv_bf16",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=246 / 264,
+            kl_threshold=0.01,
+            weight_bits={},
+            mechanism=(
+                "009's GEMV rewritten around a tl.dot accumulator with a K-major weight "
+                "layout and split-K, so the cross-lane reduction that ran once per "
+                "K-iteration -- 20 times for K=2560, 72 for K=9216 -- runs once in total."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "Byte share 0.0: it moves not one byte fewer than the baseline, which is "
+                "the point. Tying is the honest expectation and its job is to be the "
+                "divisor, not to win. 009 returned 0.2801 on identical bytes and that one "
+                "number settled five slots behind it; the required improvement is 1.8x, not "
+                "4x, because quantisation ties at f=0.50 and that shows up here as 0.562. "
+                "Predicted 0.75-0.95: removing 20-72 reductions per output from an inner "
+                "loop is comfortably worth 1.8x, and the remaining gap to 1.0 is the "
+                "split-K reduction pass and whatever cuBLAS does that this does not. "
+                "Gated approximately rather than exactly: it computes the same function as "
+                "the reference but sums K in a different order from cuBLAS, which lands one "
+                "bf16 ULP away, and one ULP flips an argmax on this model -- 009 was gated "
+                "exact on that reasoning and matched 1 of 5 prompts. Its bars are int8's, "
+                "because one ULP of reordering is far inside them."
+            ),
+        ),
+        Hypothesis(
+            slug="016-fp8-all-linear",
+            kernels=("tiled_fp8_all_linear",),
+            category="B",
+            byte_share=0.7796,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=228 / 264,
+            kl_threshold=0.03,
+            weight_bits={"layers": 8},
+            requires=Precondition(
+                slug="015-tiled-gemv-bf16",
+                floor=0.56,
+                reason=(
+                    "quantisation halves the bytes, so it cannot even tie unless the kernel "
+                    "reaches half the baseline's byte rate; below 0.56 this slot would "
+                    "re-measure batch 003's 0.1962 in a new dtype"
+                ),
+            ),
+            mechanism=(
+                "e4m3 on every projection inside a decoder layer, converted to bf16 inside "
+                "the K-loop and rescaled once per output channel at the end. 77.9% of "
+                "per-token bytes at 8 bits: 5588 MB/token against 9158, a 1.64x ceiling."
+            ),
+            prediction="win",
+            rationale=(
+                "The direct fp8 counterpart of batch 003's 012, which returned 0.1962 on a "
+                "kernel that could not collect the saving. Predicted 1.15-1.30 against a "
+                "1.64x ceiling: the shortfall is the split-K reduction and the 22% of bytes "
+                "left in bf16. fp8 rather than int8 because batch 003 measured int8 at "
+                "1.438x the time of bf16 in the same kernel -- int8->fp32 is an ALU "
+                "instruction on the critical path, where sm_120 converts e4m3 inside the "
+                "MMA pipeline, and every finite e4m3 value is exactly a bf16 value so the "
+                "conversion is lossless. The KL bar is interpolated between two measured "
+                "points rather than taken from priors, which is how batch 003's bars went "
+                "wrong: int8 measured 0.0011 nats and int4 0.0919. e4m3's per-element "
+                "absolute error is about 3x int8's per-channel error on a Gaussian row and "
+                "about a quarter of group-128 int4's, and KL grows as the square of the "
+                "perturbation, so expect ~0.01 nats. The bar is 0.03, three times that. "
+                "The top-1 bar allows 36 flips of 264 against the ~24 that flip rate "
+                "implies, and it is written as a count because agreement quantises to 1/264 "
+                "and a bar finer than one sample is not a decision procedure."
+            ),
+        ),
+        Hypothesis(
+            slug="017-fp8-full",
+            kernels=("tiled_fp8_full",),
+            category="B",
+            byte_share=0.9184,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=228 / 264,
+            kl_threshold=0.03,
+            weight_bits={"layers": 8, "head": 8},
+            requires=Precondition(
+                slug="015-tiled-gemv-bf16",
+                floor=0.56,
+                reason="the same floor as 016: below it no byte saving can be collected",
+            ),
+            mechanism=(
+                "016 plus the tied LM head, which is 15.1% of weight bytes and the largest "
+                "single GEMV in the model. 91.8% of per-token traffic at 8 bits: 4953 "
+                "MB/token, the full 1.85x roofline ceiling. The embedding *lookup* stays "
+                "bf16 -- it reads one row, not the table."
+            ),
+            prediction="win",
+            rationale=(
+                "The top rung of the ladder and the batch's best chance at a champion. "
+                "Predicted 1.25-1.45 against a 1.85x ceiling. 017 minus 016 is exactly what "
+                "the head is worth, which batch 003 tried to measure as 013 minus 012 and "
+                "got -0.0084 -- a difference that says nothing, because both kernels were "
+                "issue-bound and the head's extra bytes were not what set their time. Same "
+                "bars as 016: same dtype, same quantiser, one more site."
+            ),
+        ),
+        Hypothesis(
+            slug="018-fp8-mlp",
+            kernels=("tiled_fp8_mlp",),
+            category="B",
+            byte_share=0.4946,
+            replaces=("swiglu_mlp",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=228 / 264,
+            kl_threshold=0.03,
+            weight_bits={"mlp": 8},
+            requires=Precondition(
+                slug="015-tiled-gemv-bf16",
+                floor=0.56,
+                reason="the same floor as 016: below it no byte saving can be collected",
+            ),
+            mechanism=(
+                "e4m3 on the three MLP projections only: 53.9% of the model's weight bytes "
+                "and 49.5% of per-token traffic, 6893 MB/token, a 1.33x ceiling."
+            ),
+            prediction="win",
+            rationale=(
+                "The low rung of the dose-response ladder, at 49.5% against 016's 77.9% and "
+                "017's 91.8%. Predicted 1.08-1.18 against a 1.33x ceiling. Its value is not "
+                "its own ratio: three slots on one kernel over three increasing shares is "
+                "what separates 'the mechanism works' from 'something else moved', and a "
+                "win here that is *smaller* than 016's is the evidence, where three "
+                "unrelated wins of similar size would be a reason to distrust all of them."
+            ),
+        ),
+        Hypothesis(
+            slug="019-int8-all-linear",
+            kernels=("tiled_int8_all_linear",),
+            category="B",
+            byte_share=0.7796,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=246 / 264,
+            kl_threshold=0.01,
+            weight_bits={"layers": 8},
+            requires=Precondition(
+                slug="015-tiled-gemv-bf16",
+                floor=0.56,
+                reason="the same floor as 016: below it no byte saving can be collected",
+            ),
+            mechanism=(
+                "The same sites and the same bit width as 016, stored int8 instead of e4m3. "
+                "Identical byte traffic; the only difference is which unit converts the "
+                "weight, and on sm_120 that is the ALU rather than the MMA pipeline."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "Two measurements in one slot. Against 016 it isolates the conversion tax "
+                "and nothing else -- same sites, same bytes, same kernel structure -- which "
+                "batch 003 could only infer at 1.438x from kernels that were issue-bound "
+                "anyway. Against batch 003's 012 it isolates the value of the kernel "
+                "rewrite: 0.1962 against whatever this returns, same sites and same "
+                "quantisation, with only the kernel structure changed. Predicted "
+                "inconclusive at 1.05-1.25 rather than a win, because if the conversion tax "
+                "survives the rewrite it lands here and nowhere else, and predicting a win "
+                "for both dtypes would make the pair unable to say anything. Bars are batch "
+                "003's own measurements at these exact sites: 012 scored 0.001096 nats and "
+                "9 flips of 264, so 0.01 nats and 18 flips leave an order of magnitude and "
+                "a factor of two."
+            ),
+        ),
+        Hypothesis(
+            slug="020-int4-full",
+            kernels=("tiled_int4_full",),
+            category="B",
+            byte_share=0.9184,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=207 / 264,
+            kl_threshold=0.15,
+            weight_bits={"layers": 4, "head": 4},
+            requires=Precondition(
+                slug="016-fp8-all-linear",
+                floor=1.05,
+                reason=(
+                    "int4's nibble unpack and its in-loop group scale are only worth trying "
+                    "once 8 bits has actually won something; if fp8 cannot clear 1.05 the "
+                    "extra work cannot be paid for by the extra bytes saved"
+                ),
+            ),
+            mechanism=(
+                "017's sites at 4 bits with per-group (128) scales, two values packed per "
+                "byte and unpacked in registers. 2850 MB/token: a 3.21x ceiling, the "
+                "largest in the backlog. The group scale varies along K so it cannot leave "
+                "the loop; it is applied to the weight tile before the dot rather than to a "
+                "partial sum, which keeps the accumulator's job unchanged."
+            ),
+            prediction="win",
+            rationale=(
+                "Highest ceiling and highest risk, so it runs last and behind the tightest "
+                "precondition in the batch. Predicted 1.4-1.9 against 3.21x: the shortfall "
+                "is the unpack, the in-loop scale multiply, and the bf16 rounding of the "
+                "scaled weight that the fp8 path does not pay. Bars are batch 003's own "
+                "int4 measurements at these exact sites -- 014 scored 0.091854 nats and 38 "
+                "flips of 264 -- so 0.15 nats and 57 flips leave roughly 1.5x on each. "
+                "in_proj_a and in_proj_b feed an exponential and are 32 output channels "
+                "wide; that is where this breaks if it breaks, and the layer-1 probes cover "
+                "that launch branch specifically."
+            ),
+        ),
+    ),
+)
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
     BATCH_003.batch_id: BATCH_003,
+    BATCH_004.batch_id: BATCH_004,
 }
 
 
