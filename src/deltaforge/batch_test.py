@@ -13,9 +13,11 @@ from .batch import (
     COLD_PHASE_ESTIMATES,
     Batch,
     Hypothesis,
+    Precondition,
     SlotBudget,
     calibration_holds,
     classify_outcome,
+    precondition_holds,
     scoped_registry,
     score_predictions,
     session_fits_one_hypothesis,
@@ -490,3 +492,73 @@ def test_an_approximate_hypothesis_with_both_bars_is_accepted():
     hypothesis = _hypothesis(correctness="approximate", top1_threshold=0.98, kl_threshold=0.01)
     assert hypothesis.top1_threshold == 0.98
     assert hypothesis.kl_threshold == 0.01
+
+
+# -- preconditions --------------------------------------------------------------------
+
+
+def test_a_slot_can_require_an_earlier_slots_ratio():
+    p = Precondition(slug="015-gemv-bf16", floor=0.56, reason="quantisation cannot tie below this")
+    hypothesis = make_hypothesis(slug="017-fp8", requires=p)
+
+    assert hypothesis.requires.floor == 0.56
+
+
+def test_a_precondition_naming_a_slot_that_is_not_earlier_in_the_batch_is_refused():
+    """A forward reference would silently never fire, which is worse than not having one."""
+    with pytest.raises(ValueError, match="must name an earlier slot"):
+        Batch(
+            batch_id="x",
+            hypotheses=(
+                make_hypothesis(slug="a", requires=Precondition(slug="b", floor=0.5, reason="r")),
+                make_hypothesis(slug="b"),
+            ),
+        )
+
+
+def test_a_precondition_naming_a_slot_the_batch_does_not_hold_is_refused():
+    """A typo'd slug is a precondition that can never hold, so the slot would never run."""
+    with pytest.raises(ValueError, match="must name an earlier slot"):
+        Batch(
+            batch_id="x",
+            hypotheses=(make_hypothesis(slug="a", requires=Precondition("z", 0.5, "r")),),
+        )
+
+
+def test_precondition_holds_when_the_named_slot_cleared_the_floor():
+    assert precondition_holds(Precondition("a", 0.56, "r"), {"a": 0.60}) is True
+
+
+def test_precondition_fails_when_it_did_not():
+    assert precondition_holds(Precondition("a", 0.56, "r"), {"a": 0.28}) is False
+
+
+def test_a_precondition_on_a_slot_that_errored_fails_closed():
+    """No ratio is not the same as a good ratio. Failing open would run the batch anyway."""
+    assert precondition_holds(Precondition("a", 0.56, "r"), {"a": None}) is False
+
+
+def test_no_precondition_always_holds():
+    assert precondition_holds(None, {}) is True
+
+
+def test_a_precondition_needs_a_reason_a_reader_can_act_on():
+    """`precondition_failed` is recorded with its reason and nothing else explains the skip."""
+    with pytest.raises(ValueError, match="reason"):
+        make_hypothesis(slug="b", requires=Precondition("a", 0.5, "  "))
+
+
+def test_a_precondition_skipped_slot_scores_no_prediction():
+    """It tested nothing. Counting it wrong understates the record exactly as counting it
+    right would flatter it -- the rule `error` and `not_run` already follow."""
+    batch = Batch(
+        batch_id="x",
+        hypotheses=(
+            make_hypothesis(slug="a", prediction="win"),
+            make_hypothesis(slug="b", prediction="win", requires=Precondition("a", 0.5, "r")),
+        ),
+    )
+
+    scores = score_predictions(batch, {"a": "loss", "b": "precondition_failed"})
+
+    assert [s.correct for s in scores] == [False, None]

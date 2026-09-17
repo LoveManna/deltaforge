@@ -38,6 +38,7 @@ from .batch import (
     SlotBudget,
     calibration_holds,
     classify_outcome,
+    precondition_holds,
     scoped_registry,
     score_predictions,
 )
@@ -610,7 +611,24 @@ def run_batch(
     runner.prepare_reference()
 
     results: list[SlotResult] = []
+    ratios: dict[str, float | None] = {}
     for index, hypothesis in enumerate(batch):
+        # Checked before the budget: a slot an earlier ratio has already settled should
+        # be skipped whether or not the clock would have allowed it, and skipping it is
+        # what buys the clock for the slots that are still open questions.
+        if not precondition_holds(hypothesis.requires, ratios):
+            need = hypothesis.requires
+            observed = ratios.get(need.slug)
+            seen = "no ratio" if observed is None else f"{observed:.4f}"
+            log(f"[batch] skipping {hypothesis.slug}: {need.slug} measured {seen}, needed {need.floor}")
+            results.append(
+                SlotResult(
+                    hypothesis=hypothesis,
+                    outcome="precondition_failed",
+                    error=(f"{need.slug} measured {seen} against a floor of {need.floor}: {need.reason}"),
+                )
+            )
+            continue
         if not budget.can_start():
             log(f"[batch] stopping before {hypothesis.slug}: {budget.why_not()}")
             # `not_run` means the batch stopped early having already measured something.
@@ -626,6 +644,7 @@ def run_batch(
         log(f"[batch] slot {index}/{len(batch) - 1}: {hypothesis.slug} (predicted {hypothesis.prediction})")
         result = runner.run_slot(hypothesis, cap_s=budget.cap_for(index))
         results.append(result)
+        ratios[hypothesis.slug] = result.median_ratio
         if result.duration_s is not None and result.outcome != "not_run":
             budget.record(result.duration_s)
         log(

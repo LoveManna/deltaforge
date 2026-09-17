@@ -13,14 +13,15 @@ from types import SimpleNamespace
 
 import pytest
 
-from .batch import Batch, Hypothesis, SlotBudget
+from .batch import Batch, Hypothesis, Precondition, SlotBudget
 from .batch_run import SlotResult, release_compiled_state, run_batch
 
 
-def hyp(slug: str, prediction: str = "inconclusive", kernels=("k",)) -> Hypothesis:
+def hyp(slug: str, prediction: str = "inconclusive", kernels=("k",), requires=None) -> Hypothesis:
     return Hypothesis(
         slug=slug,
         kernels=kernels,
+        requires=requires,
         category="A",
         byte_share=0.01,
         mechanism="does a thing",
@@ -642,3 +643,96 @@ def test_a_config_with_no_published_manifest_reports_no_bytes_rather_than_a_gues
     from .config import tiny_config
 
     assert _runner_for(tiny_config())._bytes_per_token(hyp("a")) == {}
+
+
+# -- a slot that declines to run ------------------------------------------------------
+
+
+def test_a_failed_precondition_records_why_rather_than_running_the_slot():
+    """`precondition_failed` is distinct from `not_run` on purpose.
+
+    `not_run` means the clock arrived first; `starved` means the rental scored nothing;
+    this means the batch decided the slot could not tell us anything. Flattening them would
+    erase the evidence for whether the gate was set correctly.
+    """
+    control = hyp("015-gemv-bf16")
+    batch = batch_of(
+        control,
+        hyp("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "kernel not memory-bound")),
+    )
+    runner = FakeRunner(
+        {
+            "015-gemv-bf16": SlotResult(
+                hypothesis=control,
+                outcome="loss",
+                median_ratio=0.28,
+                iqr_ratio=0.01,
+                duration_s=100.0,
+            )
+        }
+    )
+
+    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=1e12), log=silent)
+
+    assert [r.outcome for r in results] == ["loss", "precondition_failed"]
+    assert "kernel not memory-bound" in results[1].error
+    assert "0.28" in results[1].error, "the observed ratio belongs in the record"
+    assert runner.ran == ["015-gemv-bf16"], "the skipped slot must not have been run"
+
+
+def test_a_met_precondition_runs_the_slot():
+    control = hyp("015-gemv-bf16")
+    batch = batch_of(
+        control,
+        hyp("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "kernel not memory-bound")),
+    )
+    runner = FakeRunner(
+        {
+            "015-gemv-bf16": SlotResult(
+                hypothesis=control, outcome="loss", median_ratio=0.80, iqr_ratio=0.01, duration_s=100.0
+            )
+        }
+    )
+
+    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=1e12), log=silent)
+
+    assert runner.ran == ["015-gemv-bf16", "017-fp8"]
+    assert results[1].outcome != "precondition_failed"
+
+
+def test_a_failed_precondition_does_not_stop_the_batch():
+    """A later slot may have a different precondition, or none. Breaking would throw away
+    every slot behind the first one that declined."""
+    control = hyp("015-gemv-bf16")
+    batch = batch_of(
+        control,
+        hyp("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "not memory-bound")),
+        hyp("018-unrelated"),
+    )
+    runner = FakeRunner(
+        {
+            "015-gemv-bf16": SlotResult(
+                hypothesis=control, outcome="loss", median_ratio=0.28, iqr_ratio=0.01, duration_s=100.0
+            )
+        }
+    )
+
+    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=1e12), log=silent)
+
+    assert [r.outcome for r in results] == ["loss", "precondition_failed", "inconclusive"]
+    assert runner.ran == ["015-gemv-bf16", "018-unrelated"]
+
+
+def test_a_precondition_on_a_slot_that_errored_skips_rather_than_runs():
+    """Fails closed: no ratio is not a good ratio."""
+    control = hyp("015-gemv-bf16")
+    batch = batch_of(
+        control,
+        hyp("017-fp8", requires=Precondition("015-gemv-bf16", 0.56, "not memory-bound")),
+    )
+    runner = FakeRunner({"015-gemv-bf16": SlotResult(hypothesis=control, outcome="error", duration_s=10.0)})
+
+    results, _, _ = run_batch(runner, batch, budget=SlotBudget(deadline_epoch=1e12), log=silent)
+
+    assert results[1].outcome == "precondition_failed"
+    assert runner.ran == ["015-gemv-bf16"]

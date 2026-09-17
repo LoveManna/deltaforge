@@ -34,6 +34,7 @@ import math
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from .kernels import REGISTRY, KernelRegistry, KernelStatus, RegistryError
 
@@ -44,10 +45,12 @@ __all__ = [
     "PREDICTIONS",
     "Batch",
     "Hypothesis",
+    "Precondition",
     "PredictionScore",
     "SlotBudget",
     "calibration_holds",
     "classify_outcome",
+    "precondition_holds",
     "score_predictions",
     "scoped_registry",
     "session_fits_one_hypothesis",
@@ -85,7 +88,45 @@ PREDICTIONS = ("win", "loss", "inconclusive", "identity")
 #:           on purpose: `not_run` means the batch stopped early having already measured
 #:           something, `starved` means the rental produced nothing and the session gate
 #:           is the reason. It is the evidence for raising that gate.
-BATCH_OUTCOMES = ("win", "loss", "inconclusive", "incorrect", "error", "not_run", "starved")
+#: `precondition_failed` — an earlier slot's ratio settled this one, so it was not run.
+#:           Distinct from `not_run` again: the clock did not arrive, the batch decided.
+#:           Flattening the two would erase the evidence for whether the floor was right.
+BATCH_OUTCOMES = (
+    "win",
+    "loss",
+    "inconclusive",
+    "incorrect",
+    "error",
+    "not_run",
+    "starved",
+    "precondition_failed",
+)
+
+#: Outcomes that tested no prediction, so scoring one either way would be a fiction.
+UNSCORED_OUTCOMES = ("error", "not_run", "starved", "precondition_failed")
+
+
+class Precondition(NamedTuple):
+    """A floor an earlier slot's ratio must clear for this slot to be worth running.
+
+    Batch 003 is why. Its slot 1 measured a hand-written GEMV against cuBLAS on identical
+    bytes and returned 0.2801, which settled every quantisation slot behind it: a kernel at
+    28% of the baseline's byte rate cannot collect a byte saving. Five slots then re-measured
+    that fact at different bit widths. The batch could not stop, and the ordering rule that
+    put the informative slot first had no way to act on what it found.
+    """
+
+    slug: str
+    floor: float
+    reason: str
+
+
+def precondition_holds(precondition: Precondition | None, ratios_by_slug: dict[str, float | None]) -> bool:
+    """Fails closed. A slot that errored has no ratio, and no ratio is not a good one."""
+    if precondition is None:
+        return True
+    ratio = ratios_by_slug.get(precondition.slug)
+    return ratio is not None and ratio >= precondition.floor
 
 
 @dataclass(frozen=True)
@@ -115,6 +156,9 @@ class Hypothesis:
     #: bar. Both are read by `batch_run.BatchRunner._run_correctness`.
     top1_threshold: float | None = None
     kl_threshold: float | None = None
+    #: A floor an earlier slot in the same batch must clear for this one to be worth
+    #: running. `None` means the slot runs whenever the clock allows.
+    requires: Precondition | None = None
 
     def __post_init__(self) -> None:
         if self.correctness not in CORRECTNESS_POLICIES:
@@ -162,6 +206,11 @@ class Hypothesis:
                 f"{self.slug!r} predicts {self.prediction!r} with no rationale. The prediction is "
                 "the result; an unexplained one is worth nothing."
             )
+        if self.requires is not None and not self.requires.reason.strip():
+            raise ValueError(
+                f"{self.slug!r} carries a precondition with no reason. The reason is the only "
+                "thing a `precondition_failed` record says; without it the skip is unreadable."
+            )
 
     @property
     def is_identity(self) -> bool:
@@ -195,6 +244,14 @@ class Batch:
         for hyp in self.hypotheses:
             if hyp.slug in seen:
                 raise ValueError(f"batch {self.batch_id!r} lists {hyp.slug!r} twice")
+            # Checked against slots already seen, so a precondition on a later slot -- or
+            # on a slug this batch does not hold -- is refused here rather than silently
+            # never firing, which would look exactly like a slot that had no precondition.
+            if hyp.requires is not None and hyp.requires.slug not in seen:
+                raise ValueError(
+                    f"{hyp.slug!r} requires {hyp.requires.slug!r}, which must name an earlier slot "
+                    f"in batch {self.batch_id!r}; earlier slots are {sorted(seen)}"
+                )
             seen.add(hyp.slug)
 
     def __len__(self) -> int:
@@ -331,9 +388,9 @@ def score_predictions(
 ) -> tuple[PredictionScore, ...]:
     """Score each registered prediction against what was measured.
 
-    A slot that errored or never ran scores ``None``, not ``False``: the prediction was
-    never tested, and counting an untested prediction as wrong would understate the
-    record exactly as counting it right would flatter it.
+    A slot that errored, never ran, or declined on a precondition scores ``None``, not
+    ``False``: the prediction was never tested, and counting an untested prediction as
+    wrong would understate the record exactly as counting it right would flatter it.
 
     The identity slot is scored against ``calibrated`` rather than against its outcome,
     because "the candidate is the reference" is a claim about the harness, not about a
@@ -342,7 +399,7 @@ def score_predictions(
     scores = []
     for hyp in batch:
         outcome = outcomes.get(hyp.slug, "not_run")
-        if outcome in ("error", "not_run", "starved"):
+        if outcome in UNSCORED_OUTCOMES:
             correct: bool | None = None
         elif hyp.prediction == "identity":
             correct = calibrated

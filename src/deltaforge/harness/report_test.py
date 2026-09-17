@@ -489,3 +489,31 @@ def test_a_failed_approximate_gate_says_so_loudly():
     )
 
     assert "Approximate gate **FAILED**" in render_markdown(record)
+
+
+def test_a_precondition_skipped_slot_says_which_floor_it_missed():
+    """The skip is only useful if the writeup says what settled it and by how much.
+
+    A reader deciding whether the floor was set correctly needs the observed ratio beside
+    it; without that, `precondition_failed` is indistinguishable from a slot nobody ran.
+    """
+    from .report import render_batch_markdown
+
+    record = make_batch_record(
+        batch_id="004-x",
+        slots=[
+            {"slug": "015-control", "outcome": "loss", "median_ratio": 0.28, "prediction": "inconclusive"},
+            {
+                "slug": "016-fp8",
+                "outcome": "precondition_failed",
+                "prediction": "win",
+                "error": "015-control measured 0.2800 against a floor of 0.56: not memory-bound",
+            },
+        ],
+        predictions=[],
+    )
+
+    markdown = render_batch_markdown(record)
+
+    assert "Slots the batch declined" in markdown
+    assert "against a floor of 0.56" in markdown

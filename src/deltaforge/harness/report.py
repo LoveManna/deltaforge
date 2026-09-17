@@ -39,7 +39,18 @@ SCHEMA_VERSION = 1
 #: `not_run` only exists in batch mode: the deadline arrived before the slot did. It is
 #: recorded explicitly rather than omitted, because a hypothesis missing from a batch
 #: record must be distinguishable from one that ran and produced nothing.
-OUTCOMES = ("baseline", "win", "loss", "inconclusive", "incorrect", "error", "not_run")
+#: `precondition_failed` likewise: an earlier slot's ratio settled this one and the batch
+#: declined to re-measure a foregone conclusion. The clock did not arrive; the batch chose.
+OUTCOMES = (
+    "baseline",
+    "win",
+    "loss",
+    "inconclusive",
+    "incorrect",
+    "error",
+    "not_run",
+    "precondition_failed",
+)
 
 
 def _run(cmd: list[str]) -> str | None:
@@ -532,6 +543,20 @@ def render_batch_markdown(record: BatchRecord) -> str:
         lines += ["### Slots that errored", ""]
         for slot in errored:
             lines.append(f"- `{slot['slug']}` — {slot.get('error', 'no detail recorded')}")
+        lines.append("")
+
+    declined = [s for s in record.slots if s.get("outcome") == "precondition_failed"]
+    if declined:
+        lines += [
+            "### Slots the batch declined",
+            "",
+            "An earlier slot's ratio settled these, so the rental did not re-measure them. "
+            "The floor and the ratio that missed it are both recorded: whether the floor was "
+            "set correctly is a question about this batch, not about these hypotheses.",
+            "",
+        ]
+        for slot in declined:
+            lines.append(f"- `{slot['slug']}` — {slot.get('error', 'no reason recorded')}")
         lines.append("")
 
     not_run = [s for s in record.slots if s.get("outcome") == "not_run"]
