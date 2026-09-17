@@ -12,6 +12,7 @@ from __future__ import annotations
 import pytest
 import torch
 
+from .quantised_linear import INT4_MAX
 from .tiled_gemv import _launch_shape, to_k_major
 
 # -- layout ---------------------------------------------------------------------------
@@ -260,3 +261,227 @@ def test_an_installer_is_registered_for_the_kernel(model):
     from ..model import INSTALLERS
 
     assert "tiled_gemv_bf16" in INSTALLERS
+
+
+# -- quantisers -----------------------------------------------------------------------
+
+
+def _restore_fp8(weight):
+    from .tiled_gemv import quantise_fp8_per_channel
+
+    q = quantise_fp8_per_channel(weight)
+    return q.qweight.to(torch.float32) * q.scale.unsqueeze(1)
+
+
+def _restore_int8(weight):
+    from .quantised_linear import dequantise_int8, quantise_int8_per_channel
+
+    q = quantise_int8_per_channel(weight)
+    return dequantise_int8(q.qweight, q.scale)
+
+
+def _restore_int4(weight):
+    from .tiled_gemv import dequantise_int4_k_major, quantise_int4_k_major
+
+    q = quantise_int4_k_major(weight)
+    return dequantise_int4_k_major(q.qweight, q.scale, group_size=q.group_size).t()
+
+
+def test_fp8_e4m3_round_trip_keeps_the_per_channel_scale_meaningful():
+    from .tiled_gemv import quantise_fp8_per_channel
+
+    torch.manual_seed(0)
+    weight = torch.randn(16, 256)
+    weight[3] *= 100.0
+
+    q = quantise_fp8_per_channel(weight)
+
+    assert q.qweight.dtype is torch.float8_e4m3fn
+    assert q.scale.shape == (16,)
+    restored = q.qweight.to(torch.float32) * q.scale.unsqueeze(1)
+    # e4m3 carries 3 mantissa bits: ~6% worst-case relative error per element.
+    rel = ((restored - weight).abs() / weight.abs().clamp(min=1e-6)).max()
+    assert rel < 0.07
+
+
+def test_the_outlier_row_does_not_cost_the_others_their_range():
+    """Per-channel rather than per-tensor: one row 100x the rest would otherwise spend the
+    whole 8-bit range on itself."""
+    from .tiled_gemv import quantise_fp8_per_channel
+
+    torch.manual_seed(0)
+    weight = torch.randn(16, 256)
+    weight[3] *= 100.0
+
+    q = quantise_fp8_per_channel(weight)
+
+    assert q.scale[3] > 50 * q.scale[0]
+
+
+def test_fp8_is_coarser_than_int8_and_finer_than_int4():
+    """The accuracy ordering the batch-004 gates are derived from, asserted rather than assumed."""
+    torch.manual_seed(0)
+    weight = torch.randn(32, 512)
+
+    def err(restored):
+        return (restored - weight).abs().mean()
+
+    assert err(_restore_int8(weight)) < err(_restore_fp8(weight)) < err(_restore_int4(weight))
+
+
+def test_a_zero_row_does_not_become_nan():
+    """It cannot happen in a trained checkpoint, which is precisely why nothing would catch
+    it: NaN weights still look plausible downstream."""
+    from .tiled_gemv import quantise_fp8_per_channel
+
+    weight = torch.zeros(4, 64)
+    weight[1] = 1.0
+
+    q = quantise_fp8_per_channel(weight)
+
+    assert torch.isfinite(q.scale).all()
+    assert torch.isfinite(q.qweight.to(torch.float32)).all()
+
+
+def test_the_head_is_quantised_in_row_blocks_so_the_gate_does_not_oom():
+    """The tied head is 248320 x 2560; a single fp32 temporary of it is 2.5 GB, on a card
+    already holding the reference and its CUDA graphs."""
+    from .tiled_gemv import ROW_CHUNK_ELEMENTS
+
+    assert ROW_CHUNK_ELEMENTS <= 1 << 24
+
+
+# -- int4, K-major --------------------------------------------------------------------
+
+
+def test_int4_k_major_packing_round_trips():
+    from .tiled_gemv import dequantise_int4_k_major, quantise_int4_k_major
+
+    torch.manual_seed(0)
+    weight = torch.randn(32, 512)
+
+    q = quantise_int4_k_major(weight)
+    restored = dequantise_int4_k_major(q.qweight, q.scale, group_size=q.group_size)
+
+    assert q.qweight.shape == (256, 32), "packed [K/2, N]: two K-elements per byte"
+    assert q.scale.shape == (512 // q.group_size, 32)
+    assert restored.shape == (512, 32)
+    # Scored against the tensor's own scale, not per element: int4 sends a near-zero
+    # element to zero and a per-element relative error there is 1.0 by construction.
+    error = (restored - weight.t()).abs().max()
+    assert error < weight.abs().max() / INT4_MAX
+
+
+def test_int4_pairs_k_with_k_plus_half_so_one_byte_load_serves_two_k_blocks():
+    """The packing is what lets the kernel read one contiguous byte block and consume it
+    against two contiguous slices of x, each inside exactly one scale group."""
+    from .tiled_gemv import quantise_int4_k_major
+
+    torch.manual_seed(0)
+    weight = torch.randn(8, 512)
+
+    q = quantise_int4_k_major(weight)
+
+    low = (q.qweight & 0x0F).to(torch.int16) - 8
+    high = (q.qweight >> 4).to(torch.int16) - 8
+    assert low.shape == high.shape == (256, 8)
+    # Element (j, n) and element (j + 256, n) share a byte.
+    scale = q.scale
+    group = q.group_size
+    assert torch.allclose(
+        low[0].float() * scale[0 // group], weight.t()[0].float(), atol=scale[0].max().item()
+    )
+    assert torch.allclose(
+        high[0].float() * scale[256 // group], weight.t()[256].float(), atol=scale[256 // group].max().item()
+    )
+
+
+# -- installing the quantised variants ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("installer", "patched", "kind"),
+    [
+        ("install_tiled_fp8_all_linear", "TiledFp8Linear", "fp8"),
+        ("install_tiled_int8_all_linear", "TiledInt8Linear", "int8"),
+        ("install_tiled_int4_full", "TiledInt4Linear", "int4"),
+    ],
+)
+def test_each_quantised_installer_patches_every_layer_projection(model, installer, patched, kind):
+    from torch import nn
+
+    from . import tiled_gemv
+
+    getattr(tiled_gemv, installer)(model)
+
+    classes = {type(m).__name__ for m in model.layers.modules() if isinstance(m, nn.Linear)}
+    assert classes == {patched}
+
+
+def test_a_quantised_install_registers_buffers_and_leaves_the_parameters_shared(model):
+    from .tiled_gemv import install_tiled_fp8_all_linear
+
+    names_before = set(dict(model.named_parameters()))
+    install_tiled_fp8_all_linear(model)
+
+    assert set(dict(model.named_parameters())) == names_before
+    buffers = dict(model.named_buffers())
+    assert any(name.endswith("w_k_major") for name in buffers)
+    assert any(name.endswith("qscale") for name in buffers)
+
+
+def test_the_fp8_weight_is_stored_k_major_at_one_byte_per_element(model):
+    from torch import nn
+
+    from .tiled_gemv import install_tiled_fp8_all_linear
+
+    install_tiled_fp8_all_linear(model)
+
+    for module in model.layers.modules():
+        if isinstance(module, nn.Linear):
+            assert module.w_k_major.dtype is torch.float8_e4m3fn
+            assert module.w_k_major.shape == (module.in_features, module.out_features)
+
+
+def test_installing_the_head_routes_project_logits_through_the_kernel(model):
+    """The tied head is 15.1% of weight bytes and has no `nn.Linear` to swap."""
+    from .tiled_gemv import install_tiled_fp8_full
+
+    before = type(model).__name__
+    install_tiled_fp8_full(model)
+
+    assert type(model).__name__ != before
+    assert hasattr(model, "tiled_lm_head")
+    assert model.tiled_lm_head.w_k_major.shape == (
+        model.lm_head_weight.shape[1],
+        model.lm_head_weight.shape[0],
+    )
+
+
+def test_the_mlp_installer_leaves_the_attention_projections_alone(model):
+    """018's whole job is to be a smaller dose than 016. If it patched everything the
+    dose-response ladder would have two identical rungs and say nothing."""
+    from torch import nn
+
+    from .tiled_gemv import install_tiled_fp8_mlp
+
+    install_tiled_fp8_mlp(model)
+
+    patched = [type(m).__name__ for m in model.layers.modules() if isinstance(m, nn.Linear)]
+    assert "Linear" in patched and "TiledFp8Linear" in patched
+
+
+@pytest.mark.parametrize(
+    "kernel",
+    ["tiled_fp8_mlp", "tiled_fp8_all_linear", "tiled_fp8_full", "tiled_int8_all_linear", "tiled_int4_full"],
+)
+def test_every_batch_004_kernel_has_its_own_checks_and_installer(kernel):
+    """Keyed by kernel name, not by replaced operation: four of these five replace
+    `decode_step`, and an op-keyed table would run one's checks against another's weights
+    and report `pass`."""
+    from ..model import INSTALLERS
+    from . import CHECK_BUILDERS, REGISTRY
+
+    assert REGISTRY.get(kernel) is not None
+    assert kernel in CHECK_BUILDERS
+    assert kernel in INSTALLERS

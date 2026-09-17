@@ -649,3 +649,23 @@ def test_a_bar_with_no_declared_sample_size_is_not_checked_for_resolution():
     hypothesis = make_hypothesis(correctness="approximate", top1_threshold=0.97, kl_threshold=0.02)
 
     assert hypothesis.correctness_positions is None
+
+
+# -- what a hypothesis re-encodes -----------------------------------------------------
+
+
+def test_a_hypothesis_declares_which_weight_regions_it_re_encodes():
+    """The bench divides bytes by time. A hypothesis that did not say what it re-encodes
+    would be scored against bf16 byte counts and report a bandwidth it never achieved."""
+    hypothesis = make_hypothesis(weight_bits={"layers": 8})
+
+    assert hypothesis.weight_bits == {"layers": 8}
+
+
+def test_a_hypothesis_that_re_encodes_nothing_declares_nothing():
+    assert make_hypothesis().weight_bits == {}
+
+
+def test_a_typo_in_weight_bits_fails_on_a_laptop_rather_than_on_a_rented_box():
+    with pytest.raises(ValueError, match="unknown weight region"):
+        make_hypothesis(weight_bits={"mpl": 8})

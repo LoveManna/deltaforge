@@ -17,11 +17,14 @@ from .batch import Batch, Hypothesis, Precondition, SlotBudget
 from .batch_run import SlotResult, release_compiled_state, run_batch
 
 
-def hyp(slug: str, prediction: str = "inconclusive", kernels=("k",), requires=None) -> Hypothesis:
+def hyp(
+    slug: str, prediction: str = "inconclusive", kernels=("k",), requires=None, weight_bits=None
+) -> Hypothesis:
     return Hypothesis(
         slug=slug,
         kernels=kernels,
         requires=requires,
+        weight_bits=weight_bits or {},
         category="A",
         byte_share=0.01,
         mechanism="does a thing",
@@ -640,6 +643,19 @@ def test_a_slot_scores_both_columns_against_the_checkpoints_own_byte_count():
 
     assert set(per_token) == {"compiled", "candidate_compiled"}
     assert per_token["compiled"] == pytest.approx(9158.23, abs=1.0)
+    assert per_token["candidate_compiled"] == per_token["compiled"], "declares no re-encoding"
+
+
+def test_a_quantised_slot_is_scored_against_the_bytes_it_actually_moves():
+    """Scoring a quantised candidate against bf16 byte counts would report a bandwidth it
+    never achieved, and that number is the one the batch is read on."""
+    from .config import qwen3_5_4b_config
+
+    runner = _runner_for(qwen3_5_4b_config())
+    per_token = runner._bytes_per_token(hyp("a", weight_bits={"layers": 8}))
+
+    # The layer projections are 7140 MB/token of the 9158 total; half of that is removed.
+    assert per_token["compiled"] - per_token["candidate_compiled"] == pytest.approx(3570.0, abs=5.0)
 
 
 def test_a_config_with_no_published_manifest_reports_no_bytes_rather_than_a_guess():

@@ -505,3 +505,75 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_gemv_bf16", _tiled_gemv.tiled_bf16_correctness_checks)
+
+REGISTRY.register(
+    "tiled_fp8_mlp",
+    impl=_tiled_gemv.tiled_gemv_fp8,
+    replaces="swiglu_mlp",
+    hypothesis="018-fp8-mlp",
+    notes=(
+        "e4m3 on the three MLP projections only: 53.9% of the model's weight bytes and "
+        "49.5% of per-token traffic. The low rung of the dose-response ladder -- a smaller "
+        "share buying a smaller win is what distinguishes 'the mechanism works' from "
+        "'something else moved'."
+    ),
+)
+register_checks("tiled_fp8_mlp", _tiled_gemv.tiled_fp8_mlp_correctness_checks)
+
+REGISTRY.register(
+    "tiled_fp8_all_linear",
+    impl=_tiled_gemv.tiled_gemv_fp8,
+    replaces="decode_step",
+    hypothesis="016-fp8-all-linear",
+    notes=(
+        "e4m3 on every projection inside a decoder layer: 77.9% of per-token bytes. The "
+        "direct fp8 counterpart of batch 003's 012, which returned 0.1962 on a kernel that "
+        "could not collect the saving. Every finite e4m3 value is exactly a bf16 value, so "
+        "the conversion this kernel performs is lossless."
+    ),
+)
+register_checks("tiled_fp8_all_linear", _tiled_gemv.tiled_fp8_correctness_checks)
+
+REGISTRY.register(
+    "tiled_fp8_full",
+    impl=_tiled_gemv.tiled_gemv_fp8,
+    replaces="decode_step",
+    hypothesis="017-fp8-full",
+    notes=(
+        "016 plus the tied LM head, which is 15.1% of weight bytes and the largest single "
+        "GEMV in the model: 91.8% of per-token traffic at 8 bits, a 1.85x roofline ceiling. "
+        "The embedding *lookup* stays bf16 -- it reads one row, not the table."
+    ),
+)
+register_checks("tiled_fp8_full", _tiled_gemv.tiled_fp8_full_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int8_all_linear",
+    impl=_tiled_gemv.tiled_gemv_int8,
+    replaces="decode_step",
+    hypothesis="019-int8-all-linear",
+    notes=(
+        "The same sites and the same bit width as 016, stored int8 instead of e4m3. Batch "
+        "003 measured int8 at 1.438x the time of bf16 in the same kernel because int8->fp32 "
+        "is an ALU instruction on the critical path, where sm_120 converts e4m3 inside the "
+        "MMA pipeline. Adjacent to 016 so the difference between them is that tax alone, "
+        "and it is also the direct re-run of 012: 0.1962 against whatever it now returns is "
+        "the value of the kernel rewrite, isolated."
+    ),
+)
+register_checks("tiled_int8_all_linear", _tiled_gemv.tiled_int8_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_full",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="020-int4-full",
+    notes=(
+        "The same sites as 017 at 4 bits with per-group (128) scales, two values packed per "
+        "byte and unpacked in registers. Ceiling 3.21x and the largest accuracy risk in the "
+        "batch: batch 003's int4 measured 0.0919 nats and 38/264 flips. The group scale "
+        "varies along K, so it is applied to the weight tile before the dot rather than to "
+        "a partial sum -- no cross-lane reduction enters the loop."
+    ),
+)
+register_checks("tiled_int4_full", _tiled_gemv.tiled_int4_correctness_checks)

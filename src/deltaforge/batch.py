@@ -172,6 +172,13 @@ class Hypothesis:
     #: A floor an earlier slot in the same batch must clear for this one to be worth
     #: running. `None` means the slot runs whenever the clock allows.
     requires: Precondition | None = None
+    #: Which weight regions this candidate re-encodes, and at how many bits — the keys
+    #: `harness.bytes_model.WEIGHT_REGIONS` names, plus the alias `layers`. The bench
+    #: divides bytes by time, so a hypothesis that did not declare this would be scored
+    #: against bf16 byte counts and report a bandwidth it never achieved. Empty means the
+    #: candidate streams the reference's own bytes, which is what makes a bf16 control a
+    #: control.
+    weight_bits: dict[str, int] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.correctness not in CORRECTNESS_POLICIES:
@@ -229,6 +236,12 @@ class Hypothesis:
                 f"{self.slug!r} predicts {self.prediction!r} with no rationale. The prediction is "
                 "the result; an unexplained one is worth nothing."
             )
+        if self.weight_bits:
+            # Validated here so a manifest typo fails on a laptop rather than scoring a
+            # candidate against the wrong byte count on a rented box.
+            from .harness.bytes_model import validate_weight_bits  # noqa: PLC0415
+
+            validate_weight_bits(self.weight_bits)
         if self.requires is not None and not self.requires.reason.strip():
             raise ValueError(
                 f"{self.slug!r} carries a precondition with no reason. The reason is the only "

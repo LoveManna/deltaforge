@@ -258,3 +258,40 @@ def _install_tiled_gemv_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
 
 
 register_installer("tiled_gemv_bf16", _install_tiled_gemv_bf16)
+
+
+def _install_tiled_fp8_mlp(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_fp8_mlp  # noqa: PLC0415
+
+    install_tiled_fp8_mlp(model, entry)
+
+
+def _install_tiled_fp8_all_linear(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_fp8_all_linear  # noqa: PLC0415
+
+    install_tiled_fp8_all_linear(model, entry)
+
+
+def _install_tiled_fp8_full(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_fp8_full  # noqa: PLC0415
+
+    install_tiled_fp8_full(model, entry)
+
+
+def _install_tiled_int8_all_linear(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int8_all_linear  # noqa: PLC0415
+
+    install_tiled_int8_all_linear(model, entry)
+
+
+def _install_tiled_int4_full(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_full  # noqa: PLC0415
+
+    install_tiled_int4_full(model, entry)
+
+
+register_installer("tiled_fp8_mlp", _install_tiled_fp8_mlp)
+register_installer("tiled_fp8_all_linear", _install_tiled_fp8_all_linear)
+register_installer("tiled_fp8_full", _install_tiled_fp8_full)
+register_installer("tiled_int8_all_linear", _install_tiled_int8_all_linear)
+register_installer("tiled_int4_full", _install_tiled_int4_full)

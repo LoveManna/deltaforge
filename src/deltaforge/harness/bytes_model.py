@@ -32,6 +32,7 @@ __all__ = [
     "WEIGHT_REGIONS",
     "decode_bytes_per_token",
     "traffic",
+    "validate_weight_bits",
     "weight_bytes",
 ]
 
@@ -174,6 +175,12 @@ def _expand(weight_bits: Mapping[str, int]) -> dict[str, int]:
         for target in targets:
             bits[target] = width
     return bits
+
+
+def validate_weight_bits(weight_bits: Mapping[str, int]) -> None:
+    """Raise on an unknown region name. `Hypothesis` calls this so a typo in a manifest
+    fails on a laptop rather than scoring a candidate against the wrong byte count."""
+    _expand(weight_bits)
 
 
 def decode_bytes_per_token(

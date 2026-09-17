@@ -402,8 +402,9 @@ class BatchRunner:
         try:
             return {
                 self.bench_config.baseline: decode_bytes_per_token(self.config, weight_bits={}, **shape),
-                # bf16 until a hypothesis can declare what it re-encodes.
-                CANDIDATE_COLUMN: decode_bytes_per_token(self.config, weight_bits={}, **shape),
+                CANDIDATE_COLUMN: decode_bytes_per_token(
+                    self.config, weight_bits=hypothesis.weight_bits, **shape
+                ),
             }
         except ValueError as exc:
             self.log(f"[batch] {hypothesis.slug}: no byte model ({exc}); bandwidth not reported")
