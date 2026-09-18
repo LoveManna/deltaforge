@@ -135,18 +135,50 @@ def traffic(config: ModelConfig, groups: dict[str, int], batch: int, context: in
     }
 
 
+#: The fields that decide which tensor manifest a config describes. Everything here
+#: changes a tensor shape; nothing here is a naming or provenance detail.
+_SHAPE_FIELDS = (
+    "hidden_size",
+    "intermediate_size",
+    "num_hidden_layers",
+    "vocab_size",
+    "num_attention_heads",
+    "num_key_value_heads",
+    "head_dim",
+    "linear_num_key_heads",
+    "linear_num_value_heads",
+    "linear_key_head_dim",
+    "linear_value_head_dim",
+    "tie_word_embeddings",
+)
+
+
+def _shape_of(config: ModelConfig) -> tuple:
+    return tuple(getattr(config, field) for field in _SHAPE_FIELDS)
+
+
 def _repo_for(config: ModelConfig) -> str:
-    """The published checkpoint a config was transcribed from, by its ``name``.
+    """The published checkpoint a config describes, matched on shape.
 
     ``ModelConfig`` does not carry a repo id — it is the shape of a model, not a pointer to
-    one — but the manifest is keyed by repo. Matching on ``name`` keeps the lookup in one
-    place instead of asking every caller to pass a string it does not otherwise need.
+    one — but the manifest is keyed by repo, so the lookup lives here rather than in every
+    caller.
+
+    **Matched on shape, not on ``name``.** A rental's config comes from the checkpoint's own
+    ``config.json`` via `from_hf_config`, which sets ``name`` from ``model_type`` —
+    ``'qwen3_5'``, never the ``'qwen3.5-4b'`` the transcription in `MODELS` carries. So a
+    name match resolved the only configs that never need resolving and failed on every one
+    that does: rental 38 reported "no byte model" on all seven slots and shipped no
+    bandwidth at all. The shape fields are what the manifest is actually about.
     """
+    wanted = _shape_of(config)
     for repo_id, factory in MODELS.items():
-        if factory().name == config.name:
+        if _shape_of(factory()) == wanted:
             return repo_id
     raise ValueError(
-        f"no tensor manifest for config {config.name!r}; known: "
+        f"no tensor manifest for a config shaped like {config.name!r} "
+        f"(hidden {config.hidden_size}, {config.num_hidden_layers} layers, "
+        f"vocab {config.vocab_size}); known: "
         f"{sorted(factory().name for factory in MODELS.values())}"
     )
 

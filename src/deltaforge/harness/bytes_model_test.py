@@ -37,3 +37,31 @@ def test_an_unknown_region_is_refused_rather_than_ignored():
     """A typo in a manifest must not silently score against bf16 bytes."""
     with pytest.raises(ValueError, match="unknown weight region"):
         decode_bytes_per_token(qwen3_5_4b_config(), weight_bits={"mpl": 8}, context_length=2048)
+
+
+def test_the_config_a_rented_box_builds_resolves_to_the_same_manifest():
+    """On a rental the config comes from the checkpoint's own `config.json`, and
+    `from_hf_config` sets `name` from `model_type` -- `'qwen3_5'`, not `'qwen3.5-4b'`.
+
+    Matching on the name therefore never resolved a config that had actually been loaded
+    from a checkpoint, which is the only kind a rental ever has. Rental 38 reported
+    "no byte model" on every slot for exactly this and shipped no bandwidth at all. The
+    lookup matches on the shape fields that determine the tensor manifest instead, because
+    those are what the manifest is about.
+    """
+    from dataclasses import replace
+
+    as_a_rental_builds_it = replace(qwen3_5_4b_config(), name="qwen3_5")
+
+    mb = decode_bytes_per_token(as_a_rental_builds_it, weight_bits={}, context_length=2048)
+
+    assert abs(mb - 9158.23) < 1.0
+
+
+def test_a_config_whose_shape_matches_no_manifest_is_still_refused():
+    """The guard has to stay a guard: an unknown model must report nothing, not the wrong
+    checkpoint's byte count."""
+    from ..config import tiny_config
+
+    with pytest.raises(ValueError, match="no tensor manifest"):
+        decode_bytes_per_token(tiny_config(), weight_bits={}, context_length=2048)
