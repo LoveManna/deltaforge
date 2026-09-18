@@ -189,7 +189,58 @@ expected, and it is exactly why the score is a within-slot ratio and absolute ti
 provenance only. A batch that compared slot 6's candidate against slot 0's reference would
 have invented a 13% effect out of the cooling fan.
 
-## The gap this batch found: slots cannot be conditional
+## Measured costs, rental 38 (2026-09-17) — batch 004, two slots run and five declined
+
+The first batch to stop itself. RTX 5090 at $0.4363/hr, warm compile cache pulled from
+rental 37.
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **39.65 minutes, $0.2883** |
+| Fixed cost before slot 0 | **~30 minutes** — of which the checkpoint fetch alone was **10m49s** |
+| The `output_code` dump step | ~4 minutes, two `max-autotune` compiles, both cached forward |
+| Slot 0 — identity, includes the reference compile | **187 s** |
+| Slot 1 — one Triton kernel on 248 sites | **306 s** (benchmark 293 s, correctness gate 13 s) |
+| Slots 2-6 | **0 s** — `precondition_failed`, never built |
+
+**The fixed cost is not ~19 minutes; it is 19-30 and the variable is the network.** The
+9.32 GB checkpoint took 10m49s here against a few minutes on rental 37, from the same
+unauthenticated HuggingFace endpoint. Budget the pessimistic figure: the difference is a
+whole slot.
+
+**The `output_code` dump costs about one slot and pays for two.** Both of its compiles land
+in the shared fx-graph and autotune caches, so the batch behind it starts warm on the
+reference and on the identity slot — and what it produced closed a 6.23% backlog entry that
+five rentals of kernel work had not touched. Run it every time.
+
+**Declining a slot is free.** Five `precondition_failed` records cost nothing but the line
+that wrote them; the batch went from a projected ~70 minutes to 39.65.
+
+## The gap this batch found: slots cannot be conditional — closed 2026-09-17
+
+**Built on rental 38 and it fired on its first outing.** `Hypothesis.requires` names an
+earlier slug and a floor; `precondition_holds` fails closed, so a slot that errored and has
+no ratio declines the slots behind it rather than letting them run; `precondition_failed` is
+its own outcome, distinct from `not_run` (the clock) and `starved` (the rental scored
+nothing), and it scores no prediction because it tested none.
+
+Batch 004's control returned 0.1934 against a 0.56 floor and all five quantised slots
+declined. The batch ended at 39.65 billed minutes against batch 003's 55.55 in the identical
+situation — where batch 003 had re-measured the same settled fact at five bit widths.
+
+Two things learned from using it:
+
+* **Put the floor's *reason* in the manifest, not just the number.** It is the only text a
+  `precondition_failed` record carries, and it is what a reader needs to judge whether the
+  floor was right rather than merely whether it fired.
+* **A declined slot writes no individual result file.** `run_batch` appends the result but
+  does not call `on_slot`, so the batch directory holds a file per slot that *ran* and the
+  skips live only in `summary.json`. That matches how `not_run` already behaves; it is worth
+  knowing before looking for a file that is not there.
+
+The historical account of the gap follows.
+
+### How the gap looked before it was closed
 
 Batch 003 spent **five of seven slots** on quantisation variants whose outcome was fully
 determined the moment slot 1 returned 0.2801. `009-gemv-bf16-control` moves exactly cuBLAS's
@@ -208,8 +259,5 @@ for a slot the batch declines to start, and it should record *why* — `not_run`
 precondition failed is a different fact from `not_run` because the clock ran out, and
 flattening them would erase the evidence.
 
-The first user is already written: `docs/HYPOTHESES.md` entry 6 carries the gate **"the bf16
-GEMV control must reach ≥ 0.56 before any quantised slot is worth running"**, and
-`docs/superpowers/plans/2026-09-17-bandwidth-bound-gemv.md` Task 2 specifies the
-`Precondition` type, the `precondition_failed` outcome and the fail-closed rule for a slot
-that errored and therefore has no ratio at all.
+The first user was `docs/HYPOTHESES.md` entry 6's gate — **"the bf16 GEMV control must reach
+≥ 0.56 before any quantised slot is worth running"** — and it is the one that fired.

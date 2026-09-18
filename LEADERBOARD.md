@@ -13,15 +13,26 @@
 | Last verified on | — |
 | Result record | — |
 
-**Still no champion — but for the first time the reason is a measurement rather than a
-defect.** On 2026-09-16 (rental 37) batch 003 returned **seven admissible ratios**:
-`calibrated: true`, `graphs_compiled` non-zero on every slot, no slot voided. Every one of
-them lost. Nothing here is estimated, projected, or placeheld.
+**Still no champion, and rental 38 moved the reason.** Batch 003 (rental 37) returned seven
+admissible ratios and every one lost; batch 004 (rental 38, 2026-09-17) rewrote the kernel
+that lost hardest around the cause batch 003 named — and it got **worse**, 0.2801 → 0.1934.
+The batch's preconditions then declined the five quantised slots behind it. Nothing here is
+estimated, projected, or placeheld.
 
-**The baseline is now characterised, which it never was.** The compiled reference runs at
-**6.84 ms/token — 1308 GB/s, 73% of an RTX 5090's 1790 GB/s vendor peak** — against a
-5.11 ms/token roofline. That number is the denominator for every hypothesis in the backlog
-and it says the compiler is already most of the way to the wall.
+**The baseline is now characterised properly, and the earlier figure was wrong twice.**
+Rental 38's `TORCH_LOGS=output_code` dump — the diagnostic `docs/HYPOTHESES.md` had called
+mandatory and four rentals had skipped — shows that inductor **folds the GQA head expansion
+into index arithmetic**, so the compiled column never moves the 570.43 MB/token the roofline
+attributes to it. Against the **8587.80 MB/token it actually moves**, the compiled reference
+runs at **7.30 ms/token — 1177 GB/s, 65.7% of an RTX 5090's 1792 GB/s vendor peak.** (The
+"1308 GB/s, 73%" recorded after batch 003 was high on both counts: it counted the folded
+expansion, and it mixed SI megabytes with binary gigabytes per second, which is worth 2.4%.)
+
+**The baseline is generated Triton, not cuBLAS, and it is fused.** `extern_kernels` is
+called for convolution and nothing else — no `mm`, no `addmm` — and inductor's matmul
+kernels carry the residual add and the RMSNorm inside them. It also runs with **no CUDA
+graphs**, because `_causal_conv` mutates its cache in place. See
+[`results/batches/004-bandwidth-bound-gemv/README.md`](results/batches/004-bandwidth-bound-gemv/README.md).
 
 **The reference's reading of the weight *values* is no longer settled** — it matched
 HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10 and again on
@@ -134,13 +145,14 @@ be the risky case. See `docs/GPU-ACCESS.md`,
 
 | | |
 |---|---|
-| Status | **not recorded** |
+| Status | **characterised, not promoted** — 7.30 ms/token, 1177 GB/s, 65.7% of peak (rental 38) |
 | Definition | `src/deltaforge/reference.py` under `torch.compile(mode="max-autotune")` |
 | Headline workload | batch 1, context 2048, 128 decoded tokens |
 | Secondary workload | batch 32, context 2048, 128 decoded tokens |
 | Model | `Qwen/Qwen3.5-4B` (see `docs/ARCHITECTURE.md` on why not a newer one) |
 | Roofline at headline | 5.11 ms/token, 196 tok/s on an RTX 5090 — `docs/roofline.py` |
-| Record | `results/baseline/` (empty) |
+| Bytes the compiled column actually moves | **8587.80 MB/token** — the roofline's 9158.23 less the GQA expansion inductor folds away |
+| Record | `results/baseline/` (empty); the numbers are in `results/batches/004-bandwidth-bound-gemv/` |
 
 ## Hypotheses
 
@@ -245,6 +257,45 @@ so it is impossible; inductor either fuses the dequant or keeps the transient in
 
 Full account, including the bandwidth table and the ranked plan that follows from it:
 [`results/batches/003-int8-weight-only/README.md`](results/batches/003-int8-weight-only/README.md).
+
+### Batch 004 — a GEMV that is actually bandwidth-bound, 2026-09-17 (rental 38)
+
+**The rewrite made it slower, and the free diagnostic was worth more than the batch.** Two
+slots ran, five declined on a precondition. Predictions scored **1 of 2**; the five untested
+ones are recorded as untested, not as wrong.
+
+| ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
+|---|---|---|---:|---:|---|---|---|---|
+| 000 | Identity champion | — | **0.9913** | 0.0159 | RTX 5090 | 5/5 exact | calibrated | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 015 | Tiled bf16 GEMV: `tl.dot`, K-major, split-K (control) | `decode_step` | **0.1934** | 0.0028 | RTX 5090 | pass — 261/264, KL 0.00060 | **`loss`** | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 016 | fp8 e4m3, all layer projections | `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 017 | 016 plus the tied LM head | `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 018 | fp8 e4m3, MLP only | `swiglu_mlp` | — | — | — | — | `precondition_failed` | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 019 | int8, all layer projections | `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/004-bandwidth-bound-gemv/) |
+| 020 | int4 group-128, all sites plus head | `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/004-bandwidth-bound-gemv/) |
+
+**015 is 009 with a different inside.** Same sites, same bytes, same hypothesis — a
+hand-written bf16 GEMV moving exactly what the compiler moves — with the cross-lane `tl.sum`
+that batch 003 blamed replaced by a `tl.dot` accumulator, a K-major layout and split-K:
+
+| | ratio | ms/token | achieved |
+|---|---:|---:|---:|
+| compiled baseline | 1.0000 | 7.30 | **1177 GB/s** |
+| `009` naive GEMV (rental 37) | 0.2801 | 26.90 | 319 GB/s |
+| `015` tiled GEMV (rental 38) | **0.1934** | **37.73** | **228 GB/s** |
+
+**1.40× slower.** Batch 003's conclusion that its kernel was not bandwidth-bound survives;
+its diagnosis that the per-iteration reduction was the cause does not.
+
+**And this time the kernel is demonstrably correct**, which 009 never was: layer 1 worst
+relative error 7.75e-3 (one bf16 ULP), top-1 agreement 261/264 with a 95% Wilson interval of
+[0.967, 0.996], mean KL 0.00060 nats. Under batch 003's gates it would have been reported
+`incorrect` and the 0.1934 discarded.
+
+**Backlog entry 2 is closed by the dump, not by a kernel.** Inductor already folds the GQA
+expansion — 6.23% of per-token bytes, the second-largest share in the model — into index
+arithmetic. Full account:
+[`results/batches/004-bandwidth-bound-gemv/README.md`](results/batches/004-bandwidth-bound-gemv/README.md).
 
 ### Column definitions
 

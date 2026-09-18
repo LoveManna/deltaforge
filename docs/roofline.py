@@ -11,6 +11,14 @@ decides whether a hypothesis is worth renting a GPU for costs nothing.
 The ceiling of a hypothesis is the share of bytes it touches. An entry whose share is
 below the harness's noise band is unmeasurable, however good the kernel is.
 
+**This counts what the eager reference moves, which is not what the compiled baseline
+moves.** Rental 38's `TORCH_LOGS=output_code` dump showed inductor folds the GQA head
+expansion into index arithmetic, so the 570.43 MB/token in the `repeat_interleave` row is
+traffic the scored `compiled` column never performs. Against `max-autotune` the model moves
+**8587.80 MB/token**, and an achieved-bandwidth figure divided by the total below
+understates it by 6.6%. The row is kept because it is real for eager, and because it grows
+with context.
+
 The arithmetic itself lives in ``deltaforge.harness.bytes_model`` so that the ceiling
 printed here and the achieved bandwidth the benchmark records cannot drift apart.
 """
@@ -76,7 +84,11 @@ def main() -> int:
         quantised = total - weights + weights * bits / 16
         print(f"  {label:9s} total {quantised / 1e9:6.2f} GB  ->  {total / quantised:5.2f}x speedup")
 
+    expansion = rows["GQA repeat_interleave materialisation"]
     print(
+        f"\nAgainst max-autotune, subtract the GQA expansion: inductor folds it into index\n"
+        f"arithmetic and never materialises it (rental 38). The compiled column moves\n"
+        f"  {(total - expansion) / 1e6:.2f} MB/token, not {total / 1e6:.2f}.\n"
         "\nA hypothesis cannot beat its share. Compare the share column against the\n"
         "harness's noise band (BenchResult.iqr_ratio) before writing a kernel."
     )

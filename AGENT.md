@@ -248,14 +248,22 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Thirty-seven rentals have been billed, $6.157 lifetime, zero leaked. The harness is
-calibrated, blocker 16 is closed, and this project now has admissible ratios — seven of
-them, all losses.** Batch 003 (2026-09-16) is the first batch where every slot compiled,
-every slot was scored and nothing was voided. What it does not have is a kernel that beats
-the compiler, which is a scientific problem rather than an infrastructural one and is the
-first time that has been true. The baseline is now characterised too: **1308 GB/s, 73% of a
-5090's peak**, which is the denominator every hypothesis is divided by. See
-`results/batches/003-int8-weight-only/README.md`.
+**Thirty-eight rentals have been billed, $6.445 lifetime, zero leaked. The harness is
+calibrated, blocker 16 is closed, and the remaining problem is entirely scientific.**
+Batch 003 (2026-09-16) produced seven admissible ratios, all losses. Batch 004 (2026-09-17)
+rewrote the kernel that lost hardest around the cause batch 003 had named — and it lost
+harder: **0.2801 → 0.1934**. Its preconditions then declined the five quantised slots behind
+it, ending the rental at 39.65 billed minutes instead of 55.
+
+**The baseline is characterised, and the number in this paragraph used to be wrong twice
+over.** Rental 38's `TORCH_LOGS=output_code` dump shows inductor folds the GQA head
+expansion into index arithmetic, so the compiled column never moves the 570.43 MB/token the
+roofline attributes to it. Against the **8587.80 MB/token it actually moves** it runs at
+**1177 GB/s, 65.7% of a 5090's 1792 GB/s peak**. The earlier "1308 GB/s, 73%" counted the
+folded expansion *and* mixed SI megabytes with binary gigabytes per second. That baseline is
+also **generated Triton with no cuBLAS anywhere**, with the residual add and RMSNorm fused
+inside its matmuls, and it runs with **no CUDA graphs**. See
+`results/batches/004-bandwidth-bound-gemv/README.md`.
 
 Rental 35 (2026-09-14) is where the infrastructure chain ended: it ran all nine slots of
 batch 001, the oracle gate passed and the identity champion measured 1.0018, but dynamo hit
@@ -485,6 +493,32 @@ Nothing failed. The ratios looked like results. `recompile_limit_for` in `batch_
 raises the limit to cover the batch, and every slot record carries `graphs_compiled` — a `0`
 there means the number beside it is not a comparison. **Widening a batch means widening that
 limit too.**
+
+**"The flop waste is free" is an argument about a memory-bound kernel, and it only holds if
+the kernel is one.** Batch 004's GEMV padded M to 16 so `tl.dot` could carry the partial sums
+in the MMA accumulator, on the stated ground that arithmetic intensity at batch-1 decode is
+~2 flop/byte against a machine balance near 150 — so 15 wasted rows of every 16 cost nothing.
+That is true of a kernel at the memory wall. This one achieved **228 GB/s against a baseline
+at 1177**, so whatever was binding it, bandwidth was not, and the padding multiplied the work
+on it. The rewrite came out **1.40× slower than the naive kernel it replaced.** Before
+trading flops for a structural win, check which resource the kernel is actually spending its
+time on — and if you do not know, the ablation is a slot, not a rewrite.
+
+**You are not competing with cuBLAS, and you are not competing with a bare matmul.**
+`extern_kernels` in the compiled decode graph is called for convolution and nothing else:
+under `max-autotune` inductor generates Triton for **every** matmul here. And those kernels
+are fused — the one for `in_proj_a`/`in_proj_b` does the residual add, the RMSNorm and *both*
+projections in one pass over the hidden state. A hand-written GEMV replaces the matmul alone,
+so the norm and residual become separate kernels again and two launches replace one, at
+**248 projection sites per decode step**. Read the dump before costing a kernel: the fusion
+you are giving up is not in any roofline.
+
+**Match a config to a manifest by shape, never by `name`.** `from_hf_config` sets `name` from
+the checkpoint's `model_type` (`'qwen3_5'`), not from the transcription in `MODELS`
+(`'qwen3.5-4b'`). A name-keyed lookup therefore resolves exactly the configs built by calling
+a factory — every CPU test — and fails on every config a rental actually has. Batch 004
+shipped no achieved bandwidth at all for this, which was the one feature it had been built to
+add. The guard held: it reported nothing rather than another checkpoint's byte count.
 
 **A gate is only a gate if it can resolve the thing it measures.** Batch 003 failed four
 slots that were working correctly, on a top-1 agreement bar of 0.98 over **264** teacher-forced

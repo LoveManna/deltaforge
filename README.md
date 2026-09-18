@@ -10,20 +10,37 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**No champion. Fifteen kernels have run on a GPU and the compiler has beaten all of them.**
+**No champion. Sixteen kernels have run on a GPU and the compiler has beaten all of them.**
 
 On 2026-09-16 (rental 37) batch 003 returned **seven admissible ratios** — `calibrated:
-true`, every slot compiled, nothing voided, for the first time in this project. The identity
-champion measured **1.0024 with an IQR of 0.0190**. Every other slot lost.
+true`, every slot compiled, nothing voided, for the first time in this project. Every slot
+lost. On 2026-09-17 (rental 38) batch 004 rewrote the kernel that lost hardest around the
+cause batch 003 had named, and it **lost harder: 0.2801 → 0.1934**. Its preconditions then
+declined the five slots behind it.
 
 The most useful number the project has produced is not a ratio. It is the baseline:
 
-> **`torch.compile(mode="max-autotune")` runs this model's decode at 6.84 ms/token —
-> 1308 GB/s, 73% of an RTX 5090's 1790 GB/s vendor peak**, against a 5.11 ms/token roofline.
+> **`torch.compile(mode="max-autotune")` runs this model's decode at 7.30 ms/token —
+> 1177 GB/s, 65.7% of an RTX 5090's 1792 GB/s vendor peak**, against a 5.11 ms/token
+> roofline.
 
-That reframes the whole exercise. The compiler is already three quarters of the way to the
-memory wall, so the headroom for *any* kernel is 1.37× from efficiency alone, and the only
-large win left is to move fewer bytes.
+And the most useful thing rental 38 produced was not a ratio either. It was **reading the
+code we are trying to beat**, which had never been done:
+
+* **Inductor already eliminates the GQA head expansion** — `x1 // 4` on the unexpanded KV
+  cache, no materialisation — which closes the backlog's second-largest hypothesis (6.23% of
+  per-token bytes) without a kernel, and corrects the baseline's traffic from the roofline's
+  9158.23 MB/token to the **8587.80** it actually moves.
+* **There is no cuBLAS in the decode path.** `extern_kernels` is called for convolution and
+  nothing else: inductor generates Triton for every matmul, and it welds the residual add and
+  the RMSNorm *into* them. A hand-written GEMV gives all of that fusion up, at 248 projection
+  sites per token.
+* **The compiled baseline runs with no CUDA graphs**, because the causal conv mutates its
+  cache in place.
+
+That reframes the whole exercise. The compiler is two thirds of the way to the memory wall
+*and* fusing everything around the matmuls it generates, so the only large win left is to
+move fewer bytes — and taking a matmul away from inductor now has a measured price attached.
 
 Batch 003 tried exactly that — weight-only int8 and int4 with the dequantisation fused into
 the GEMV's K-loop, attacking the 91.85% of per-token bytes that are weights — and produced
