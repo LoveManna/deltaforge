@@ -1,0 +1,280 @@
+{
+  "schema_version": 1,
+  "kind": "batch",
+  "batch_id": "004-bandwidth-bound-gemv",
+  "session_id": "batch004-20260917T232945Z",
+  "description": "Batch 003 produced seven admissible ratios and every one was a loss -- and it produced the cause too: the hand-written GEMV ran at 332 GB/s against a compiled baseline near 1200, and got *slower* as it removed bytes, which is the signature of a kernel bound by instruction issue rather than bandwidth. This batch fixes that kernel and then quantises on top of it. Slot 1 is the whole result: it moves exactly cuBLAS's bytes, so its ratio is the divisor every quantised slot behind it is read against, and every one of them is gated on it clearing 0.56 -- the point below which halving the weight stream cannot even tie.",
+  "timestamp": "2026-09-18T00:08:34.567187+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "000-identity.candidate_build": 0.05558594595640898,
+    "000-identity.correctness": 16.18334147101268,
+    "000-identity.compile_candidate_compiled": 0.006682535167783499,
+    "000-identity.bench": 170.48943231394514,
+    "015-tiled-gemv-bf16.candidate_build": 0.145516165997833,
+    "015-tiled-gemv-bf16.correctness": 13.109345018165186,
+    "015-tiled-gemv-bf16.compile_candidate_compiled": 0.005813658004626632,
+    "015-tiled-gemv-bf16.bench": 293.1158847149927
+  },
+  "calibrated": true,
+  "counts": {
+    "inconclusive": 1,
+    "loss": 1,
+    "precondition_failed": 5
+  },
+  "predictions": [
+    {
+      "slug": "000-identity",
+      "predicted": "identity",
+      "outcome": "inconclusive",
+      "correct": true
+    },
+    {
+      "slug": "015-tiled-gemv-bf16",
+      "predicted": "inconclusive",
+      "outcome": "loss",
+      "correct": false
+    },
+    {
+      "slug": "016-fp8-all-linear",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "017-fp8-full",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "018-fp8-mlp",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "019-int8-all-linear",
+      "predicted": "inconclusive",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "020-int4-full",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    }
+  ],
+  "prediction_record": {
+    "correct": 1,
+    "scored": 2
+  },
+  "slots": [
+    {
+      "slug": "000-identity",
+      "outcome": "inconclusive",
+      "prediction": "identity",
+      "category": "calibration",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [],
+      "mechanism": "Install nothing. The candidate is the reference, so the measured ratio is the harness's own noise floor rather than a property of any kernel.",
+      "rationale": "Must return 1.00 within the noise band. If it does not, the harness is measuring something other than the kernel under test and every other number in this batch is void -- which is a statement about the rental, not about any hypothesis, and the writeup has to say so rather than reporting the rest as findings.",
+      "median_ratio": 0.991267345781617,
+      "iqr_ratio": 0.01589701841417923,
+      "error": null,
+      "duration_s": 186.7355823381804,
+      "peak_memory_mb": 9024,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.05558594595640898,
+        "correctness": 16.18334147101268,
+        "compile_candidate_compiled": 0.006682535167783499,
+        "bench": 170.48943231394514
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "015-tiled-gemv-bf16",
+      "outcome": "loss",
+      "prediction": "inconclusive",
+      "category": "A",
+      "byte_share": 0.0,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_gemv_bf16"
+      ],
+      "mechanism": "009's GEMV rewritten around a tl.dot accumulator with a K-major weight layout and split-K, so the cross-lane reduction that ran once per K-iteration -- 20 times for K=2560, 72 for K=9216 -- runs once in total.",
+      "rationale": "Byte share 0.0: it moves not one byte fewer than the baseline, which is the point. Tying is the honest expectation and its job is to be the divisor, not to win. 009 returned 0.2801 on identical bytes and that one number settled five slots behind it; the required improvement is 1.8x, not 4x, because quantisation ties at f=0.50 and that shows up here as 0.562. Predicted 0.75-0.95: removing 20-72 reductions per output from an inner loop is comfortably worth 1.8x, and the remaining gap to 1.0 is the split-K reduction pass and whatever cuBLAS does that this does not. Gated approximately rather than exactly: it computes the same function as the reference but sums K in a different order from cuBLAS, which lands one bf16 ULP away, and one ULP flips an argmax on this model -- 009 was gated exact on that reasoning and matched 1 of 5 prompts. Its bars are int8's, because one ULP of reordering is far inside them.",
+      "median_ratio": 0.1934002898598202,
+      "iqr_ratio": 0.0027628880762898544,
+      "error": null,
+      "duration_s": 306.3770563551225,
+      "peak_memory_mb": 15832,
+      "graphs_compiled": 3,
+      "phases_s": {
+        "candidate_build": 0.145516165997833,
+        "correctness": 13.109345018165186,
+        "compile_candidate_compiled": 0.005813658004626632,
+        "bench": 293.1158847149927
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "016-fp8-all-linear",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.7796,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_fp8_all_linear"
+      ],
+      "mechanism": "e4m3 on every projection inside a decoder layer, converted to bf16 inside the K-loop and rescaled once per output channel at the end. 77.9% of per-token bytes at 8 bits: 5588 MB/token against 9158, a 1.64x ceiling.",
+      "rationale": "The direct fp8 counterpart of batch 003's 012, which returned 0.1962 on a kernel that could not collect the saving. Predicted 1.15-1.30 against a 1.64x ceiling: the shortfall is the split-K reduction and the 22% of bytes left in bf16. fp8 rather than int8 because batch 003 measured int8 at 1.438x the time of bf16 in the same kernel -- int8->fp32 is an ALU instruction on the critical path, where sm_120 converts e4m3 inside the MMA pipeline, and every finite e4m3 value is exactly a bf16 value so the conversion is lossless. The KL bar is interpolated between two measured points rather than taken from priors, which is how batch 003's bars went wrong: int8 measured 0.0011 nats and int4 0.0919. e4m3's per-element absolute error is about 3x int8's per-channel error on a Gaussian row and about a quarter of group-128 int4's, and KL grows as the square of the perturbation, so expect ~0.01 nats. The bar is 0.03, three times that. The top-1 bar allows 36 flips of 264 against the ~24 that flip rate implies, and it is written as a count because agreement quantises to 1/264 and a bar finer than one sample is not a decision procedure.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "015-tiled-gemv-bf16 measured 0.1934 against a floor of 0.56: quantisation halves the bytes, so it cannot even tie unless the kernel reaches half the baseline's byte rate; below 0.56 this slot would re-measure batch 003's 0.1962 in a new dtype",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "017-fp8-full",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.9184,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_fp8_full"
+      ],
+      "mechanism": "016 plus the tied LM head, which is 15.1% of weight bytes and the largest single GEMV in the model. 91.8% of per-token traffic at 8 bits: 4953 MB/token, the full 1.85x roofline ceiling. The embedding *lookup* stays bf16 -- it reads one row, not the table.",
+      "rationale": "The top rung of the ladder and the batch's best chance at a champion. Predicted 1.25-1.45 against a 1.85x ceiling. 017 minus 016 is exactly what the head is worth, which batch 003 tried to measure as 013 minus 012 and got -0.0084 -- a difference that says nothing, because both kernels were issue-bound and the head's extra bytes were not what set their time. Same bars as 016: same dtype, same quantiser, one more site.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "015-tiled-gemv-bf16 measured 0.1934 against a floor of 0.56: the same floor as 016: below it no byte saving can be collected",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "018-fp8-mlp",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.4946,
+      "replaces": [
+        "swiglu_mlp"
+      ],
+      "kernels": [
+        "tiled_fp8_mlp"
+      ],
+      "mechanism": "e4m3 on the three MLP projections only: 53.9% of the model's weight bytes and 49.5% of per-token traffic, 6893 MB/token, a 1.33x ceiling.",
+      "rationale": "The low rung of the dose-response ladder, at 49.5% against 016's 77.9% and 017's 91.8%. Predicted 1.08-1.18 against a 1.33x ceiling. Its value is not its own ratio: three slots on one kernel over three increasing shares is what separates 'the mechanism works' from 'something else moved', and a win here that is *smaller* than 016's is the evidence, where three unrelated wins of similar size would be a reason to distrust all of them.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "015-tiled-gemv-bf16 measured 0.1934 against a floor of 0.56: the same floor as 016: below it no byte saving can be collected",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "019-int8-all-linear",
+      "outcome": "precondition_failed",
+      "prediction": "inconclusive",
+      "category": "B",
+      "byte_share": 0.7796,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_int8_all_linear"
+      ],
+      "mechanism": "The same sites and the same bit width as 016, stored int8 instead of e4m3. Identical byte traffic; the only difference is which unit converts the weight, and on sm_120 that is the ALU rather than the MMA pipeline.",
+      "rationale": "Two measurements in one slot. Against 016 it isolates the conversion tax and nothing else -- same sites, same bytes, same kernel structure -- which batch 003 could only infer at 1.438x from kernels that were issue-bound anyway. Against batch 003's 012 it isolates the value of the kernel rewrite: 0.1962 against whatever this returns, same sites and same quantisation, with only the kernel structure changed. Predicted inconclusive at 1.05-1.25 rather than a win, because if the conversion tax survives the rewrite it lands here and nowhere else, and predicting a win for both dtypes would make the pair unable to say anything. Bars are batch 003's own measurements at these exact sites: 012 scored 0.001096 nats and 9 flips of 264, so 0.01 nats and 18 flips leave an order of magnitude and a factor of two.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "015-tiled-gemv-bf16 measured 0.1934 against a floor of 0.56: the same floor as 016: below it no byte saving can be collected",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "020-int4-full",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.9184,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_int4_full"
+      ],
+      "mechanism": "017's sites at 4 bits with per-group (128) scales, two values packed per byte and unpacked in registers. 2850 MB/token: a 3.21x ceiling, the largest in the backlog. The group scale varies along K so it cannot leave the loop; it is applied to the weight tile before the dot rather than to a partial sum, which keeps the accumulator's job unchanged.",
+      "rationale": "Highest ceiling and highest risk, so it runs last and behind the tightest precondition in the batch. Predicted 1.4-1.9 against 3.21x: the shortfall is the unpack, the in-loop scale multiply, and the bf16 rounding of the scaled weight that the fp8 path does not pay. Bars are batch 003's own int4 measurements at these exact sites -- 014 scored 0.091854 nats and 38 flips of 264 -- so 0.15 nats and 57 flips leave roughly 1.5x on each. in_proj_a and in_proj_b feed an exponential and are 32 output channels wide; that is where this breaks if it breaks, and the layer-1 probes cover that launch branch specifically.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "016-fp8-all-linear measured no ratio against a floor of 1.05: int4's nibble unpack and its in-loop group scale are only worth trying once 8 bits has actually won something; if fp8 cannot clear 1.05 the extra work cannot be paid for by the extra bytes saved",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "phases_s": {},
+      "prediction_correct": null
+    }
+  ],
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-119-generic-x86_64-with-glibc2.39",
+    "hostname": "8cf591452c18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2565,
+      "memory": 13801,
+      "observed_at": "2026-09-18T00:08:34.746796+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "cost": {
+    "instance_id": "51361206",
+    "hourly_rate_usd": 0.4362962962962963,
+    "gpu_model": null,
+    "actual_minutes": null,
+    "actual_cost_usd": null
+  },
+  "notes": ""
+}

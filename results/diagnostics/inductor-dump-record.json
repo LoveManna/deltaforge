@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "kind": "baseline",
+  "outcome": "baseline",
+  "timestamp": "2026-09-17T23:59:34.666677+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": null,
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {},
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-119-generic-x86_64-with-glibc2.39",
+    "hostname": "8cf591452c18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2917,
+      "memory": 13801,
+      "observed_at": "2026-09-17T23:59:34.826324+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 1,
+    "warmup_rounds": 0,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        39209.375
+      ],
+      "candidate_compiled": [
+        937.211181640625
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        39209.375
+      ],
+      "candidate_compiled": [
+        937.211181640625
+      ]
+    },
+    "median_ms": {
+      "compiled": 39209.375,
+      "candidate_compiled": 937.211181640625
+    },
+    "achieved_gbps": {},
+    "ratios": {
+      "candidate_compiled": [
+        41.83622194024878
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 41.83622194024878
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.0
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": "headline",
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ]
+    }
+  },
+  "correctness": null,
+  "cost": null,
+  "notes": ""
+}
