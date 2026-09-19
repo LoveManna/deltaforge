@@ -642,7 +642,11 @@ def test_a_slot_scores_both_columns_against_the_checkpoints_own_byte_count():
     per_token = _runner_for(qwen3_5_4b_config())._bytes_per_token(hyp("a"))
 
     assert set(per_token) == {"compiled", "candidate_compiled"}
-    assert per_token["compiled"] == pytest.approx(9158.23, abs=1.0)
+    # 8587.80, not the roofline's 9158.23: both scored columns are compiled, and rental 38's
+    # dump shows inductor folding the GQA expansion into index arithmetic rather than
+    # materialising it. Dividing a compiled column's time by the eager total is what put the
+    # baseline at "1308 GB/s, 73% of peak" when it is really 1177 and 65.7%.
+    assert per_token["compiled"] == pytest.approx(8587.80, abs=1.0)
     assert per_token["candidate_compiled"] == per_token["compiled"], "declares no re-encoding"
 
 
@@ -654,7 +658,8 @@ def test_a_quantised_slot_is_scored_against_the_bytes_it_actually_moves():
     runner = _runner_for(qwen3_5_4b_config())
     per_token = runner._bytes_per_token(hyp("a", weight_bits={"layers": 8}))
 
-    # The layer projections are 7140 MB/token of the 9158 total; half of that is removed.
+    # The layer projections are 7140 MB/token of the 8588 the compiled column moves; half
+    # of that is removed.
     assert per_token["compiled"] - per_token["candidate_compiled"] == pytest.approx(3570.0, abs=5.0)
 
 

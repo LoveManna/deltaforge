@@ -14,8 +14,23 @@ from .bytes_model import decode_bytes_per_token
 
 def test_all_bf16_reproduces_the_roofline_scripts_total():
     """The number docs/roofline.py prints, from the same arithmetic in an importable place."""
-    mb = decode_bytes_per_token(qwen3_5_4b_config(), weight_bits={}, context_length=2048)
+    mb = decode_bytes_per_token(qwen3_5_4b_config(), weight_bits={}, context_length=2048, compiled=False)
     assert abs(mb - 9158.23) < 1.0
+
+
+def test_the_compiled_default_drops_the_expansion_inductor_folds_away():
+    """Rental 38 read the generated code: `repeat_interleave` is not in it, and the
+    attention bmm indexes the unexpanded KV cache with `x1 // 4`.
+
+    Both scored columns are compiled, so the default has to be the compiled byte count.
+    Dividing a compiled column's time by the eager total is what put the baseline at
+    "1308 GB/s, 73% of peak" when it is really 1177 and 65.7%.
+    """
+    config = qwen3_5_4b_config()
+    eager = decode_bytes_per_token(config, weight_bits={}, context_length=2048, compiled=False)
+    compiled = decode_bytes_per_token(config, weight_bits={}, context_length=2048)
+    assert abs(compiled - 8587.80) < 1.0
+    assert abs((eager - compiled) - 570.43) < 1.0
 
 
 def test_halving_the_layer_projections_removes_half_their_bytes():
@@ -55,7 +70,7 @@ def test_the_config_a_rented_box_builds_resolves_to_the_same_manifest():
 
     mb = decode_bytes_per_token(as_a_rental_builds_it, weight_bits={}, context_length=2048)
 
-    assert abs(mb - 9158.23) < 1.0
+    assert abs(mb - 8587.80) < 1.0
 
 
 def test_a_config_whose_shape_matches_no_manifest_is_still_refused():

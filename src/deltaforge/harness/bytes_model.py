@@ -215,6 +215,19 @@ def validate_weight_bits(weight_bits: Mapping[str, int]) -> None:
     _expand(weight_bits)
 
 
+#: The traffic row `max-autotune` does not move. Rental 38's `TORCH_LOGS=output_code` dump
+#: shows inductor folding the GQA head expansion into index arithmetic — the attention
+#: `bmm` reads `in_ptr1 + (r0_2 + 256*x0 + 557056*(x1 // 4))` straight out of the
+#: unexpanded KV cache — so nothing is materialised and nothing is read back.
+#:
+#: `traffic` keeps the row because the **eager** reference really does perform that copy,
+#: and `docs/roofline.py` documents eager. Both *scored* columns are compiled, so both fold
+#: it, and dividing their time by a byte count that includes it understated the achieved
+#: bandwidth of every column this project has reported: the compiled baseline came out at
+#: 73% of a 5090's peak when the honest figure is 65.7%.
+_FOLDED_BY_INDUCTOR = "GQA repeat_interleave materialisation"
+
+
 def decode_bytes_per_token(
     config: ModelConfig,
     *,
@@ -223,12 +236,16 @@ def decode_bytes_per_token(
     decode_tokens: int = 128,
     batch: int = 1,
     repo_id: str | None = None,
+    compiled: bool = True,
 ) -> float:
     """MB moved per decoded token, with each weight region stored at ``weight_bits`` bits.
 
     ``context_length`` is the prompt, and the KV cache is read over
     ``context_length + decode_tokens`` positions — the same convention ``docs/roofline.py``
     prints under, so the two agree by construction rather than by coincidence.
+
+    ``compiled`` (the default, because both scored columns are compiled) drops the GQA
+    expansion row that inductor folds away. Pass ``False`` for what eager moves.
     """
     groups = dict(weight_bytes(repo_id or _repo_for(config)))
     bits = _expand(weight_bits or {})
@@ -237,4 +254,6 @@ def decode_bytes_per_token(
         if group in groups:
             groups[group] = int(round(groups[group] * width / 16.0))
     rows = traffic(config, groups, batch, context_length + decode_tokens)
+    if compiled:
+        rows.pop(_FOLDED_BY_INDUCTOR, None)
     return sum(rows.values()) / 1e6
