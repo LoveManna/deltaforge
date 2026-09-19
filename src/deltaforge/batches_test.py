@@ -14,9 +14,10 @@ run on the rented box.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from .batch import scoped_registry
-from .batches import BATCH_001, BATCH_002, BATCH_003, BATCH_004, BATCHES, get_batch
+from .batches import BATCH_001, BATCH_002, BATCH_003, BATCH_004, BATCH_005, BATCHES, get_batch
 from .config import tiny_config
 from .kernels import REGISTRY
 from .model import apply_champions
@@ -403,28 +404,54 @@ def test_every_004_slot_is_gated_approximately_except_the_identity():
         assert not hyp.historical_exact_gate
 
 
-def test_004_byte_shares_agree_with_the_byte_model():
+def _attacked_share(config, hyp, *, compiled: bool) -> float:
+    """The share of per-token bytes a manifest's ``weight_bits`` actually names.
+
+    Zero-width stand-in: ``bits=0`` removes the attacked regions entirely, so the
+    difference from bf16 is exactly the bytes those regions contribute.
+    """
+    from .harness.bytes_model import decode_bytes_per_token
+
+    full = decode_bytes_per_token(config, weight_bits={}, context_length=2048, compiled=compiled)
+    without = decode_bytes_per_token(
+        config, weight_bits=dict.fromkeys(hyp.weight_bits, 0), context_length=2048, compiled=compiled
+    )
+    return (full - without) / full
+
+
+def test_004_byte_shares_agree_with_the_eager_byte_model_they_were_written_against():
     """A manifest's byte_share and its weight_bits must describe the same candidate.
 
     `byte_share` in this repo is the share of per-token bytes a hypothesis *attacks*, not
     the share it saves -- 012 carried 0.779 for the layer projections it quantised, not the
-    0.390 it removed. Deriving it from the same arithmetic the bench now uses stops the two
+    0.390 it removed. Deriving it from the same arithmetic the bench uses stops the two
     drifting.
+
+    **Batches 001-004 were written against the eager total, 9158.23 MB/token**, and are
+    checked against it here rather than rewritten. Rental 38 then read the generated code
+    and found inductor folding the GQA expansion away, so the compiled columns move 8587.80
+    and `decode_bytes_per_token` defaults to that. Restating a share a rental already ran
+    under would falsify the record in exactly the way restating a prediction would; batch
+    005 is written against the corrected denominator and checked against it below.
     """
     from .config import qwen3_5_4b_config
-    from .harness.bytes_model import decode_bytes_per_token
 
     config = qwen3_5_4b_config()
-    full = decode_bytes_per_token(config, weight_bits={}, context_length=2048)
     for hyp in BATCH_004:
         if not hyp.weight_bits:
             continue
-        # Zero-width stand-in: bits=0 removes the attacked regions entirely, so the
-        # difference from bf16 is exactly the bytes those regions contribute.
-        without = decode_bytes_per_token(
-            config, weight_bits=dict.fromkeys(hyp.weight_bits, 0), context_length=2048
-        )
-        assert abs(hyp.byte_share - (full - without) / full) < 0.01, hyp.slug
+        assert abs(hyp.byte_share - _attacked_share(config, hyp, compiled=False)) < 0.01, hyp.slug
+
+
+def test_005_byte_shares_agree_with_the_compiled_byte_model():
+    """Batch 005's shares are against what the *compiled* column moves, which is the score."""
+    from .config import qwen3_5_4b_config
+
+    config = qwen3_5_4b_config()
+    for hyp in BATCH_005:
+        if not hyp.weight_bits:
+            continue
+        assert abs(hyp.byte_share - _attacked_share(config, hyp, compiled=True)) < 0.01, hyp.slug
 
 
 def test_the_004_fp8_slots_form_a_dose_response_ladder():
@@ -478,5 +505,172 @@ def test_every_004_bar_is_derived_from_a_measured_point():
 
 def test_004_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_004:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+# ======================================================================================
+# Batch 005 — the dispatch path, and the one site with parallelism to spare
+# ======================================================================================
+
+
+def test_batch_005_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_005) <= 12
+    assert not BATCH_005.is_calibration
+    assert BATCH_005.hypotheses[0].is_identity
+    assert BATCH_005.calibration_slug == "000-identity"
+    assert get_batch("005-launch-and-head") is BATCH_005
+
+
+def test_batch_005_names_registered_kernels_with_installers():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_005:
+        for name in hyp.kernels:
+            assert name in REGISTRY, f"{hyp.slug!r} names unregistered kernel {name!r}"
+            assert name in INSTALLERS, f"{hyp.slug!r} names {name!r}, which has no installer"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_005), ids=lambda h: h.slug)
+def test_every_005_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = module_classes(model)
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    after = module_classes(model)
+    if hypothesis.is_identity:
+        assert applied == ()
+        assert after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels)
+        assert after != before, f"{hypothesis.slug!r} installed {applied} but changed no module class"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_005), ids=lambda h: h.slug)
+def test_installing_a_005_hypothesis_is_idempotent(hypothesis, model):
+    registry = scoped_registry(hypothesis, REGISTRY)
+    apply_champions(model, registry)
+    once = module_classes(model)
+
+    apply_champions(model, registry)
+
+    assert module_classes(model) == once
+
+
+def test_composing_two_root_class_patches_keeps_both(model):
+    """The bug this batch had to fix before it could run, and the reason it has a test.
+
+    `tiled_int4_head` and `static_decode_cache` both work by replacing the *root* model's
+    class. Anchored at `ReferenceModel`, whichever installed second discarded the first —
+    and nothing would have caught it: `_build_candidate` only asks whether any module class
+    changed, which is still true, so slots 026 and 027 would have run, compiled, passed
+    correctness and returned a plausible ratio for a candidate holding one kernel of the
+    two it claimed. Each factory now subclasses whatever the model already is.
+    """
+    composed = BATCH_005.get("026-int4-head-static-cache")
+
+    apply_champions(model, scoped_registry(composed, REGISTRY))
+
+    assert hasattr(model, "tiled_lm_head"), "the head install was discarded"
+    assert getattr(model, "_deltaforge_static_cache", False), "the static-cache install was discarded"
+    assert type(model).project_logits is not ReferenceModel.project_logits
+    assert type(model).new_cache is not ReferenceModel.new_cache
+
+
+def test_the_static_cache_slot_marks_every_cache_tensor(model):
+    """63 of 64 is worth exactly as much as 0: inductor's mutation check is all-or-nothing
+    over the region, so one unmarked tensor skips cudagraphs for the whole decode step."""
+    from .kernels.static_cache import install_static_decode_cache
+
+    install_static_decode_cache(model)
+    cache = model.new_cache(1, 8)
+
+    tensors = [value for layer in cache.layers for value in vars(layer).values() if torch.is_tensor(value)]
+    assert tensors, "the fixture has no decode cache to mark"
+    assert all(getattr(t, "_dynamo_static_input_type", None) is not None for t in tensors)
+    assert model.deltaforge_static_cache_tensors == len(tensors)
+
+
+def test_the_head_slots_leave_every_layer_projection_alone(model):
+    """022-024 are the first slots in this project to install on exactly one site.
+
+    Two rentals measured a GEMV on all 248 layer projections at once and reported one
+    aggregate byte rate, which cannot tell a kernel that is slow everywhere from one that
+    is slow where there is no parallelism to have. If a head slot also patched the layer
+    linears it would reproduce that confound and nothing else would notice.
+    """
+    from torch import nn
+
+    from .kernels.tiled_gemv import TiledLMHead
+
+    linears_before = {id(m) for m in model.layers.modules() if isinstance(m, nn.Linear)}
+
+    apply_champions(model, scoped_registry(BATCH_005.get("022-int4-head"), REGISTRY))
+
+    assert isinstance(model.tiled_lm_head, TiledLMHead)
+    assert all(type(m) is nn.Linear for m in model.layers.modules() if id(m) in linears_before)
+
+
+def test_the_fused_conv_slot_patches_every_linear_attention_layer_and_nothing_else(model):
+    from .reference import GatedAttention, GatedDeltaNet
+
+    apply_champions(model, scoped_registry(BATCH_005.get("025-fused-causal-conv"), REGISTRY))
+
+    nets = [m for m in model.modules() if isinstance(m, GatedDeltaNet)]
+    assert nets, "the fixture has no linear-attention layers"
+    assert all(type(net) is not GatedDeltaNet for net in nets)
+    assert all(type(m) is GatedAttention for m in model.modules() if isinstance(m, GatedAttention))
+
+
+def test_both_005_compositions_are_gated_on_the_cudagraph_slot():
+    """A composition whose novel ingredient did not fire is a slot re-measuring a number
+    the batch already has. Batch 004's preconditions saved 16 billed minutes doing this."""
+    for slug in ("026-int4-head-static-cache", "027-conv-head-static-cache"):
+        hyp = BATCH_005.get(slug)
+        assert hyp.requires is not None, slug
+        assert hyp.requires.slug == "021-static-cache-cudagraphs"
+        assert hyp.requires.floor >= 1.02, "a floor at or below 1.0 is not a win"
+
+
+def test_every_005_slot_is_gated_approximately_except_the_identity():
+    for hyp in BATCH_005:
+        assert (hyp.correctness == "exact") == hyp.is_identity
+        assert not hyp.historical_exact_gate
+
+
+def test_the_005_bars_are_counts_out_of_the_positions_that_were_scored():
+    """Every bar is a whole number of tokens out of the 264 positions batch 003 scored.
+
+    The one slot allowed zero flips is the CUDA-graph candidate, which changes no
+    arithmetic at all: it runs inductor's own kernels in inductor's own order, so a single
+    flip there is a defect rather than a dtype.
+    """
+    for hyp in BATCH_005:
+        if hyp.correctness != "approximate":
+            continue
+        assert hyp.correctness_positions == 264
+        assert hyp.kl_threshold is not None
+        flips = (1.0 - hyp.top1_threshold) * 264
+        assert abs(flips - round(flips)) < 1e-9, hyp.slug
+        if hyp.slug == "021-static-cache-cudagraphs":
+            assert round(flips) == 0 and hyp.kl_threshold <= 1e-6
+        else:
+            assert 0 < round(flips) < 264, hyp.slug
+
+
+def test_the_three_head_slots_attack_the_same_site_at_three_encodings():
+    """022/023/024 differ in bit width and dtype and in nothing else, so their ordering is
+    readable: int4 ahead means bandwidth-bound at this site, int8 ahead means still
+    issue-bound, and 023 minus 024 is the int8 conversion tax on its own."""
+    int4, int8, fp8 = (BATCH_005.get(s) for s in ("022-int4-head", "023-int8-head", "024-fp8-head"))
+
+    assert int4.replaces == int8.replaces == fp8.replaces == ("decode_step",)
+    assert int4.byte_share == int8.byte_share == fp8.byte_share
+    assert int4.weight_bits == {"head": 4}
+    assert int8.weight_bits == fp8.weight_bits == {"head": 8}
+
+
+def test_005_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_005:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"

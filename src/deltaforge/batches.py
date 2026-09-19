@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from .batch import Batch, Hypothesis, Precondition
 
-__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "BATCH_004", "get_batch"]
+__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "BATCH_004", "BATCH_005", "get_batch"]
 
 
 BATCH_001 = Batch(
@@ -797,11 +797,339 @@ BATCH_004 = Batch(
     ),
 )
 
+# ======================================================================================
+# Batch 005 — the dispatch path, and the one site with parallelism to spare
+# ======================================================================================
+#
+# Two rentals have now established that a hand-written GEMV installed on all 248 layer
+# projections is slow: 0.2801 with one kernel structure, 0.1934 with the opposite one.
+# Neither says *why*, and neither attacked the number rental 38's dump actually turned up.
+#
+# **The denominator this batch is written against is 8587.80 MB/token**, what the compiled
+# column moves once the GQA expansion inductor folds away is taken out — not the 9158.23
+# the roofline prints for eager. `harness.bytes_model` now defaults to it too, so every
+# byte share below and every bandwidth the rental reports use the same number.
+
+BATCH_005 = Batch(
+    batch_id="005-launch-and-head",
+    description=(
+        "Rental 38's `TORCH_LOGS=output_code` dump is a 4.7 MB file this repository already "
+        "has, and counting it answers a question no kernel had asked: the decode graph "
+        "issues **508 kernel launches per token** (483 generated Triton plus 25 extern), "
+        "and **not one of them is CUDA-graphed**, because the decode cache is mutated in "
+        "place and inductor counts 64 mutated inputs. The compiled baseline spends 7.30 "
+        "ms/token moving 8587.80 MB -- 4.79 ms of that at vendor peak, 5.3-6.4 at an "
+        "achievable one -- so 0.9-2.5 ms is spread over those 508 dispatches. This batch "
+        "attacks that, and it attacks the only matmul in the model big enough for a "
+        "hand-written GEMV not to be grid-starved: the tied LM head, 248320 x 2560, "
+        "14.80% of everything the compiled column moves, in one kernel. Eight slots, no "
+        "control that cannot win, and two compositions gated on the first result."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band. If it does not, the harness is "
+                "measuring something other than the kernel under test and every other "
+                "number in this batch is void -- which is a statement about the rental, not "
+                "about any hypothesis, and the writeup has to say so rather than reporting "
+                "the rest as findings. It runs first for the same reason it always has: a "
+                "broken harness then costs three minutes rather than a rental."
+            ),
+        ),
+        Hypothesis(
+            slug="021-static-cache-cudagraphs",
+            kernels=("static_decode_cache",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_cache",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "Allocate the decode cache with `torch._dynamo.mark_static_address`, which "
+                "is the promise inductor's cudagraph mutation check requires and cannot "
+                "infer from a tensor handed in as an argument. The candidate then runs the "
+                "same 508 kernels in the same order from one graph replay instead of 508 "
+                "Python dispatches. No Triton, no arithmetic change, no byte saved."
+            ),
+            prediction="win",
+            rationale=(
+                "Byte share 0.0 and the largest ceiling in the batch, which is a "
+                "combination this repository has not seen before -- every previous "
+                "hypothesis was priced in bytes. The arithmetic is dispatch, not traffic: "
+                "8587.80 MB/token is 4.79 ms at an RTX 5090's 1792 GB/s vendor peak and "
+                "5.3-6.4 ms at the 75-90% a real kernel reaches, against a measured 7.30. "
+                "That residue over 508 launches is 1.8-4.9 us each, which is what "
+                "inductor's Python launch path costs uncaptured. **Predicted 1.15-1.30 "
+                "against a ~1.26x ceiling**, and it is a win or an explained null rather "
+                "than a coin toss because the mechanism is verified in torch's own source "
+                "rather than assumed: `cudagraph_utils.check_for_mutation` exempts an index "
+                "in `static_input_idxs`, and `_dynamo_static_input_type` is what puts it "
+                "there. The two ways it can fail are both informative and both visible in "
+                "the record. `cudagraph_nodes == 0` means it did not engage -- most likely "
+                "because `cache_offset` reaches the graph as a symint and cudagraph trees "
+                "key a recording per distinct int, so 128 decode steps want 128 recordings. "
+                "`cudagraph_nodes > 0` with a ratio near 1.00 means launch dispatch was "
+                "never the gap, which retires the whole line and is worth knowing. Gated "
+                "approximately at 264/264 and 1e-6 nats because the policy forbids `exact` "
+                "for a non-identity slot; unlike every other candidate here this one really "
+                "is bit-identical, and a bar it can only miss by being broken is the right "
+                "shape for that claim."
+            ),
+        ),
+        Hypothesis(
+            slug="022-int4-head",
+            kernels=("tiled_int4_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "Group-128 int4 on the tied LM head and nothing else. 1271.40 MB/token "
+                "becomes 327.7 including its bf16 group scales: a 1.123x ceiling from one "
+                "site, with two kernel launches replacing one rather than 496 replacing "
+                "248."
+            ),
+            prediction="win",
+            rationale=(
+                "**The head has never been measured on its own, and it is the only site in "
+                "this model where a hand-written GEMV is not grid-starved by "
+                "construction.** N=248320 launches 3880 programs at BLOCK_N=64 on a 170-SM "
+                "card; `in_proj_a` is 32 wide and launches four. Batches 003 and 004 "
+                "installed on all 248 layer projections and reported one aggregate rate -- "
+                "319 GB/s, then 228 -- which cannot distinguish a kernel that is slow "
+                "everywhere from one that is slow where there is no parallelism to have. "
+                "What breaking even takes is arithmetic, not hope: the baseline spends "
+                "1271.40 MB / 1177 GB/s = 1.08 ms/token in that matmul, so int4 ties at "
+                "**303 GB/s** -- 1.33x the aggregate already measured, on the friendliest "
+                "shape in the model -- and collects the full 1.123x at 550. Predicted "
+                "1.05-1.12. It runs before the 8-bit slots because its bar is the lowest "
+                "and its ceiling the highest, and its error is the batch's largest: the "
+                "head is the one weight whose perturbation reaches the argmax with no "
+                "further layer to attenuate it. The bars come from measurement rather than "
+                "priors, which is how batch 003 failed four working kernels. Batch 003 ran "
+                "int8 both without the head (012: 0.00110 nats, 255/264) and with it (013: "
+                "0.00122, 256/264), so the head at 8 bits is worth about 0.0001 nats; "
+                "group-128 int4 perturbs roughly 6x harder and KL goes as the square, "
+                "giving ~0.004 and at worst ~0.03 if the grouping helps less than expected. "
+                "The bar is 0.06, and 240/264 allows 24 flips against batch 003's 38 for "
+                "int4 on *every* site."
+            ),
+        ),
+        Hypothesis(
+            slug="023-int8-head",
+            kernels=("tiled_int8_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=256 / 264,
+            kl_threshold=0.003,
+            weight_bits={"head": 8},
+            mechanism=(
+                "The same site at 8 bits with a per-channel scale. 1271.40 MB/token becomes "
+                "635.7: a 1.080x ceiling, twice int4's bytes and none of its nibble unpack."
+            ),
+            prediction="win",
+            rationale=(
+                "This slot exists to be read *against* 022, and the pair is a cleaner "
+                "instrument than either alone. int8 needs **588 GB/s** to tie where int4 "
+                "needs 303, so if the kernel is bandwidth-bound at this site 022 beats 023 "
+                "and the ordering follows the bytes. If 023 beats 022 the kernel is still "
+                "issue-bound and the unpack is on the critical path -- which is exactly "
+                "what batch 003 measured when int4 cost 1.046x int8 *while moving half the "
+                "bytes*, and what two rentals have failed to explain. Predicted 1.02-1.08: "
+                "the bar is higher than 022's but not out of reach on a site with this much "
+                "parallelism, and the ceiling is 1.080 so there is no room to be wrong by "
+                "much in either direction. Bars are batch 003's own measurements at this "
+                "exact site rather than an extrapolation: 013 minus 012 puts the int8 head "
+                "at ~0.0001 nats and about one flip, so 0.003 nats and 8 flips of 264 leave "
+                "an order of magnitude on the first and 8x on the second."
+            ),
+        ),
+        Hypothesis(
+            slug="024-fp8-head",
+            kernels=("tiled_fp8_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=252 / 264,
+            kl_threshold=0.012,
+            weight_bits={"head": 8},
+            mechanism=(
+                "The same site and the same 8 bits as 023, stored e4m3 instead of int8, so "
+                "the conversion happens inside sm_120's MMA pipeline rather than as an ALU "
+                "instruction on the critical path."
+            ),
+            prediction="win",
+            rationale=(
+                "Adjacent to 023 so the only difference between the two slots is the "
+                "conversion tax, which batch 003 measured at **1.438x** -- int8 cost that "
+                "much more time than bf16 in the same kernel on the same sites, and nothing "
+                "since has isolated it on a site where the kernel was not already bound by "
+                "something else. Identical ceiling to 023 (1.080x, identical bytes), so "
+                "023 minus 024 is the tax and nothing else. Predicted 1.03-1.08, a little "
+                "above 023 for the same reason batch 004 ordered fp8 ahead of int8. The "
+                "accuracy goes the other way and the bar says so: e4m3 carries 3 mantissa "
+                "bits against int8's effective 7 at per-channel scale, so batch 004 "
+                "interpolated fp8's error at ~3x int8's in amplitude and ~9x in KL. Applied "
+                "to the ~0.0001 nats batch 003 measured for the int8 head that is ~0.001; "
+                "the bar is 0.012 and 252/264 allows 12 flips. Both are derived from the "
+                "two measured points this repository owns, not from what fp8 is generally "
+                "said to cost."
+            ),
+        ),
+        Hypothesis(
+            slug="025-fused-causal-conv",
+            kernels=("fused_causal_conv",),
+            category="A",
+            byte_share=0.00055,
+            replaces=("causal_conv",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=260 / 264,
+            kl_threshold=0.001,
+            weight_bits={},
+            mechanism=(
+                "One Triton kernel per linear-attention layer for the four-tap depthwise "
+                "causal convolution: the `cat` that builds its input, the cuDNN "
+                "`extern_kernels.convolution` itself, the `silu`, and the `copy_` that "
+                "advances the history, in one launch. 72 of the step's 508 launches become "
+                "24."
+            ),
+            prediction="win",
+            rationale=(
+                "**The one place in this model where launch count and byte count are wildly "
+                "out of proportion: 14.2% of the dispatch for 0.055% of the traffic.** At "
+                "batch-1 decode that convolution is 8192 channels x 4 taps -- 32768 "
+                "multiplies, roughly a microsecond of arithmetic -- wrapped in three "
+                "launches, one of which is the only `extern_kernels` call left in the whole "
+                "decode graph. Inductor cannot close this itself, and that is the "
+                "mechanistic claim: a scheduler cannot fuse a producer and a consumer "
+                "across an opaque external call, so the `cat` and the `copy_` are stranded "
+                "either side of it by construction rather than by oversight. Worth 48 of "
+                "508 launches, 9.4% of the dispatch, plus whatever a cuDNN convolution "
+                "dispatch costs above a Triton launch -- against 0.9-2.5 ms of launch "
+                "overhead that is **0.08-0.24 ms of 7.30, a ratio of 1.011 to 1.033**. The "
+                "low end is inside the noise band and the high end is several times outside "
+                "it, so this is a real coin with a weighted edge rather than a certainty, "
+                "and it is predicted `win` because the launch saving is structural and the "
+                "arithmetic it replaces is trivially small. It also pairs with 021: if "
+                "launches cost nothing once the step is CUDA-graphed, this kernel is worth "
+                "nothing inside 027, and that is a falsifiable pair rather than two "
+                "independent hopes. Gated approximately because the policy forbids `exact`, "
+                "but the kernel rounds exactly as the reference does -- fp32 accumulate, "
+                "round to bf16, *then* silu -- so the bars are tight on purpose: a real "
+                "disagreement here is a bug, not a dtype."
+            ),
+        ),
+        Hypothesis(
+            slug="026-int4-head-static-cache",
+            kernels=("tiled_int4_head", "static_decode_cache"),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="021-static-cache-cudagraphs",
+                floor=1.02,
+                reason=(
+                    "this slot's only novel ingredient is the CUDA graph; if marking the "
+                    "cache static did not clear the noise band on its own, this is 022 "
+                    "measured a second time and the batch already has that number"
+                ),
+            ),
+            mechanism=(
+                "022 and 021 composed: fewer bytes at the largest matmul, and the whole "
+                "step dispatched as one graph replay."
+            ),
+            prediction="win",
+            rationale=(
+                "The two mechanisms are disjoint -- one removes bytes from a kernel, the "
+                "other removes dispatch from every kernel -- so the naive expectation is "
+                "the product, **~1.26 x 1.123 = 1.41x, the batch's only realistic shot at a "
+                "champion.** Predicted 1.20-1.40. But the composition is a measurement "
+                "rather than an inference, and it can come out *super*-additive in a way "
+                "worth catching: a hand-written GEMV replaces one fused inductor kernel "
+                "with two launches, and that penalty is paid in dispatch, which is exactly "
+                "what 021 removes. If 026 exceeds 021 x 022 then launch dispatch was part "
+                "of what has been making every hand-written kernel here look slow, and that "
+                "reframes batches 003 and 004 rather than merely adding to them. The bars "
+                "are 022's unchanged: same quantiser, same site, and 021 changes no "
+                "arithmetic at all."
+            ),
+        ),
+        Hypothesis(
+            slug="027-conv-head-static-cache",
+            kernels=("tiled_int4_head", "static_decode_cache", "fused_causal_conv"),
+            category="B",
+            byte_share=0.1485,
+            replaces=("decode_step", "decode_cache", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="021-static-cache-cudagraphs",
+                floor=1.02,
+                reason=(
+                    "the same floor as 026: with no CUDA graph this is 022 and 025 "
+                    "composed, and both are measured alone in this batch with disjoint "
+                    "costs, so the composition would carry no new information"
+                ),
+            ),
+            mechanism=(
+                "Everything this batch has that works, on one candidate: the int4 head, the "
+                "fused causal conv, and a decode cache the compiler can CUDA-graph."
+            ),
+            prediction="win",
+            rationale=(
+                "Last because it is the riskiest -- three installers, the largest surface "
+                "for one of them to interact badly with another -- and everything cheap is "
+                "on disk by the time it runs. Predicted 1.20-1.45. It is also the slot that "
+                "tests 025's stated pair: once the step is a single graph replay, saving 48 "
+                "launches should be worth **nothing**, so 027 materially above 026 would "
+                "mean the fused conv is buying something other than dispatch (most likely "
+                "cuDNN's own algorithm selection on an 8192x4 problem), and 027 equal to "
+                "026 confirms the launch account. Either way the comparison is the finding, "
+                "and it costs one slot because the two compositions share a precondition. "
+                "Bars are 022's: the conv kernel is numerically the reference and 021 "
+                "changes no arithmetic, so the head is still the only source of error."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
     BATCH_003.batch_id: BATCH_003,
     BATCH_004.batch_id: BATCH_004,
+    BATCH_005.batch_id: BATCH_005,
 }
 
 
