@@ -46,6 +46,7 @@ from .batch import (
 __all__ = [
     "BatchRunner",
     "SlotResult",
+    "cudagraphs_during",
     "graphs_compiled_during",
     "recompile_limit_for",
     "release_compiled_state",
@@ -141,6 +142,13 @@ class SlotResult:
     #: How many graphs dynamo compiled during this slot's benchmark. `0` means the ratio
     #: compares eager against compiled; `None` means the counter could not be read.
     graphs_compiled: int | None = None
+    #: CUDA-graph nodes inductor recorded during this slot's benchmark, and how many times
+    #: it declined to record one. Batch 005 is the first hypothesis whose whole claim is
+    #: that the candidate gets CUDA-graphed and the reference does not, and without these
+    #: a candidate that silently did not engage returns 1.00 and reads as a refutation —
+    #: which is blocker 16 in a different costume. `None` means the counter was unreadable.
+    cudagraph_nodes: int | None = None
+    cudagraph_skips: int | None = None
     #: Wall-clock seconds per phase. Recorded even when the slot failed, because a slot
     #: that died 40 minutes into a compile is itself the measurement worth having.
     phases_s: dict[str, float] = field(default_factory=dict)
@@ -162,6 +170,8 @@ class SlotResult:
             "duration_s": self.duration_s,
             "peak_memory_mb": self.peak_memory_mb,
             "graphs_compiled": self.graphs_compiled,
+            "cudagraph_nodes": self.cudagraph_nodes,
+            "cudagraph_skips": self.cudagraph_skips,
             "phases_s": self.phases_s,
         }
 
@@ -476,7 +486,7 @@ class BatchRunner:
                     decode_tokens=self.workload["decode_tokens"],
                 )
 
-                with graphs_compiled_during() as graphs:
+                with graphs_compiled_during() as graphs, cudagraphs_during() as cudagraph_count:
                     result = run_interleaved(
                         columns,
                         bench_config,
@@ -487,6 +497,10 @@ class BatchRunner:
                     )
                 phase("bench", mark)
                 self.log(f"[batch] {hypothesis.slug}: dynamo compiled {graphs.compiled} graph(s)")
+                self.log(
+                    f"[batch] {hypothesis.slug}: inductor recorded "
+                    f"{cudagraph_count.nodes} cudagraph node(s), skipped {cudagraph_count.skips}"
+                )
             if result.achieved_gbps:
                 self.log(
                     f"[batch] {hypothesis.slug}: achieved "
@@ -513,6 +527,8 @@ class BatchRunner:
                 duration_s=time.monotonic() - started,
                 peak_memory_mb=int(torch.cuda.max_memory_allocated() // (1024 * 1024)),
                 graphs_compiled=graphs.compiled,
+                cudagraph_nodes=cudagraph_count.nodes,
+                cudagraph_skips=cudagraph_count.skips,
                 phases_s=phases,
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
@@ -542,6 +558,78 @@ class GraphCount:
     """How many graphs dynamo compiled inside a region. ``None`` when it could not be read."""
 
     compiled: int | None = None
+
+
+@dataclass
+class CudagraphCount:
+    """CUDA-graph nodes recorded, and skips declined, inside a region.
+
+    Two numbers rather than one because they answer different questions. ``skips`` rising
+    means inductor looked at a region and refused it — the compiled baseline does that 128
+    times per compile, for the mutated decode cache. ``nodes`` rising means it actually
+    recorded something, which is the only evidence that a candidate claiming to be
+    CUDA-graphed really is.
+    """
+
+    nodes: int | None = None
+    skips: int | None = None
+
+
+@contextlib.contextmanager
+def cudagraphs_during(counters=None, manager_for=None):
+    """Count recorded CUDA-graph nodes and cudagraph skips across a region.
+
+    Both readings are private API, so failing to read either costs the evidence and not
+    the slot — the same policy `graphs_compiled_during` follows, and for the same reason:
+    a missing diagnostic must not be able to end a measurement.
+    """
+    if counters is None:  # pragma: no cover - exercised on the GPU path
+        try:
+            from torch._dynamo.utils import counters as counters  # noqa: PLC0415
+        except ImportError:
+            yield CudagraphCount()
+            return
+    if manager_for is None:  # pragma: no cover - exercised on the GPU path
+
+        def manager_for():
+            from torch._inductor.cudagraph_trees import get_manager  # noqa: PLC0415
+
+            return get_manager(device_index=None, create_if_none_exists=False)
+
+    def nodes_now() -> int | None:
+        try:
+            manager = manager_for()
+        except Exception:  # noqa: BLE001 - private API; its absence is not a slot failure
+            return None
+        if manager is None:
+            return 0
+        try:
+            total = 0
+            for roots in manager.roots.values():
+                stack = list(roots)
+                while stack:
+                    node = stack.pop()
+                    total += 1
+                    for children in node.children.values():
+                        stack.extend(children)
+            return total
+        except Exception:  # noqa: BLE001
+            return None
+
+    def skips_now() -> int | None:
+        try:
+            return int(counters["inductor"]["cudagraph_skips"])
+        except (KeyError, TypeError, ValueError):
+            return None
+
+    count = CudagraphCount()
+    before_nodes, before_skips = nodes_now(), skips_now()
+    yield count
+    after_nodes, after_skips = nodes_now(), skips_now()
+    if before_nodes is not None and after_nodes is not None:
+        count.nodes = after_nodes - before_nodes
+    if before_skips is not None and after_skips is not None:
+        count.skips = after_skips - before_skips
 
 
 @contextlib.contextmanager
