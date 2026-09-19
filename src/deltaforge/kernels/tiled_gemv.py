@@ -69,8 +69,11 @@ __all__ = [
     "install_tiled_bf16",
     "install_tiled_fp8_all_linear",
     "install_tiled_fp8_full",
+    "install_tiled_fp8_head",
     "install_tiled_fp8_mlp",
     "install_tiled_int4_full",
+    "install_tiled_int4_head",
+    "install_tiled_int8_head",
     "install_tiled_int8_all_linear",
     "quantise_fp8_per_channel",
     "quantise_int4_k_major",
@@ -720,23 +723,34 @@ def _quantise_k_major(linears: list[nn.Linear], patched: type, *, kind: str) -> 
 _PATCHED: dict[str, type] = {}
 
 
-def _quantised_head_model_class() -> type:
-    """A `ReferenceModel` subclass whose `project_logits` calls the tiled head.
+def _quantised_head_model_class(base: type | None = None) -> type:
+    """A subclass of ``base`` whose `project_logits` calls the tiled head.
 
     A class swap rather than an instance attribute holding a bound method. Both work in
     eager; only one is reliably traceable, and a graph break inside the candidate would
     partially decompile it and hand back a ratio comparing two different amounts of
     compilation — which is blocker 16 wearing a different hat.
+
+    **Subclassed from whatever the model already is, not from `ReferenceModel`.** Batch 005
+    composes this with `static_cache`, which patches the root class too, and a factory
+    anchored at `ReferenceModel` would have the second install silently discard the first.
+    The candidate would still pass `_build_candidate`'s "did any module class change"
+    check, run, and return a plausible ratio for a model missing one of the two kernels it
+    claims to hold. Keyed by base, so the cache holds one class per distinct composition.
     """
-    if "head" not in _PATCHED:
+    if base is None:
         from ..reference import ReferenceModel
 
-        class TiledHeadModel(ReferenceModel):
+        base = ReferenceModel
+    key = f"head:{base.__module__}.{base.__qualname__}"
+    if key not in _PATCHED:
+
+        class TiledHeadModel(base):  # type: ignore[misc, valid-type]
             def project_logits(self, hidden_states):
                 return self.tiled_lm_head(hidden_states)
 
-        _PATCHED["head"] = TiledHeadModel
-    return _PATCHED["head"]
+        _PATCHED[key] = TiledHeadModel
+    return _PATCHED[key]
 
 
 def _install_head(model, *, kind: str) -> None:
@@ -750,7 +764,7 @@ def _install_head(model, *, kind: str) -> None:
         quantised = quantise_fp8_per_channel(weight) if kind == "fp8" else quantise_int8_per_channel(weight)
         head = TiledLMHead(to_k_major(quantised.qweight), quantised.scale, kind)
     model.tiled_lm_head = head.to(weight.device)
-    model.__class__ = _quantised_head_model_class()
+    model.__class__ = _quantised_head_model_class(type(model))
 
 
 def _guard(model, flag: str) -> bool:
@@ -799,9 +813,67 @@ def install_tiled_int4_full(model, entry=None) -> None:
     _install_head(model, kind="int4")
 
 
+# --------------------------------------------------------------------------------------
+# Batch 005 — the head on its own
+# --------------------------------------------------------------------------------------
+#
+# **Nobody has ever measured a hand-written GEMV on one site.** Batches 003 and 004 both
+# installed on all 248 layer projections at once, where the widest is 9216 and the
+# narrowest 32, and reported one aggregate byte rate — 319 GB/s, then 228, against a
+# compiled baseline at 1177. That number cannot say whether the kernel is slow everywhere
+# or slow where there is no parallelism to have: `in_proj_a` is 32 channels wide and gets
+# four programs at any tile size.
+#
+# The tied LM head is the opposite extreme and the largest single weight in the model:
+# **248320 x 2560, 1271.40 MB/token, 14.80% of everything the compiled column moves.** At
+# BLOCK_N=64 it launches 3880 programs on a 170-SM card, so it is the one site in this
+# model where a hand-written GEMV is not grid-starved by construction, and quantising it
+# replaces one kernel launch with two rather than 248 with 496.
+#
+# What it takes to break even is arithmetic rather than hope. The baseline spends
+# 1271.40 MB / 1177 GB/s = 1.08 ms/token in that matmul. So:
+#
+#   int4 (327.7 MB with its group scales) ties at 303 GB/s and wins outright above it;
+#   int8 / fp8 (635.7 MB)                 tie at 588 GB/s.
+#
+# The int4 bar is 1.33x the aggregate rate two rentals have already measured; the 8-bit bar
+# is 2.6x. That is why all three run: if they rank int4 > int8 the kernel is bandwidth-bound
+# at this site, and if int8 > int4 it is still issue-bound and the nibble unpack is on the
+# critical path — which is what batch 003 measured (int4 cost 1.046x int8 *while moving half
+# the bytes*). One site, three encodings, and the ordering is the finding either way.
+
+
+def install_tiled_int8_head(model, entry=None) -> None:
+    if _guard(model, "_deltaforge_tiled_int8_head"):
+        return
+    _install_head(model, kind="int8")
+
+
+def install_tiled_fp8_head(model, entry=None) -> None:
+    if _guard(model, "_deltaforge_tiled_fp8_head"):
+        return
+    _install_head(model, kind="fp8")
+
+
+def install_tiled_int4_head(model, entry=None) -> None:
+    if _guard(model, "_deltaforge_tiled_int4_head"):
+        return
+    _install_head(model, kind="int4")
+
+
 # ======================================================================================
 # Layer-1 correctness checks
 # ======================================================================================
+
+
+def _branch_of(n: int) -> tuple[int]:
+    """This module's ``BLOCK_N`` for ``N``, as `_probe_weights` wants it.
+
+    ``_launch_shape`` needs a ``K`` it does not use for the tile width, and the probes only
+    ever read element 0. Passing `quantised_linear`'s function instead is what made batch
+    004's probe labels name tiles this kernel never launched.
+    """
+    return (_launch_shape(n, 4096)[0],)
 
 
 def tiled_bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
@@ -817,7 +889,7 @@ def tiled_bf16_correctness_checks(model, *, device="cuda", dtype=None, seed: int
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model, sites="layers"):
+    for weight, label in _probe_weights(model, sites="layers", launch_shape=_branch_of):
         w = weight.detach()
         n, k = w.shape
         for shape, note in _decode_shapes(k):
@@ -851,7 +923,7 @@ def _scaled_checks(model, *, device, seed, sites, kind, op):
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model, sites=sites):
+    for weight, label in _probe_weights(model, sites=sites, launch_shape=_branch_of):
         quantised = quantise(weight.detach())
         qw, scale = quantised.qweight, quantised.scale
         n, k = qw.shape
@@ -900,7 +972,7 @@ def tiled_int8_correctness_checks(model, *, device="cuda", dtype=None, seed: int
     return _scaled_checks(model, device=device, seed=seed, sites="layers", kind="int8", op="tiled_gemv_int8")
 
 
-def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0, sites: str = "full"):
     """int4's reference rounds the scaled weight to bf16, because the kernel does.
 
     A shared reference is only shared if the implementations share their rounding. The
@@ -913,7 +985,7 @@ def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model, sites="full"):
+    for weight, label in _probe_weights(model, sites=sites, launch_shape=_branch_of):
         quantised = quantise_int4_k_major(weight.detach())
         packed, scale, group = quantised.qweight, quantised.scale, quantised.group_size
         n = packed.shape[1]
@@ -938,3 +1010,20 @@ def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int
                 )
             )
     return tuple(checks)
+
+
+def tiled_int8_head_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    return _scaled_checks(model, device=device, seed=seed, sites="head", kind="int8", op="tiled_gemv_int8")
+
+
+def tiled_fp8_head_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    return _scaled_checks(model, device=device, seed=seed, sites="head", kind="fp8", op="tiled_gemv_fp8")
+
+
+def tiled_int4_head_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """int4 on the head alone, against the same bf16-rounded reference `020` used.
+
+    One probe rather than four, and it is the probe that matters: the head is the only
+    site whose error reaches the argmax with no further layer to attenuate it.
+    """
+    return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")

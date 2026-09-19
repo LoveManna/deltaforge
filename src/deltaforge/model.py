@@ -295,3 +295,43 @@ register_installer("tiled_fp8_all_linear", _install_tiled_fp8_all_linear)
 register_installer("tiled_fp8_full", _install_tiled_fp8_full)
 register_installer("tiled_int8_all_linear", _install_tiled_int8_all_linear)
 register_installer("tiled_int4_full", _install_tiled_int4_full)
+
+
+# -- batch 005 ---------------------------------------------------------------------
+
+
+def _install_tiled_int4_head(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_head  # noqa: PLC0415
+
+    install_tiled_int4_head(model, entry)
+
+
+def _install_tiled_int8_head(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int8_head  # noqa: PLC0415
+
+    install_tiled_int8_head(model, entry)
+
+
+def _install_tiled_fp8_head(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_fp8_head  # noqa: PLC0415
+
+    install_tiled_fp8_head(model, entry)
+
+
+def _install_static_decode_cache(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.static_cache import install_static_decode_cache  # noqa: PLC0415
+
+    install_static_decode_cache(model, entry)
+
+
+def _install_fused_causal_conv(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.fused_causal_conv import install_fused_causal_conv  # noqa: PLC0415
+
+    install_fused_causal_conv(model, entry)
+
+
+register_installer("tiled_int4_head", _install_tiled_int4_head)
+register_installer("tiled_int8_head", _install_tiled_int8_head)
+register_installer("tiled_fp8_head", _install_tiled_fp8_head)
+register_installer("static_decode_cache", _install_static_decode_cache)
+register_installer("fused_causal_conv", _install_fused_causal_conv)

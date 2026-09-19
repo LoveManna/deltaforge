@@ -741,7 +741,7 @@ def _decode_shapes(k: int) -> tuple[tuple[tuple[int, int, int], str], ...]:
     )
 
 
-def _probe_weights(model, *, sites: str) -> tuple[tuple[Tensor, str], ...]:
+def _probe_weights(model, *, sites: str, launch_shape=None) -> tuple[tuple[Tensor, str], ...]:
     """One real weight per distinct launch-shape branch among the sites a kernel installs on.
 
     **Not a fixed pair of shapes.** `_launch_shape` chooses 8, 16 or 32 rows per program by
@@ -757,13 +757,25 @@ def _probe_weights(model, *, sites: str) -> tuple[tuple[Tensor, str], ...]:
     narrowest ``N`` in each, because the narrowest is the one whose last block is masked.
 
     ``sites`` mirrors what each installer touches, so a check never reports on a projection
-    its hypothesis left alone.
+    its hypothesis left alone. ``head`` is the tied LM head on its own.
+
+    ``launch_shape`` is **the kernel under test's** tiling function, because the branches
+    are its branches. Left to default it is this module's, which is what batch 004 did to
+    `tiled_gemv` — the probe labels there read `BLOCK_N=8/16/32` while the kernel was
+    launching 32 and 64. The probes still covered three distinct shapes, so the checks were
+    valid and only the labels lied, but a grouping derived from a different kernel is not a
+    guarantee that every branch of *this* one is covered.
     """
+    if sites == "head":
+        weight = model.lm_head_weight
+        return ((weight, f"N={weight.shape[0]} K={weight.shape[1]} (tied lm head)"),)
+
+    shape_of = launch_shape or _launch_shape
     linears = _mlp_linears(model) if sites == "mlp" else _layer_linears(model)
 
     by_branch: dict[int, nn.Linear] = {}
     for linear in linears:
-        branch = _launch_shape(int(linear.out_features))[0]
+        branch = shape_of(int(linear.out_features))[0]
         incumbent = by_branch.get(branch)
         if incumbent is None or linear.out_features < incumbent.out_features:
             by_branch[branch] = linear

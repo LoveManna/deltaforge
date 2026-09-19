@@ -63,6 +63,19 @@ REPLACEABLE_OPS = frozenset(
         "gqa_attention",
         "kv_cache_update",
         "decode_step",
+        # Batch 005. Both are deliberate widenings, and both name a boundary that already
+        # existed in `reference.py` rather than one invented for a kernel.
+        #
+        # `causal_conv` — `GatedDeltaNet._causal_conv`, the four-tap depthwise convolution
+        # that is the only `extern_kernels` call left in the decode graph.
+        # `decode_cache` — how `ReferenceModel.new_cache` allocates the decode state. It
+        # replaces no arithmetic, which is why it needs naming: the candidate that owns it
+        # changes a *property* of the cache (its address is promised constant) and nothing
+        # about what is computed, and an operation named for an arithmetic boundary could
+        # not describe it. `AGENT.md` §8 records what that property is worth: the compiled
+        # baseline has never been CUDA-graphed on any rental.
+        "causal_conv",
+        "decode_cache",
     }
 )
 
@@ -577,3 +590,82 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_int4_full", _tiled_gemv.tiled_int4_correctness_checks)
+
+
+# --------------------------------------------------------------------------------------
+# Batch 005 — the dispatch path, and the one site with parallelism to spare
+# --------------------------------------------------------------------------------------
+
+from . import static_cache as _static_cache  # noqa: E402
+
+REGISTRY.register(
+    "static_decode_cache",
+    impl=_static_cache.mark_cache_static,
+    replaces="decode_cache",
+    hypothesis="021-static-cache-cudagraphs",
+    notes=(
+        "Allocates the decode cache with `mark_static_address`, which is the promise "
+        "inductor's cudagraph check requires and cannot infer. The compiled baseline has "
+        "never been CUDA-graphed -- 64 mutated inputs, named in rental 38's dump -- so its "
+        "508 kernel launches per token are all dispatched from Python. No Triton, no "
+        "arithmetic change, and the largest unattacked number in the project."
+    ),
+)
+register_checks("static_decode_cache", _static_cache.static_cache_correctness_checks)
+
+from . import fused_causal_conv as _fused_causal_conv  # noqa: E402
+
+REGISTRY.register(
+    "fused_causal_conv",
+    impl=_fused_causal_conv.fused_causal_conv_step,
+    replaces="causal_conv",
+    hypothesis="025-fused-causal-conv",
+    notes=(
+        "cat + extern cuDNN convolution + cache copy_ -- 72 of the decode step's 508 "
+        "launches, moving 0.05% of its bytes -- collapsed into one Triton kernel per "
+        "linear-attention layer. Inductor cannot fuse across `extern_kernels.convolution`, "
+        "so the producer and the consumer are stranded either side of it by construction."
+    ),
+)
+register_checks("fused_causal_conv", _fused_causal_conv.fused_causal_conv_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_head",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="022-int4-head",
+    notes=(
+        "Group-128 int4 on the tied LM head and nothing else: 248320 x 2560, 14.80% of "
+        "what the compiled column moves, in one matmul that launches 3880 programs. The "
+        "first hand-written GEMV this project has ever run on a site that is not "
+        "grid-starved. Ties at 303 GB/s against a baseline spending 1.08 ms/token there."
+    ),
+)
+register_checks("tiled_int4_head", _tiled_gemv.tiled_int4_head_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int8_head",
+    impl=_tiled_gemv.tiled_gemv_int8,
+    replaces="decode_step",
+    hypothesis="023-int8-head",
+    notes=(
+        "The same site at 8 bits. Twice int4's bytes and none of its nibble unpack, so the "
+        "pair ranks the two regimes directly: int4 faster means bandwidth-bound, int8 "
+        "faster means still issue-bound. Ties at 588 GB/s."
+    ),
+)
+register_checks("tiled_int8_head", _tiled_gemv.tiled_int8_head_correctness_checks)
+
+REGISTRY.register(
+    "tiled_fp8_head",
+    impl=_tiled_gemv.tiled_gemv_fp8,
+    replaces="decode_step",
+    hypothesis="024-fp8-head",
+    notes=(
+        "The same site and the same bit width as 023, stored e4m3. Batch 003 measured "
+        "int8->fp32 at 1.438x the time of bf16 in the same kernel because it is an ALU "
+        "instruction on the critical path; on sm_120 e4m3 converts inside the MMA pipeline. "
+        "Adjacent to 023 so the difference between them is that tax alone."
+    ),
+)
+register_checks("tiled_fp8_head", _tiled_gemv.tiled_fp8_head_correctness_checks)
