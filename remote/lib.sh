@@ -30,6 +30,41 @@ DF_DRY_RUN="${DF_DRY_RUN:-0}"
 
 df_log()  { printf '[deltaforge] %s\n' "$*" >&2; }
 df_warn() { printf '[deltaforge] WARNING: %s\n' "$*" >&2; }
+
+# Run a command, retrying a transport failure a few times with a short backoff.
+#
+# Rental 39 died three and a half minutes in, on the first thing that touches the network
+# after sshd answers::
+#
+#     client_loop: send disconnect: Broken pipe
+#     rsync: [sender] write error: Broken pipe (32)
+#
+# Nothing was wrong with the box, the scripts or the batch -- an ssh connection dropped
+# mid-transfer on a host whose advertised reliability was 0.9834, and the repo sync is the
+# one step where that costs the whole rental: it runs before torch, the checkpoint and the
+# GPU suite, so there is nothing yet to lose and everything still to pay for. A retry is
+# not routing around a gate; the gate here is a socket.
+#
+# Deliberately not applied to anything that creates or destroys an instance. Retrying a
+# lifecycle call is how a project ends up with two rentals it is paying for and one it
+# knows about.
+df_retry() {
+    df_retry_tries=${DF_RETRIES:-3}
+    df_retry_sleep=${DF_RETRY_SLEEP:-5}
+    df_retry_n=1
+    while :; do
+        if "$@"; then
+            return 0
+        fi
+        if [ "$df_retry_n" -ge "$df_retry_tries" ]; then
+            return 1
+        fi
+        df_warn "$1 failed (attempt $df_retry_n of $df_retry_tries); retrying in ${df_retry_sleep}s"
+        sleep "$df_retry_sleep"
+        df_retry_n=$((df_retry_n + 1))
+        df_retry_sleep=$((df_retry_sleep * 2))
+    done
+}
 df_die()  { printf '[deltaforge] ERROR: %s\n' "$*" >&2; exit 1; }
 
 df_dry() {

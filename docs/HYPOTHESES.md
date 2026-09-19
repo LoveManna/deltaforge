@@ -329,6 +329,88 @@ nats, 38/264). **Derive the gate from those two measured points, not from priors
 003's priors were wrong in exactly this way, and its thresholds failed four slots that were
 working correctly.
 
+### 8. The 508 launches the compiled step dispatches from Python
+
+**Share of bytes: none. Ceiling: ~1.26x.** Category **A**.
+
+**Mechanism.** Rental 38's `output_code` dump is a file this repository already has, and
+counting it answers a question no kernel had asked. The decode graph is fully unrolled, so
+its launches can simply be counted: **483 `triton_*.run(...)` call sites plus 25
+`extern_kernels` = 508 kernel launches per decoded token.** And the dump says, 128 times,
+that **none of them is CUDA-graphed**:
+
+```
+skipping cudagraphs due to mutated inputs (64 instances)
+```
+
+64 mutated inputs is the whole decode cache — 24 conv histories, 24 recurrent states, 16
+KV slices — and the check is all-or-nothing over the region.
+
+The arithmetic is dispatch rather than traffic. The compiled column moves 8587.80 MB in
+**7.30 ms**; that is **4.79 ms at a 5090's 1792 GB/s vendor peak and 5.3-6.4 ms at the
+75-90% a real kernel reaches**. The residue, 0.9-2.5 ms, spread over 508 launches is
+**1.8-4.9 µs each** — what inductor's Python launch path costs when nothing is captured.
+
+**Why the compiler cannot.** A CUDA graph bakes in the addresses its kernels write to, so
+an input the graph mutates is only safe if the caller promises the storage never moves.
+Parameters and buffers carry that promise structurally; a cache handed in as an argument
+does not, and no analysis of the callee can supply it. `torch._dynamo.mark_static_address`
+is the promise, and it is what every production decode engine uses on its KV cache.
+
+**Why it is a hypothesis and not a chore.** It asks nothing of our arithmetic — the kernels
+that run are inductor's own, in inductor's own order — which makes it the only entry in
+this file whose ceiling does not depend on a Triton kernel being good. It is also the
+precondition for every launch-reduction hypothesis, including entry 9's sibling: a saved
+launch is worth nothing once the step is one graph replay, and that pair is falsifiable in
+a single batch.
+
+**Watch for.** `cache_offset` reaches the graph as a symint, and `cudagraphify_impl` keys a
+recording on each distinct int — so a 128-token decode wants **128 recordings**, against a
+`cudagraph_unexpected_rerecord_limit` that is itself 128. If it does not engage, the slot
+measures 1.00 and reads exactly like a refutation, so the slot record carries
+`cudagraph_nodes` and `cudagraph_skips`: nodes at 0 means it never ran, and a ratio near
+1.00 with nodes above 128 means launch dispatch was never the gap. Those are different
+findings and the record has to be able to tell them apart.
+
+**Measured on rental 39 as `021-static-cache-cudagraphs`.** See
+`results/batches/005-launch-and-head/README.md`.
+
+### 9. The tied LM head — the one site where a hand-written GEMV is not grid-starved
+
+**Share of bytes: 14.80%. Ceiling: 1.080x at 8 bits, 1.123x at int4.** Category **B**.
+
+**Mechanism.** Entry 1's arithmetic is intact and has now been out of reach of two kernels.
+Both of them were installed on **all 248 layer projections at once** and reported a single
+aggregate byte rate — 319 GB/s, then 228 — and that number cannot distinguish a kernel that
+is slow everywhere from one that is slow where there is no parallelism to have.
+
+The tied LM head is the other extreme, and it has never been measured on its own:
+**248320 x 2560, 1271.40 MB/token, 14.80% of everything the compiled column moves**, in one
+matmul. At BLOCK_N=64 it launches **3880 programs** on a 170-SM card, where `in_proj_a` is
+32 channels wide and launches four. Quantising it replaces one kernel launch with two
+rather than 248 with 496, so the fusion penalty entry 1 discovered is paid once.
+
+**What breaking even takes, which is arithmetic rather than hope.** The baseline spends
+1271.40 MB / 1177 GB/s = **1.08 ms/token** in that matmul. So int4, moving 327.7 MB with
+its group scales, **ties at 303 GB/s** — 1.33x the aggregate two rentals have already
+measured — and collects the full 1.123x at 550. Eight bits moves 635.7 MB and **ties at
+588 GB/s**, which is 2.6x the aggregate.
+
+**Three encodings at one site, and the ordering is the finding.** int4 ahead of int8 means
+the kernel is bandwidth-bound here and entry 1 is reachable after all. int8 ahead of int4
+means it is still issue-bound and the nibble unpack is on the critical path — which is what
+batch 003 measured when int4 cost **1.046x int8 while moving half the bytes**, and what two
+rentals have failed to explain. int8 against fp8 is the conversion tax batch 003 put at
+**1.438x**, isolated on a site where nothing else is binding.
+
+**Watch for.** The head is the only weight whose perturbation reaches the argmax with
+nothing downstream to attenuate it, so it carries the batch's largest accuracy risk at the
+smallest share of bytes. Derive its bars from `013` minus `012`, which is the int8 head
+measured on its own: ~0.0001 nats and about one flip of 264.
+
+**Measured on rental 39 as `022`, `023` and `024`.** See
+`results/batches/005-launch-and-head/README.md`.
+
 ---
 
 ## Graveyard

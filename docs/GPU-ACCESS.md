@@ -25,6 +25,7 @@ exposing the next problem in the chain:
 | 14 | A cold `max-autotune` compile never finishes inside a session | rentals 22, 30-32 | the unrolled prefill scan is not compiled; it is untimed setup | yes — 6980.9s unfinished → 267.5s → 57.4s warm |
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
 | 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
+| 17 | An ssh connection drops mid-`rsync`, and the repo sync has no retry | rental 39 | `df_retry` plus `rsync --partial` on both syncs | **no — not yet exercised on a GPU** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -427,8 +428,12 @@ project have not been the loud ones.
 | 33 | 2026-09-14 | CUDA `Error 804` on a host advertising exactly 12.8 — blocker 11 recurred | 8.90 min | $0.0602 |
 | 34 | 2026-09-14 | **the compile finished (267.5s) and the harness calibrated (1.0009)**; 8 slots lost to blocker 15 | 30.15 min | $0.2192 |
 | 35 | 2026-09-14 | **all nine slots ran**; calibrated 1.0018; 6 slots void to blocker 16 | 52.65 min | $0.3829 |
+| 36 | 2026-09-16 | cancelled by hand before the batch started | 2.08 min | $0.0142 |
+| 37 | 2026-09-16 | **batch 003: seven admissible ratios, nothing voided**, seven losses | 55.55 min | $0.3786 |
+| 38 | 2026-09-17 | **batch 004: two slots, five declined**; the `output_code` dump ran | 39.65 min | $0.2883 |
+| 39 | 2026-09-19 | ssh dropped mid-repo-sync, before torch — blocker 17 | 3.53 min | $0.0257 |
 
-Thirty-five rentals, $5.764, **zero leaked instances** — every one destroyed cleanly by
+Thirty-nine rentals, $6.471, **zero leaked instances** — every one destroyed cleanly by
 the trap, including two cancelled mid-flight with SIGTERM.
 
 **Rental 28 is the cheapest informative rental yet**, and worth reading against rental 27.
@@ -571,6 +576,42 @@ number.
 autograd and therefore reusable, against 312 KB from rental 31. Inductor caches per
 kernel, so a timed-out compile still makes progress. The next rental on this card starts
 genuinely warm, and whether that is enough is the next thing to measure.
+
+## The seventeenth blocker: a dropped socket on the one step with nothing to lose yet
+
+Rental 39 died three and a half minutes in, at the first thing that touches the network
+after sshd answers:
+
+```
+[deltaforge] syncing repo up to root@ssh2.vast.ai:/workspace/deltaforge
+client_loop: send disconnect: Broken pipe
+rsync: [sender] write error: Broken pipe (32)
+rsync error: error in socket IO (code 10)
+```
+
+**Nothing was wrong with the box, the scripts, or the batch.** The host was running, sshd
+had answered, and an ssh connection dropped mid-transfer. Teardown behaved correctly:
+results pulled (there were none), instance destroyed, $0.0257 billed, nothing leaked.
+
+Worth fixing anyway, because of *where* it sits. The repo sync runs before torch, before
+the 9.32 GB checkpoint and before the GPU suite, so a failure there has nothing to lose and
+the whole fixed cost still to pay — a rental that dies at minute 3 has to be paid for again
+from minute 0. `df_retry` in `remote/lib.sh` now retries a transfer three times with
+exponential backoff, and both syncs pass `--partial` so a retry resumes rather than
+restarting.
+
+**It is deliberately not applied to anything that creates or destroys an instance.**
+Retrying a lifecycle call is how a project ends up paying for two rentals and knowing about
+one. The retry covers transfers, which are idempotent, and nothing else.
+
+Two things this cost beyond the four cents. The teardown's cache pull ran with
+`DF_CACHE_KEY` still unset — the key is read off the box, and the box had not got that far
+— so it created an empty `cache/compile/unknown/`, which is the directory
+`df_phase_estimates` surveys. And the immediate retry with `--exclude-machines 140887`
+**refused with exit 4**: that host was the only offer meeting the filters at the time, so
+excluding it emptied the market. The run that succeeded went back to the same machine with
+the retry in place, which is the right order — the fix addresses the failure, and widening
+`--max-rate` to buy a different host would have been paying to route around a socket.
 
 ## Current status
 

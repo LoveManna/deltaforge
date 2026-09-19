@@ -265,6 +265,14 @@ also **generated Triton with no cuBLAS anywhere**, with the residual add and RMS
 inside its matmuls, and it runs with **no CUDA graphs**. See
 `results/batches/004-bandwidth-bound-gemv/README.md`.
 
+**And it dispatches 508 kernel launches per decoded token.** The decode graph is fully
+unrolled, so the dump can simply be counted: 483 `triton_*.run(...)` call sites plus 25
+`extern_kernels`. Against 4.79 ms at vendor peak and 5.3-6.4 at an achievable one, the
+0.9-2.5 ms residue in that 7.30 is **1.8-4.9 µs a launch** — which is what inductor's
+Python launch path costs when nothing is captured into a graph. That is `docs/HYPOTHESES.md`
+entry 8, and it is the first hypothesis in this repository whose ceiling does not depend on
+a hand-written kernel being good.
+
 Rental 35 (2026-09-14) is where the infrastructure chain ended: it ran all nine slots of
 batch 001, the oracle gate passed and the identity champion measured 1.0018, but dynamo hit
 `recompile_limit` inside slot 2 and six ratios were void. Batch 003 closed that. Memory has
@@ -561,6 +569,26 @@ quantisation does not help", which is false and would have closed the backlog's 
 hypothesis for the wrong reason. **Put the mechanism's control in the batch, and put it
 early**: five of batch 003's seven slots were determined the moment `009` returned 0.2801,
 and nothing in the framework could act on that. See `docs/BATCHES.md` on conditional slots.
+
+**Two installers that both swap the root class will silently discard each other.** The
+tiled LM head and the static decode cache each work by replacing `type(model)` with a
+`ReferenceModel` subclass. Anchored at `ReferenceModel`, whichever ran second dropped the
+first — and nothing would have caught it: `_build_candidate` asks only whether *any* module
+class changed, which is still true, so a composed slot would compile, pass correctness and
+return a plausible ratio for a candidate holding one of the two kernels it claims. Both
+factories now subclass whatever the model already is, keyed by base. **Before composing two
+installers, check what each one actually replaces** — two that patch disjoint submodules
+compose for free, and two that patch the same attribute do not.
+
+**A byte model that a rental has corrected still has to be corrected in the code.** Rental
+38 established that the compiled columns move 8587.80 MB/token rather than the roofline's
+9158.23, and `LEADERBOARD.md` and `docs/HYPOTHESES.md` were fixed. `decode_bytes_per_token`
+was not, and it is what the bench divides time by — so the feature built to stop computing
+GB/s by hand would have shipped every achieved bandwidth 6.6% low. `traffic` still carries
+the row, because eager really does perform that copy and `docs/roofline.py` documents eager;
+`decode_bytes_per_token` defaults to the compiled total and takes `compiled=False` for the
+other. **Fixing the prose and leaving the arithmetic is half a fix**, and the half that is
+left is the one a rental reads.
 
 **A reclaim can have a premise that was never true.** `release_compiled_state` called
 `reset_cudagraph_trees` between slots, its docstring asserting the reference would

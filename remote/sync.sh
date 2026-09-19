@@ -90,8 +90,10 @@ case "$DF_DIRECTION" in
         # shellcheck disable=SC2086
         ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
             "mkdir -p '$DF_REMOTE_DIR'"
+        # --partial keeps what a dropped connection already moved, so the retry resumes
+        # rather than restarting. See df_retry in remote/lib.sh for what this cost.
         # shellcheck disable=SC2086
-        rsync -az --delete $EXCLUDES -e "$RSYNC_SSH" \
+        df_retry rsync -az --partial --delete $EXCLUDES -e "$RSYNC_SSH" \
             "$DF_REPO_ROOT/" "$DF_SSH_HOST:$DF_REMOTE_DIR/"
         ;;
     down)
@@ -101,7 +103,9 @@ case "$DF_DIRECTION" in
         df_log "pulling results down from $DF_SSH_HOST:$DF_REMOTE_DIR/results/"
         mkdir -p "$DF_REPO_ROOT/results"
         # No --delete here: a failed pull must never erase results already recorded.
-        rsync -az -e "$RSYNC_SSH" \
+        # Retried for the same reason the up-sync is, and it matters more: this one runs
+        # after everything has been paid for.
+        df_retry rsync -az --partial -e "$RSYNC_SSH" \
             "$DF_SSH_HOST:$DF_REMOTE_DIR/results/" "$DF_REPO_ROOT/results/"
         ;;
     cache-up)
