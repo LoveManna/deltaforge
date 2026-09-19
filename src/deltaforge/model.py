@@ -318,6 +318,24 @@ def _install_tiled_fp8_head(model: ReferenceModel, entry: KernelEntry) -> None:
     install_tiled_fp8_head(model, entry)
 
 
+def _install_tiled_int4_head_tuned(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_head_tuned
+
+    install_tiled_int4_head_tuned(model, entry)
+
+
+def _install_tiled_int4_mlp(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_mlp
+
+    install_tiled_int4_mlp(model, entry)
+
+
+def _install_tiled_int4_wide(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_wide
+
+    install_tiled_int4_wide(model, entry)
+
+
 def _install_static_decode_cache(model: ReferenceModel, entry: KernelEntry) -> None:
     from .kernels.static_cache import install_static_decode_cache  # noqa: PLC0415
 
@@ -335,3 +353,6 @@ register_installer("tiled_int8_head", _install_tiled_int8_head)
 register_installer("tiled_fp8_head", _install_tiled_fp8_head)
 register_installer("static_decode_cache", _install_static_decode_cache)
 register_installer("fused_causal_conv", _install_fused_causal_conv)
+register_installer("tiled_int4_head_tuned", _install_tiled_int4_head_tuned)
+register_installer("tiled_int4_mlp", _install_tiled_int4_mlp)
+register_installer("tiled_int4_wide", _install_tiled_int4_wide)

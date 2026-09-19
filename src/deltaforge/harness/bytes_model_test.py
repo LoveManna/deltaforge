@@ -80,3 +80,55 @@ def test_a_config_whose_shape_matches_no_manifest_is_still_refused():
 
     with pytest.raises(ValueError, match="no tensor manifest"):
         decode_bytes_per_token(tiny_config(), weight_bits={}, context_length=2048)
+
+
+# -- batch 006: the gates are their own region -----------------------------------------
+
+
+def test_the_32_channel_gate_projections_are_their_own_weight_region():
+    """`in_proj_a` and `in_proj_b` are the only sites batch 006 leaves in bf16.
+
+    Without a region of their own a manifest can say "the linear-attention projections at
+    4 bits" or nothing, and the first would credit a candidate with a saving it never
+    collected at 48 sites.
+    """
+    from .bytes_model import WEIGHT_REGIONS, weight_bytes
+
+    groups = weight_bytes("Qwen/Qwen3.5-4B")
+
+    assert "linear_attn_gates" in WEIGHT_REGIONS
+    # 48 projections of 32 x 2560 at bf16.
+    assert groups["linear_attn_gates"] == 48 * 32 * 2560 * 2
+    assert groups["linear_attn"] > 100 * groups["linear_attn_gates"]
+
+
+def test_the_layers_alias_still_means_every_layer_projection():
+    """Batches 003 and 004 measured their byte counts through this alias. Splitting the
+    gates out of `linear_attn` must not silently change what those manifests meant."""
+    from ..config import MODELS
+    from .bytes_model import decode_bytes_per_token
+
+    config = MODELS["Qwen/Qwen3.5-4B"]()
+
+    alias = decode_bytes_per_token(config, weight_bits={"layers": 8})
+    spelled = decode_bytes_per_token(
+        config, weight_bits={"mlp": 8, "linear_attn": 8, "linear_attn_gates": 8, "full_attn": 8}
+    )
+
+    assert alias == spelled
+
+
+def test_leaving_the_gates_in_bf16_is_worth_less_than_a_tenth_of_a_percent():
+    """The cost of excluding them, so a writeup can say it rather than imply it."""
+    from ..config import MODELS
+    from .bytes_model import decode_bytes_per_token
+
+    config = MODELS["Qwen/Qwen3.5-4B"]()
+
+    everything = decode_bytes_per_token(config, weight_bits={"layers": 4, "head": 4})
+    wide_only = decode_bytes_per_token(
+        config, weight_bits={"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4}
+    )
+
+    assert wide_only > everything
+    assert (wide_only - everything) / decode_bytes_per_token(config) < 0.001

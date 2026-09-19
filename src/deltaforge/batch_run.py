@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import gc
+import logging
 import time
 import traceback
 from dataclasses import dataclass, field, replace
@@ -149,6 +150,16 @@ class SlotResult:
     #: which is blocker 16 in a different costume. `None` means the counter was unreadable.
     cudagraph_nodes: int | None = None
     cudagraph_skips: int | None = None
+    #: The distinct reasons inductor gave for each refusal, as it logged them. Batch 005
+    #: recorded the *count* and could not say why: `021` returned `nodes: 0, skips: 127`
+    #: and the writeup had to rank three suspects it could not separate. A count says the
+    #: hypothesis was not tested; the reason says which line to go and fix.
+    cudagraph_skip_reasons: list[str] = field(default_factory=list)
+    #: The tile `tune_launch_shape` chose per ``(kind, N, K)``, as ``"kind N K"`` ->
+    #: ``[BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages]``. For batch 006 this is the
+    #: finding as much as the ratio is: a slot that wins with the heuristic's own tile and
+    #: one that wins with SPLIT_K=32 are different results about the same kernel.
+    launch_shapes: dict[str, list[int]] = field(default_factory=dict)
     #: Wall-clock seconds per phase. Recorded even when the slot failed, because a slot
     #: that died 40 minutes into a compile is itself the measurement worth having.
     phases_s: dict[str, float] = field(default_factory=dict)
@@ -172,6 +183,8 @@ class SlotResult:
             "graphs_compiled": self.graphs_compiled,
             "cudagraph_nodes": self.cudagraph_nodes,
             "cudagraph_skips": self.cudagraph_skips,
+            "cudagraph_skip_reasons": list(self.cudagraph_skip_reasons),
+            "launch_shapes": dict(self.launch_shapes),
             "phases_s": self.phases_s,
         }
 
@@ -501,6 +514,8 @@ class BatchRunner:
                     f"[batch] {hypothesis.slug}: inductor recorded "
                     f"{cudagraph_count.nodes} cudagraph node(s), skipped {cudagraph_count.skips}"
                 )
+                for reason in cudagraph_count.reasons:
+                    self.log(f"[batch] {hypothesis.slug}: cudagraph note: {reason}")
             if result.achieved_gbps:
                 self.log(
                     f"[batch] {hypothesis.slug}: achieved "
@@ -529,6 +544,8 @@ class BatchRunner:
                 graphs_compiled=graphs.compiled,
                 cudagraph_nodes=cudagraph_count.nodes,
                 cudagraph_skips=cudagraph_count.skips,
+                cudagraph_skip_reasons=list(cudagraph_count.reasons),
+                launch_shapes=_launch_shapes_now(),
                 phases_s=phases,
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
@@ -573,6 +590,98 @@ class CudagraphCount:
 
     nodes: int | None = None
     skips: int | None = None
+    #: Distinct skip messages logged inside the region, in the order first seen.
+    reasons: list[str] = field(default_factory=list)
+
+
+class _SkipReasonHandler(logging.Handler):
+    """Collect ``skipping cudagraphs due to ...`` messages without printing them.
+
+    Inductor's skip path is `log_cudagraph_skip_and_bump_counter`, which bumps the counter
+    this context manager already reads and warns on the ``cudagraphs`` artifact logger in
+    the same breath. Batch 005 took the counter and dropped the sentence beside it, and
+    then spent a section of its writeup ranking suspects the sentence would have named.
+
+    Distinct messages only, and bounded: the baseline logs one per decode step, 128 times
+    a compile, and a record is not a transcript.
+    """
+
+    LIMIT = 8
+
+    def __init__(self, sink: list[str]) -> None:
+        super().__init__(level=logging.DEBUG)
+        self.sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - a diagnostic must not raise into the slot
+            return
+        if "cudagraph" not in message.lower():
+            return
+        message = " ".join(message.split())[:400]
+        if message not in self.sink and len(self.sink) < self.LIMIT:
+            self.sink.append(message)
+
+
+@contextlib.contextmanager
+def _capturing_skip_reasons(sink: list[str]):
+    """Attach `_SkipReasonHandler` to inductor's cudagraph loggers for the region.
+
+    The artifact logger drops records unless its artifact is enabled, so the artifact is
+    enabled for the duration and restored afterwards. Everything here is best-effort: a
+    torch that has moved the logger costs the evidence, never the slot.
+    """
+    handler = _SkipReasonHandler(sink)
+    loggers = []
+    restore = None
+    try:
+        import torch  # noqa: PLC0415
+
+        restore = torch._logging._internal.log_state  # noqa: SLF001
+        torch._logging.set_logs(cudagraphs=True)
+    except Exception:  # noqa: BLE001
+        restore = None
+    for name in (
+        "torch._inductor.cudagraph_utils.__cudagraphs",
+        "torch._inductor.cudagraph_trees.__cudagraphs",
+        "torch._inductor.cudagraph_utils",
+    ):
+        try:
+            logger = logging.getLogger(name)
+            logger.addHandler(handler)
+            loggers.append(logger)
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        yield
+    finally:
+        for logger in loggers:
+            logger.removeHandler(handler)
+        if restore is not None:
+            try:
+                import torch  # noqa: PLC0415
+
+                torch._logging.set_logs(cudagraphs=False)  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _launch_shapes_now() -> dict[str, list[int]]:
+    """Whatever `tune_launch_shape` has measured so far, flattened for JSON.
+
+    Read after the benchmark rather than passed in, because the tuner runs at install time
+    and memoises per ``(kind, N, K)`` for the life of the process: slot N's record
+    therefore names every tile in force during slot N, including the ones an earlier slot
+    paid to measure. Empty on any rental that did no tuning, which is every rental before
+    batch 006.
+    """
+    try:
+        from .kernels.tiled_gemv import tuned_launch_shapes  # noqa: PLC0415
+
+        return {f"{kind} {n} {k}": list(shape) for (kind, n, k), shape in tuned_launch_shapes().items()}
+    except Exception:  # noqa: BLE001 - a diagnostic must not be able to fail a slot
+        return {}
 
 
 @contextlib.contextmanager
@@ -624,7 +733,8 @@ def cudagraphs_during(counters=None, manager_for=None):
 
     count = CudagraphCount()
     before_nodes, before_skips = nodes_now(), skips_now()
-    yield count
+    with _capturing_skip_reasons(count.reasons):
+        yield count
     after_nodes, after_skips = nodes_now(), skips_now()
     if before_nodes is not None and after_nodes is not None:
         count.nodes = after_nodes - before_nodes

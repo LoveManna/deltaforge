@@ -675,3 +675,62 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_fp8_head", _tiled_gemv.tiled_fp8_head_correctness_checks)
+
+
+# --------------------------------------------------------------------------------------
+# Batch 006 — the same kernel, on a tile that was measured
+# --------------------------------------------------------------------------------------
+#
+# Three entries, one mechanism. `_launch_shape` was a heuristic no rental ever timed: it
+# targets 256 programs — one wave on a 170-SM card — where the champion's site launches
+# 3880, and it narrows BLOCK_N to 32 below N=4096, which halves the contiguous run each
+# program reads. `tune_launch_shape` times every candidate on the card instead, with the
+# old heuristic as its first candidate, so a tuned kernel cannot be slower than an untuned
+# one by more than the noise.
+
+REGISTRY.register(
+    "tiled_int4_head_tuned",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="028-int4-head-tuned",
+    notes=(
+        "The champion's site and the champion's arithmetic, with the tile measured rather "
+        "than guessed. 022 collected 70% of its 1.123x ceiling at BLOCK_N=64, SPLIT_K=1, "
+        "num_warps=4 — a configuration chosen from a comment about SM counts. This is the "
+        "one slot in the batch whose result is directly comparable to a number already on "
+        "the leaderboard, which is why it runs first among the kernels."
+    ),
+)
+register_checks("tiled_int4_head_tuned", _tiled_gemv.tiled_int4_head_tuned_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_mlp",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="swiglu_mlp",
+    hypothesis="030-int4-mlp",
+    notes=(
+        "Group-128 int4 on the 96 MLP projections: **52.75% of everything the compiled "
+        "column moves**, and the largest homogeneous block of bytes in the model. Every "
+        "site is wide — 9216 or 2560 against in_proj_a's 32 — so this is the cleanest test "
+        "of whether batch 004's loss was the tile. Ties at 331 GB/s; the untuned kernel "
+        "reached 196-280 on these sites and the tuned kernel reached 656 on the head."
+    ),
+)
+register_checks("tiled_int4_mlp", _tiled_gemv.tiled_int4_mlp_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_wide",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="032-int4-wide-head",
+    notes=(
+        "int4 on the 200 layer projections with N >= 1024 **and the tied head**: 97.83% of "
+        "per-token traffic, a 3.76x ceiling. in_proj_a and in_proj_b stay bf16 — 48 sites, "
+        "32 channels wide, starved at every tile and worth 0.05% of bytes between them — "
+        "so including them could only fold a site no tile can fix into an aggregate that "
+        "hides it, which is what batches 003 and 004 did. The head is inside this kernel "
+        "rather than composed beside it because the registry allows one champion per "
+        "replaceable operation and both claim `decode_step`."
+    ),
+)
+register_checks("tiled_int4_wide", _tiled_gemv.tiled_int4_wide_correctness_checks)

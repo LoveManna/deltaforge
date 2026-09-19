@@ -44,12 +44,24 @@ BYTES = {"BF16": 2, "F16": 2, "F32": 4, "F8_E4M3": 1, "I64": 8}
 #: tensor the final projection streams. Norm weights are 0.333 MB of 8411 and nothing
 #: quantises a norm scale, so they are deliberately absent: there is no bit width a
 #: manifest could usefully set for them.
-WEIGHT_REGIONS = ("mlp", "linear_attn", "full_attn", "head")
+#:
+#: ``linear_attn_gates`` is ``in_proj_a`` and ``in_proj_b`` — 48 projections **32 channels
+#: wide**, 7.86 MB/token between them, and the only sites in this model that no tile can
+#: give parallelism to. They are their own region because batch 006 is the first batch to
+#: quantise the layer projections *without* them, and a manifest that could not say so
+#: would have to credit a candidate with a saving it never collected.
+WEIGHT_REGIONS = ("mlp", "linear_attn", "linear_attn_gates", "full_attn", "head")
 
 #: ``layers`` is an alias, not a region. Every batch-004 slot that quantises "the layer
-#: projections" means these three, and spelling them out in each manifest invites one to
-#: drift from the others.
-_LAYER_REGIONS = ("mlp", "linear_attn", "full_attn")
+#: projections" means all of them, and spelling them out in each manifest invites one to
+#: drift from the others. The gates are included here so the alias keeps exactly the
+#: meaning it had for batches 003 and 004, whose records were measured with it.
+_LAYER_REGIONS = ("mlp", "linear_attn", "linear_attn_gates", "full_attn")
+
+
+def _IS_GATE_PROJECTION(name: str) -> bool:  # noqa: N802 - a predicate, named like the constant it guards
+    """``in_proj_a`` / ``in_proj_b``: the two 32-channel projections per linear-attn layer."""
+    return ".in_proj_a." in name or ".in_proj_b." in name
 
 
 def _tensor_bytes(meta: dict) -> int:
@@ -73,7 +85,7 @@ def weight_bytes(repo_id: str) -> dict[str, int]:
         elif ".mlp." in name:
             key = "mlp"
         elif "linear_attn" in name:
-            key = "linear_attn"
+            key = "linear_attn_gates" if _IS_GATE_PROJECTION(name) else "linear_attn"
         elif "self_attn" in name:
             key = "full_attn"
         else:

@@ -17,9 +17,18 @@ import pytest
 import torch
 
 from .batch import scoped_registry
-from .batches import BATCH_001, BATCH_002, BATCH_003, BATCH_004, BATCH_005, BATCHES, get_batch
+from .batches import (
+    BATCH_001,
+    BATCH_002,
+    BATCH_003,
+    BATCH_004,
+    BATCH_005,
+    BATCH_006,
+    BATCHES,
+    get_batch,
+)
 from .config import tiny_config
-from .kernels import REGISTRY
+from .kernels import CHECK_BUILDERS, REGISTRY
 from .model import apply_champions
 from .reference import ReferenceModel
 
@@ -672,5 +681,160 @@ def test_the_three_head_slots_attack_the_same_site_at_three_encodings():
 
 def test_005_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_005:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+# -- batch 006: the tile, and the sites that were never grid-starved --------------------
+
+
+def test_batch_006_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_006) <= 12
+    assert BATCH_006.hypotheses[0].is_identity
+    assert BATCH_006.calibration_slug == "000-identity"
+    assert get_batch("006-tile-and-sites") is BATCH_006
+
+
+def test_batch_006_names_registered_kernels_with_installers():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_006:
+        for name in hyp.kernels:
+            assert REGISTRY.get(name) is not None, name
+            assert name in INSTALLERS, name
+            assert name in CHECK_BUILDERS, f"{name} has no layer-1 checks"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_006), ids=lambda h: h.slug)
+def test_every_006_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = {name: type(module) for name, module in model.named_modules()}
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    after = {name: type(module) for name, module in model.named_modules()}
+
+    if hypothesis.is_identity:
+        assert not applied and after == before
+    else:
+        assert applied, hypothesis.slug
+        assert after != before or type(model) is not before[""], hypothesis.slug
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_006), ids=lambda h: h.slug)
+def test_installing_a_006_hypothesis_is_idempotent(hypothesis, model):
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    once = {name: type(module) for name, module in model.named_modules()}
+
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    assert {name: type(module) for name, module in model.named_modules()} == once
+
+
+def test_every_006_slot_can_beat_the_incumbent_champion():
+    """The session's brief: no slot here is a control whose ceiling is 1.0.
+
+    Batch 004's bf16 GEMV was the most valuable slot in its batch *and* could not win by
+    construction. After batch 005 that trade is no longer necessary — the cheapest
+    diagnostic available is `028`, which is the champion's own site with a measured tile,
+    and it has a 1.1249x ceiling. So every non-calibration slot attacks either bytes or
+    dispatch, and `034` is the only one whose byte share is zero.
+    """
+    incumbent = 1.0791  # 022-int4-head, rental 40
+    for hyp in BATCH_006:
+        if hyp.is_identity:
+            continue
+        if hyp.byte_share == 0.0:
+            assert hyp.slug == "034-static-cache-cudagraphs", hyp.slug
+            continue
+        ceiling = 1.0 / (1.0 - hyp.byte_share * (1.0 - 0.2578))
+        assert ceiling > incumbent, f"{hyp.slug} cannot reach the champion"
+
+
+def test_the_006_slots_form_a_site_ladder_over_one_mechanism():
+    """028 -> 030 -> 031 -> 032 is group-128 int4 on a growing share of the same bytes.
+
+    Read as a ladder it prices the per-site costs that do not scale with traffic — the
+    fusion inductor forfeits, the second launch, split-K's reduction pass — which two
+    rentals of one aggregate number could not separate.
+    """
+    ladder = [
+        BATCH_006.get(slug)
+        for slug in (
+            "028-int4-head-tuned",
+            "030-int4-mlp",
+            "031-int4-mlp-and-head",
+            "032-int4-wide-and-head",
+        )
+    ]
+    shares = [hyp.byte_share for hyp in ladder]
+    assert shares == sorted(shares), shares
+    assert all(4 in hyp.weight_bits.values() for hyp in ladder)
+
+
+def test_the_wide_slots_leave_the_32_channel_gates_in_bf16():
+    """`in_proj_a` and `in_proj_b` are starved at every tile and worth 0.05% of bytes.
+
+    Including them is what folded a site no tile can fix into batches 003 and 004's one
+    aggregate rate. The manifest has to be able to say so, which is why
+    `linear_attn_gates` is its own byte region.
+    """
+    from .harness.bytes_model import WEIGHT_REGIONS
+
+    assert "linear_attn_gates" in WEIGHT_REGIONS
+    for slug in ("032-int4-wide-and-head", "033-int4-wide-head-and-conv"):
+        bits = BATCH_006.get(slug).weight_bits
+        assert bits.get("linear_attn") == 4
+        assert "linear_attn_gates" not in bits, f"{slug} credits itself the gates"
+        assert "layers" not in bits, f"{slug} must not use the alias: it includes the gates"
+
+
+def test_the_006_compositions_are_gated_on_a_slot_that_measured_their_mechanism():
+    gates = {
+        "031-int4-mlp-and-head": ("030-int4-mlp", 1.00),
+        "032-int4-wide-and-head": ("030-int4-mlp", 1.00),
+        "033-int4-wide-head-and-conv": ("032-int4-wide-and-head", 1.05),
+    }
+    for slug, (required, floor) in gates.items():
+        hyp = BATCH_006.get(slug)
+        assert hyp.requires is not None, slug
+        assert hyp.requires.slug == required, slug
+        assert hyp.requires.floor == floor, slug
+        assert len(hyp.requires.reason) > 60, f"{slug}'s floor has a number and no reason"
+
+
+def test_the_two_slots_that_bank_a_champion_early_are_not_gated():
+    """028 and 029 run whatever else happens: 029 is two measured winners composed, and a
+    batch that gated it behind an untested mechanism could end with no result at all."""
+    for slug in ("028-int4-head-tuned", "029-head-and-conv"):
+        assert BATCH_006.get(slug).requires is None, slug
+
+
+def test_every_006_slot_is_gated_approximately_except_the_identity():
+    for hyp in BATCH_006:
+        assert (hyp.correctness == "exact") == hyp.is_identity
+        assert not hyp.historical_exact_gate
+
+
+def test_the_006_bars_are_whole_tokens_and_loosen_with_the_perturbation():
+    """Bars come from two measured points — `014` at 0.09185 nats over every site and the
+    head, `022` at 0.01674 over the head alone — never from priors about int4."""
+    for hyp in BATCH_006:
+        if hyp.correctness != "approximate":
+            continue
+        assert hyp.correctness_positions == 264
+        flips = (1.0 - hyp.top1_threshold) * 264
+        assert abs(flips - round(flips)) < 1e-9, hyp.slug
+    quantised = [
+        BATCH_006.get(slug)
+        for slug in ("028-int4-head-tuned", "030-int4-mlp", "031-int4-mlp-and-head", "032-int4-wide-and-head")
+    ]
+    kls = [hyp.kl_threshold for hyp in quantised]
+    assert kls == sorted(kls), kls
+    assert BATCH_006.get("032-int4-wide-and-head").kl_threshold > 0.09185, (
+        "the bar must exceed what batch 003 measured while quantising more sites"
+    )
+
+
+def test_006_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_006:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"

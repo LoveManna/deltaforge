@@ -22,7 +22,16 @@ from __future__ import annotations
 
 from .batch import Batch, Hypothesis, Precondition
 
-__all__ = ["BATCHES", "BATCH_001", "BATCH_002", "BATCH_003", "BATCH_004", "BATCH_005", "get_batch"]
+__all__ = [
+    "BATCHES",
+    "BATCH_001",
+    "BATCH_002",
+    "BATCH_003",
+    "BATCH_004",
+    "BATCH_005",
+    "BATCH_006",
+    "get_batch",
+]
 
 
 BATCH_001 = Batch(
@@ -1124,12 +1133,357 @@ BATCH_005 = Batch(
 )
 
 
+BATCH_006 = Batch(
+    batch_id="006-tile-and-sites",
+    description=(
+        "Batch 005 found that the hand-written GEMV was **grid-starved, not structurally "
+        "slow**: the same kernel family achieved 228-319 GB/s averaged over all 248 layer "
+        "projections and **656 GB/s on the tied LM head**, which launches 3880 programs "
+        "where `in_proj_a` launches four. That reframed the site. It left the *tile* "
+        "un-examined, and the tile is a heuristic no rental has ever timed: "
+        "`_launch_shape` targets 256 programs -- one wave on a 170-SM card -- and it "
+        "*narrows* BLOCK_N to 32 for every site with N <= 4096, which halves the "
+        "contiguous run each program reads from 128 bytes to 64. Both are the opposite of "
+        "what the head won on. So this batch measures the tile instead of deriving it, on "
+        "the card in hand, exactly as `max-autotune` does for the code we are trying to "
+        "beat -- and then runs the same int4 kernel on the 52.75% of per-token bytes "
+        "behind the MLP and the 83.03% behind the 200 layer projections wide enough for a "
+        "tile to matter. Nine slots. Every one of them can beat the champion's 1.0791: "
+        "there is no control here whose ceiling is 1.0, because after batch 005 the "
+        "cheapest control is a slot that also has a ceiling."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band. If it does not, the harness is "
+                "measuring something other than the kernel under test and every other "
+                "number in this batch is void -- a statement about the rental rather than "
+                "about any hypothesis, and the writeup has to say so rather than reporting "
+                "the rest as findings. It has measured 1.0009, 1.0018, 1.0024, 0.9913 and "
+                "1.0008 on the five rentals that got this far, so a miss here is news."
+            ),
+        ),
+        Hypothesis(
+            slug="028-int4-head-tuned",
+            kernels=("tiled_int4_head_tuned",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion's site and the champion's arithmetic, with "
+                "`tune_launch_shape` timing every candidate tile on the card instead of "
+                "`_launch_shape` deriving one from a comment about SM counts. Same bytes, "
+                "same kernel, same 1.1249x ceiling; only the launch geometry moves."
+            ),
+            prediction="win",
+            rationale=(
+                "**The cheapest slot in the batch and the only one directly comparable to "
+                "a number already on the leaderboard.** `022-int4-head` measured 1.0791 "
+                "against a 1.1249x ceiling -- it collected **70%**, at 656 GB/s where the "
+                "baseline runs at 1282 -- with BLOCK_N=64, BLOCK_K=64, SPLIT_K=1, "
+                "num_warps=4 and Triton's default 3 stages. Not one of those five numbers "
+                "was ever measured. The search space includes that exact configuration "
+                "first, so **the floor of this slot is the champion** and the only "
+                "question is how much of the remaining 30% a measured tile collects. "
+                "Predicted **1.08-1.12**. It runs before every other kernel because it is "
+                "the tuner's own control: if the tuner cannot improve on the heuristic at "
+                "the one site where the heuristic was accidentally right, the slots behind "
+                "it are far less likely to -- and if it comes back *below* 1.0791 the "
+                "tuner itself is broken and the batch says so in three minutes rather than "
+                "at the end. Bars are 022's, unchanged and already met at 0.9318 and "
+                "0.01674 nats: the arithmetic is identical, so a different correctness "
+                "result here would be a tiling bug rather than a quantisation effect."
+            ),
+        ),
+        Hypothesis(
+            slug="029-head-and-conv",
+            kernels=("tiled_int4_head_tuned", "fused_causal_conv"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "Batch 005's two winners on one candidate: int4 on the tied LM head, and "
+                "the four-tap causal convolution's cat + cuDNN call + silu + cache copy "
+                "collapsed into one Triton kernel per linear-attention layer. One removes "
+                "943.7 MB/token of weight traffic; the other removes 48 of 508 launches "
+                "and no bytes at all."
+            ),
+            prediction="win",
+            rationale=(
+                "**The one slot here that is near-certain, and it is in the batch for "
+                "exactly that reason.** Both halves won on rental 40 -- 1.0791 and 1.0144 "
+                "-- on mechanisms that share nothing: the head slot changes what one "
+                "matmul reads, the conv slot changes how 24 layers dispatch. Their "
+                "installers patch disjoint attributes (`project_logits` via the root "
+                "class, and the conv step inside each linear-attn module), so neither can "
+                "discard the other -- the failure `AGENT.md` records for two root-class "
+                "installers. Naive expectation is the product of the measured savings, "
+                "0.493 ms + 0.093 ms of 6.70, which is **1.0957**; predicted "
+                "**1.09-1.13** because 028's tile can only add to the first term. If this "
+                "slot does not clear 1.0791 then something about composing two installs is "
+                "wrong, which is worth knowing before five slots depend on it. It also "
+                "banks a champion early: after this the batch can spend its remaining "
+                "slots on hypotheses that might fail without risking the session's result."
+            ),
+        ),
+        Hypothesis(
+            slug="030-int4-mlp",
+            kernels=("tiled_int4_mlp",),
+            category="B",
+            byte_share=0.5275,
+            replaces=("swiglu_mlp",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=220 / 264,
+            kl_threshold=0.10,
+            weight_bits={"mlp": 4},
+            mechanism=(
+                "Group-128 int4 on the 96 MLP projections and nothing else: 4529.85 "
+                "MB/token to 1167.8, a **1.6545x ceiling** from the largest homogeneous "
+                "block of bytes in the model. Every site is wide -- 9216 for gate_proj and "
+                "up_proj, 2560 for down_proj -- and each gets a tile chosen by measurement."
+            ),
+            prediction="win",
+            rationale=(
+                "**The hypothesis the batch exists to test, and the number it turns on is "
+                "331 GB/s.** At the baseline's 1282 GB/s the MLP's 4529.85 MB/token costs "
+                "3.53 ms of 6.70; int4 moves 1167.8 MB there, so the slot ties at "
+                "**1167.8 / 3.53 ms = 331 GB/s** and collects the full 1.6545x at 1282. "
+                "That tie point sits **between the two rates this project has measured** "
+                "-- 196-280 GB/s for the untuned kernel over the layer projections "
+                "(rentals 37 and 38), 656 for the tuned-by-accident head (rental 40) -- "
+                "which is what makes it a coin worth flipping rather than an argument. "
+                "What moves it is the tile, and both defects are arithmetic rather than "
+                "suspicion: `down_proj` at N=2560 gets BLOCK_N=32 and SPLIT_K=4, which is "
+                "320 program instances on 170 SMs *and* a 64-byte contiguous read where "
+                "the hardware transacts 128; `up_proj` at N=9216 gets 288. The head got "
+                "3880 and a full 128-byte line. Predicted **1.05-1.40**: the low end is a "
+                "tile that helps a little, the high end is one that reaches the head's "
+                "byte rate, and below 1.0 means the layer projections are slow for a "
+                "reason that is not the launch geometry -- which would be the first "
+                "evidence for that, because nobody has varied the geometry before. Bars "
+                "come from two measured points: batch 003's `014` put int4 on all 248 "
+                "sites plus the head at 0.09185 nats and 226/264, and `022` put the head "
+                "alone at 0.01674, so the layer projections carry ~0.075 nats and the MLP "
+                "is 63.5% of their weight bytes -- call it ~0.048. The bar is 0.10 nats "
+                "and 220/264, which is looser than `014` measured while quantising twice "
+                "as much."
+            ),
+        ),
+        Hypothesis(
+            slug="031-int4-mlp-and-head",
+            kernels=("tiled_int4_mlp", "tiled_int4_head_tuned"),
+            category="B",
+            byte_share=0.6755,
+            replaces=("swiglu_mlp", "decode_step"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=215 / 264,
+            kl_threshold=0.12,
+            weight_bits={"mlp": 4, "head": 4},
+            requires=Precondition(
+                slug="030-int4-mlp",
+                floor=1.00,
+                reason=(
+                    "this slot is 030 plus a site the batch has already measured alone in "
+                    "028; if int4 on the MLP cannot reach parity on its own then the MLP "
+                    "half contributes a known loss and the composition re-measures 028 "
+                    "with a handicap, which is a number the batch already has"
+                ),
+            ),
+            mechanism=(
+                "030 and 028 composed: the two largest blocks of weight bytes in the model "
+                "at 4 bits, 67.55% of what the compiled column moves, for a 2.0269x "
+                "ceiling. Disjoint installs -- the MLP swaps `nn.Linear` subclasses, the "
+                "head swaps the root class's `project_logits`."
+            ),
+            prediction="win",
+            rationale=(
+                "The mechanisms are the same mechanism at two sets of sites, so unlike "
+                "029 this is not a product of two unrelated effects but a single question "
+                "asked of more bytes: **does the tuned kernel hold its byte rate as the "
+                "share it carries grows?** That is not guaranteed and the failure mode is "
+                "specific -- 96 extra pairs of launches where inductor had fused the "
+                "projection into the norm and the residual, against a dispatch path that "
+                "rental 38's dump measured at 508 launches per token with no CUDA graph "
+                "anywhere. Predicted **1.15-1.55**: the midpoint is 030 and 028 collecting "
+                "the same fraction of their ceilings together as they did apart. "
+                "**031 materially below 030 x 028 is the interesting outcome**, because it "
+                "prices the fusion loss per site for the first time -- batch 004 named it "
+                "as a suspect and nothing has ever isolated it. Bars add the two measured "
+                "contributions: ~0.048 nats for the MLP and 0.01674 for the head, so 0.12 "
+                "and 215/264 leave roughly a factor of two on each."
+            ),
+        ),
+        Hypothesis(
+            slug="032-int4-wide-and-head",
+            kernels=("tiled_int4_wide",),
+            category="B",
+            byte_share=0.9783,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=210 / 264,
+            kl_threshold=0.18,
+            weight_bits={"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+            requires=Precondition(
+                slug="030-int4-mlp",
+                floor=1.00,
+                reason=(
+                    "the same floor and the same reason as 031: this slot adds 104 more "
+                    "sites of the mechanism 030 measures, so a 030 below parity makes this "
+                    "a larger measurement of a loss the batch has already recorded, and "
+                    "batch 003 spent five slots doing exactly that"
+                ),
+            ),
+            mechanism=(
+                "int4 on every site a tile can help: the 200 layer projections with "
+                "N >= 1024, plus the tied head, in **one** kernel -- the registry allows "
+                "one champion per replaceable operation and a head installed beside this "
+                "would claim `decode_step` twice. **97.83% of what the compiled column "
+                "moves, a 3.7578x ceiling.** The 48 excluded projections are `in_proj_a` "
+                "and `in_proj_b`, 32 channels wide and 7.86 MB/token between them."
+            ),
+            prediction="win",
+            rationale=(
+                "**The full ceiling, minus the only sites no tile can reach.** Batches 003 "
+                "and 004 installed on all 248 and reported one aggregate byte rate, which "
+                "batch 005 showed cannot separate a slow kernel from a starved grid -- so "
+                "this slot removes the 48 that are starved by construction and costs "
+                "0.09% of per-token bytes to do it. Ties at the same 331 GB/s as 030, "
+                "because the tie point is a property of int4 against a 1282 GB/s baseline "
+                "and not of how many sites carry it. Predicted **1.10-2.20**, a wide range "
+                "on purpose: this is 030's mechanism at 1.85x the byte share plus 028's, "
+                "and if the tuned tile holds its rate the arithmetic says 1.9, while every "
+                "per-site cost that does not scale with bytes -- the forfeited fusion, the "
+                "second launch per site, split-K's reduction pass -- is multiplied by 200 "
+                "here against 96 in 030. Reading 032 against 031 against 030 is a "
+                "per-site-cost curve, which is the thing two rentals of aggregate numbers "
+                "could not produce. Bars: batch 003's `014` measured this configuration "
+                "plus the 48 gates at **0.09185 nats and 226/264**, so 0.18 nats and "
+                "210/264 are twice that measurement's error and sixteen more flips."
+            ),
+        ),
+        Hypothesis(
+            slug="033-int4-wide-head-and-conv",
+            kernels=("tiled_int4_wide", "fused_causal_conv"),
+            category="B",
+            byte_share=0.9789,
+            replaces=("decode_step", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=210 / 264,
+            kl_threshold=0.18,
+            weight_bits={"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+            requires=Precondition(
+                slug="032-int4-wide-and-head",
+                floor=1.05,
+                reason=(
+                    "the conv is worth 0.093 ms of 6.70 and this slot's only novel "
+                    "ingredient is that 1.4%; if 032 has not cleared the noise band by "
+                    "more than the conv can contribute, this re-measures 032 and the "
+                    "batch already has that number with a tighter interval"
+                ),
+            ),
+            mechanism=(
+                "Everything in this batch that can compose: 032's int4 on 97.83% of the "
+                "weight bytes, and the fused causal convolution on 48 of the step's 508 "
+                "launches. Two installers patching disjoint attributes."
+            ),
+            prediction="win",
+            rationale=(
+                "The batch's best shot at a champion and its riskiest slot, so it runs "
+                "last among the kernels with everything cheaper already on disk: three "
+                "installers, 200 quantised sites and the largest resident memory in the "
+                "batch. Predicted **1.12-2.25**, which is 032 plus the conv's measured "
+                "0.093 ms. It also asks a question the arithmetic cannot answer: **the "
+                "conv's win was a dispatch win, and 032 adds ~200 launches to the step.** "
+                "If a saved launch is worth less when the step dispatches more of them, "
+                "033 minus 032 comes out below rental 40's 1.0144 and the launch account "
+                "is not linear; if it comes out at 1.0144 the two effects are independent "
+                "and the account holds. Either reading is a finding, and it costs one slot "
+                "because the ingredients are measured separately above."
+            ),
+        ),
+        Hypothesis(
+            slug="034-static-cache-cudagraphs",
+            kernels=("static_decode_cache",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_cache",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "`021` again, with the diagnostic it was missing. The decode cache is "
+                "allocated under `mark_static_address`, which is the promise inductor's "
+                "cudagraph mutation check requires and cannot infer from a tensor handed "
+                "in as an argument. Same 508 kernels in the same order, from one graph "
+                "replay instead of 508 Python dispatches."
+            ),
+            prediction="win",
+            rationale=(
+                "**Still the largest unattacked number in the project, and rental 40 did "
+                "not test it**: `cudagraph_nodes: 0, cudagraph_skips: 127` -- the candidate "
+                "was refused exactly as the reference is, so 0.9986 said nothing. Its "
+                "writeup ranked two suspects, and **this session refuted both on a CPU for "
+                "nothing.** Running the tiny config under "
+                "`TORCH_LOGS=cudagraph_static_inputs` prints `Adding static input pos 5 "
+                "for source L['cache'].layers[0].conv` and the same for every recurrent "
+                "state and KV slice: the mark does reach `static_input_indices`, through a "
+                "plain Python object, and `_extract_tensor_dict` does stamp it. So the "
+                "break is downstream of both, and the two remaining candidates are the int "
+                "graph input -- `cache.seq_len` reaches the graph as a symint, "
+                "`cudagraphify_impl` keys `fn_cache` on every int input, and a 128-token "
+                "decode therefore wants 128 recordings against a "
+                "`cudagraph_unexpected_rerecord_limit` of exactly 128 -- and a skip for "
+                "some reason entirely unrelated to mutation. **This slot can now tell "
+                "those apart**, because `cudagraphs_during` captures the skip *message* "
+                "and not only the counter; batch 005 had the count and spent a section of "
+                "its writeup ranking suspects the sentence beside it would have named. "
+                "Ceiling ~1.26x from rental 38's dump: 8587.80 MB/token is 4.79 ms at an "
+                "RTX 5090's vendor peak and 5.3-6.4 at an achievable one, against 6.70 "
+                "measured, so 0.3-1.9 ms sits in 508 dispatches. Predicted **1.05-1.26 if "
+                "it engages**, and it runs last because capturing 128 graphs of a "
+                "508-kernel step is the most likely thing in this batch to be slow or to "
+                "exhaust memory, and everything else is on disk by then. Gated at 264/264 "
+                "and 1e-6 nats because the policy forbids `exact` for a non-identity slot "
+                "and this candidate really is bit-identical: a bar it can only miss by "
+                "being broken is the right shape for that claim."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
     BATCH_003.batch_id: BATCH_003,
     BATCH_004.batch_id: BATCH_004,
     BATCH_005.batch_id: BATCH_005,
+    BATCH_006.batch_id: BATCH_006,
 }
 
 

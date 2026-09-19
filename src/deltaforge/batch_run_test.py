@@ -761,3 +761,96 @@ def test_a_precondition_on_a_slot_that_errored_skips_rather_than_runs():
 
     assert results[1].outcome == "precondition_failed"
     assert runner.ran == ["015-gemv-bf16"]
+
+
+# -- batch 006: the reason beside the counter ------------------------------------------
+
+
+def test_a_skip_reason_is_captured_with_the_message_intact():
+    """Batch 005 recorded `cudagraph_skips: 127` and could not say why.
+
+    The counter says the hypothesis was not tested; the sentence inductor logs beside it
+    names the line to go and fix. `021`'s writeup had to rank three suspects it could not
+    separate, and two of them were wrong.
+    """
+    import logging
+
+    from .batch_run import _SkipReasonHandler
+
+    sink: list[str] = []
+    handler = _SkipReasonHandler(sink)
+    logger = logging.getLogger("deltaforge.test.cudagraphs")
+    logger.addHandler(handler)
+    try:
+        logger.warning("skipping cudagraphs due to mutated inputs (64 instances)")
+        logger.warning("something else entirely")
+    finally:
+        logger.removeHandler(handler)
+
+    assert sink == ["skipping cudagraphs due to mutated inputs (64 instances)"]
+
+
+def test_repeated_skip_messages_are_recorded_once_and_the_list_is_bounded():
+    """The baseline logs one skip per decode step, 128 times a compile. A slot record is
+    evidence, not a transcript."""
+    import logging
+
+    from .batch_run import _SkipReasonHandler
+
+    sink: list[str] = []
+    handler = _SkipReasonHandler(sink)
+    logger = logging.getLogger("deltaforge.test.cudagraphs.repeat")
+    logger.addHandler(handler)
+    try:
+        for _ in range(128):
+            logger.warning("skipping cudagraphs due to mutated inputs (64 instances)")
+        for i in range(32):
+            logger.warning(f"skipping cudagraphs due to reason {i}")
+    finally:
+        logger.removeHandler(handler)
+
+    assert sink[0] == "skipping cudagraphs due to mutated inputs (64 instances)"
+    assert len(sink) == _SkipReasonHandler.LIMIT
+
+
+def test_capturing_reasons_never_raises_into_the_slot():
+    """Every diagnostic in this module fails soft, for the reason `graphs_compiled_during`
+    already documents: a missing counter must cost the evidence and not the measurement."""
+    from .batch_run import _capturing_skip_reasons
+
+    sink: list[str] = []
+    with _capturing_skip_reasons(sink):
+        pass
+
+    assert sink == []
+
+
+def test_the_slot_record_carries_the_reasons_and_the_tiles():
+    from .batch import Hypothesis
+    from .batch_run import SlotResult
+
+    result = SlotResult(
+        hypothesis=Hypothesis(
+            slug="034-static-cache-cudagraphs",
+            kernels=("static_decode_cache",),
+            category="A",
+            byte_share=0.0,
+            mechanism="m" * 20,
+            prediction="win",
+            rationale="r" * 90,
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=1.0,
+            kl_threshold=1e-06,
+        ),
+        outcome="loss",
+        cudagraph_nodes=0,
+        cudagraph_skips=127,
+        cudagraph_skip_reasons=["skipping cudagraphs due to mutated inputs (64 instances)"],
+        launch_shapes={"int4 248320 2560": [64, 64, 1, 4, 3]},
+    )
+
+    record = result.to_slot_dict()
+
+    assert record["cudagraph_skip_reasons"] == ["skipping cudagraphs due to mutated inputs (64 instances)"]
+    assert record["launch_shapes"] == {"int4 248320 2560": [64, 64, 1, 4, 3]}

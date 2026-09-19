@@ -56,7 +56,7 @@ def test_every_projection_in_the_model_gets_a_tile_tl_dot_accepts(n, k, note):
     Batch 003's kernel used 8 rows per program on the narrow projections. That is not
     available here, which is exactly why split-K exists in this kernel and not in that one.
     """
-    block_n, block_k, split_k, _warps = _launch_shape(n, k)
+    block_n, block_k, split_k, _warps, _stages = _launch_shape(n, k)
 
     assert block_n >= 16, note
     assert block_k >= 16, note
@@ -65,26 +65,37 @@ def test_every_projection_in_the_model_gets_a_tile_tl_dot_accepts(n, k, note):
 
 def test_a_32_channel_projection_is_split_because_no_tile_can_fill_the_card():
     """`in_proj_a` is 32 output channels wide: one program at any legal BLOCK_N."""
-    _block_n, _block_k, split_k, _warps = _launch_shape(32, 2560)
+    _block_n, _block_k, split_k, _warps, _stages = _launch_shape(32, 2560)
 
     assert split_k == 8, "the only parallelism available here is over K"
 
 
 def test_a_head_wide_enough_to_fill_the_card_is_not_split():
     """248320 / 64 is 3880 programs. Splitting K would buy nothing and cost a reduction."""
-    _block_n, _block_k, split_k, _warps = _launch_shape(248320, 2560)
+    _block_n, _block_k, split_k, _warps, _stages = _launch_shape(248320, 2560)
 
     assert split_k == 1
 
 
 def test_k_is_never_split_further_than_it_has_blocks():
     """A split with no work still costs a partial-buffer row and a pass over it."""
-    _block_n, block_k, split_k, _warps = _launch_shape(32, 128)
+    _block_n, block_k, split_k, _warps, _stages = _launch_shape(32, 128)
 
     assert split_k <= 128 // block_k
 
 
 # -- the kernel's indexing, emulated ---------------------------------------------------
+
+
+def _chunk(k: int, block_k: int, split_k: int) -> int:
+    """`_tiled_gemv_*_kernel`'s split-K chunk: whole ``BLOCK_K`` blocks, never elements.
+
+    Splitting elements — ``cdiv(K, SPLIT_K)`` — lets a chunk begin part-way through a
+    block, which the int4 kernel cannot survive: it reads **one** scale per block, and a
+    block straddling two groups gets the wrong one for half its weights.
+    """
+    blocks = -(-k // block_k)
+    return -(-blocks // split_k) * block_k
 
 
 def _emulate(x, w_k_major, block_n, block_k, split_k):
@@ -96,7 +107,7 @@ def _emulate(x, w_k_major, block_n, block_k, split_k):
     k, n = w_k_major.shape
     rows = x.shape[0]
     partials = torch.zeros(split_k, rows, n, dtype=torch.float32)
-    chunk = -(-k // split_k)
+    chunk = _chunk(k, block_k, split_k)
     for pid_k in range(split_k):
         lo, hi = pid_k * chunk, min((pid_k + 1) * chunk, k)
         for pid_m in range(rows):
@@ -148,6 +159,62 @@ def test_more_than_one_row_of_x_is_handled_independently():
     assert torch.allclose(
         emulated, torch.nn.functional.linear(x.float(), weight.float()), rtol=1e-5, atol=1e-4
     )
+
+
+def _int4_scale_groups_read(half: int, block_k: int, split_k: int, group: int) -> set[int]:
+    """Every ``(j0, scale index)`` the int4 kernel would use — the indexing, nothing else."""
+    chunk = _chunk(half, block_k, split_k)
+    touched = set()
+    for pid_k in range(split_k):
+        lo = pid_k * chunk
+        hi = min(lo + chunk, half)
+        for j0 in range(lo, hi, block_k):
+            # The kernel loads SCALE[j0 // GROUP] for the whole block.
+            touched.add((j0, j0 // group))
+    return touched
+
+
+@pytest.mark.parametrize(
+    ("half", "block_k", "split_k"),
+    [(1280, 64, 8), (1280, 64, 16), (4608, 64, 32), (1280, 128, 7), (1280, 32, 20), (1280, 64, 64)],
+)
+def test_no_int4_block_ever_straddles_two_scale_groups(half, block_k, split_k):
+    """The bug `020-int4-full` shipped with and no rental ever executed.
+
+    ``in_proj_a`` has HALF 1280; at SPLIT_K 8 an element split gives chunks of 160, so
+    program 1 starts at j0=160 and reads SCALE[1] for elements 160-223 — of which 160-255
+    belong to group 1 but the block's *own* first element decides the index for all 64.
+    Splitting whole blocks makes every j0 a multiple of BLOCK_K, and with BLOCK_K dividing
+    GROUP the block then lies inside one group by construction.
+    """
+    group = 128
+
+    for j0, index in _int4_scale_groups_read(half, block_k, split_k, group):
+        assert j0 % block_k == 0, f"chunk start {j0} is not on a block boundary"
+        assert (j0 + block_k - 1) // group == index, f"block at {j0} straddles two groups"
+
+
+def test_the_old_element_split_really_did_straddle_a_group():
+    """The mutation, so the test above proves something. This is the shipped code."""
+    half, block_k, split_k, group = 1280, 64, 8, 128
+    element_chunk = -(-half // split_k)  # 160
+
+    starts = [pid * element_chunk for pid in range(split_k)]
+
+    assert any(j0 % block_k for j0 in starts)
+    straddling = [j0 for j0 in starts if j0 // group != (j0 + block_k - 1) // group]
+    assert straddling, "the old partition must be able to produce a straddling block"
+
+
+def test_every_split_k_partition_covers_k_exactly_once():
+    """Whole-block chunks must still tile K: no element read twice, none missed."""
+    for k, block_k, split_k in ((2560, 64, 8), (9216, 128, 32), (1280, 32, 64), (256, 64, 4)):
+        chunk = _chunk(k, block_k, split_k)
+        covered: list[int] = []
+        for pid_k in range(split_k):
+            lo, hi = pid_k * chunk, min(pid_k * chunk + chunk, k)
+            covered.extend(range(lo, hi))
+        assert covered == list(range(k)), (k, block_k, split_k)
 
 
 def test_a_split_k_that_drops_the_tail_chunk_is_caught():
@@ -485,3 +552,163 @@ def test_every_batch_004_kernel_has_its_own_checks_and_installer(kernel):
     assert REGISTRY.get(kernel) is not None
     assert kernel in CHECK_BUILDERS
     assert kernel in INSTALLERS
+
+
+# -- batch 006: the tile, measured -----------------------------------------------------
+
+
+def test_the_heuristic_is_always_the_first_config_the_tuner_tries():
+    """The tuner's floor is the untuned kernel, and that is what makes it safe to ship.
+
+    `022-int4-head` is the champion at a tile nobody measured. If the search space did not
+    contain that exact tile, a tuner that happened to pick worse would take the batch
+    *below* the incumbent and the slot would read as a refutation of tuning rather than of
+    this particular search.
+    """
+    from .tiled_gemv import _heuristic_shape, candidate_launch_shapes
+
+    for n, k in ((9216, 2560), (2560, 9216), (248320, 2560), (1024, 2560), (32, 2560)):
+        assert candidate_launch_shapes(n, k)[0] == _heuristic_shape(n, k), (n, k)
+
+
+def test_no_candidate_tile_launches_more_programs_than_the_card_can_use():
+    """Past `MAX_PROGRAMS` the split-K partial buffer and its reduction pass cost more
+    than the parallelism returns, and every extra config is a Triton compile."""
+    from .tiled_gemv import MAX_PROGRAMS, candidate_launch_shapes, refine_pipeline, refine_split_k
+
+    for n, k in ((9216, 2560), (2560, 9216), (248320, 2560), (32, 2560)):
+        coarse = candidate_launch_shapes(n, k)
+        later = [c for best in coarse for c in refine_split_k(best, n, k) + refine_pipeline(best, n, k)]
+        for block_n, block_k, split_k, _warps, _stages in coarse + later:
+            assert block_n >= 16 and block_k >= 16
+            assert -(-n // block_n) * split_k <= MAX_PROGRAMS, (n, k, block_n, split_k)
+            assert split_k <= -(-k // block_k), (n, k, block_k, split_k)
+
+
+def test_the_refinement_rounds_narrow_around_the_coarse_winner():
+    """The coarse grid steps SPLIT_K by 4x, so its winner is only known to a factor of two.
+
+    A search that stopped there would report a program count with no significant figures,
+    which is the same mistake as the heuristic it replaces — a number nobody measured.
+    """
+    from .tiled_gemv import refine_split_k
+
+    around = refine_split_k((64, 64, 16, 4, 3), 9216, 2560)
+
+    assert (64, 64, 8, 4, 3) in around
+    assert (64, 64, 32, 4, 3) in around
+    assert (32, 64, 16, 4, 3) in around
+    assert (128, 64, 16, 4, 3) in around
+
+
+def test_the_search_space_reaches_far_past_one_wave_where_the_heuristic_stops():
+    """The whole hypothesis: `TARGET_PROGRAMS` is 256 — one wave on a 170-SM card — and
+    the one site this project has won on launches 3880. A search that could not exceed the
+    heuristic's program count would be measuring the heuristic's assumption, not testing it."""
+    from .tiled_gemv import _heuristic_shape, candidate_launch_shapes
+
+    for n, k in ((9216, 2560), (2560, 9216)):
+        heuristic = _heuristic_shape(n, k)
+        programs = [-(-n // c[0]) * c[2] for c in candidate_launch_shapes(n, k)]
+        assert max(programs) >= 8 * (-(-n // heuristic[0]) * heuristic[2]), (n, k)
+        assert max(programs) > 3880, "the head's program count is the one measured datum"
+
+
+def test_a_tuned_tile_is_what_the_op_launches():
+    """`_TUNED` is keyed by ``(kind, N, K)``, not by module: the 32 `up_proj` sites are one
+    measurement. A lookup that missed would silently run the heuristic and the slot record
+    would name a tile the kernel never launched — which is what batch 004's probe labels did."""
+    from .tiled_gemv import _TUNED, _heuristic_shape, _launch_shape
+
+    assert _launch_shape(9216, 2560, "int4") == _heuristic_shape(9216, 2560)
+    _TUNED[("int4", 9216, 2560)] = (128, 128, 16, 8, 4)
+    try:
+        assert _launch_shape(9216, 2560, "int4") == (128, 128, 16, 8, 4)
+        assert _launch_shape(9216, 2560, "bf16") == _heuristic_shape(9216, 2560), "kind is part of the key"
+    finally:
+        del _TUNED[("int4", 9216, 2560)]
+
+
+def test_tuning_is_a_no_op_without_a_gpu_so_the_cpu_suite_exercises_the_installers():
+    from .tiled_gemv import _tune_for, tuned_launch_shapes
+
+    before = tuned_launch_shapes()
+    _tune_for([], "int4")
+
+    assert tuned_launch_shapes() == before
+
+
+def test_the_wide_installer_leaves_exactly_the_32_channel_gates_alone(model):
+    """`in_proj_a` and `in_proj_b` are the only sites no tile can give parallelism to, and
+    they are 0.09% of per-token bytes. Batches 003 and 004 quantised them anyway and folded
+    their time into one aggregate rate over all 248 projections."""
+    from torch import nn
+
+    from .tiled_gemv import (
+        TiledInt4Linear,
+        _gate_linears,
+        _layer_linears,
+        _wide_linears,
+        install_tiled_int4_wide,
+    )
+
+    excluded = {id(m) for m in _layer_linears(model)} - {id(m) for m in _wide_linears(model)}
+    assert excluded == {id(m) for m in _gate_linears(model)}
+    assert excluded, "the fixture has no linear-attention layers"
+
+    install_tiled_int4_wide(model)
+
+    for linear in _layer_linears(model):
+        expected = nn.Linear if id(linear) in excluded else TiledInt4Linear
+        assert type(linear) is expected, linear
+
+
+def test_the_wide_installer_takes_the_head_too(model):
+    """One kernel, because the registry allows one champion per replaceable operation and
+    a separately registered head would claim `decode_step` a second time."""
+    from .tiled_gemv import TiledLMHead, install_tiled_int4_wide
+
+    install_tiled_int4_wide(model)
+
+    assert isinstance(model.tiled_lm_head, TiledLMHead)
+    assert model.tiled_lm_head.kind == "int4"
+
+
+def test_the_mlp_installer_touches_no_attention_projection(model):
+    from torch import nn
+
+    from .tiled_gemv import TiledInt4Linear, _mlp_linears, install_tiled_int4_mlp
+
+    mlp = {id(m) for m in _mlp_linears(model)}
+
+    install_tiled_int4_mlp(model)
+
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear | TiledInt4Linear) and "layers." in name:
+            expected = TiledInt4Linear if id(module) in mlp else nn.Linear
+            assert type(module) is expected, name
+    assert not hasattr(model, "tiled_lm_head"), "the MLP slot must leave the head alone"
+
+
+def test_the_structural_gate_set_is_the_narrow_one_on_the_real_checkpoint():
+    """The selection is by module name so it behaves on any config; the *reason* is ``N``.
+
+    On Qwen3.5-4B the two criteria must coincide, or the constant documents something the
+    code does not do — which is the shape of defect `AGENT.md` records as fixing the prose
+    and leaving the arithmetic.
+    """
+    import torch
+
+    from ..config import MODELS
+    from ..reference import ReferenceModel
+    from .tiled_gemv import WIDE_MIN_N, _gate_linears, _layer_linears, _wide_linears
+
+    with torch.device("meta"):
+        model = ReferenceModel(MODELS["Qwen/Qwen3.5-4B"]())
+
+    assert len(_gate_linears(model)) == 48
+    assert len(_wide_linears(model)) == 200
+    assert len(_layer_linears(model)) == 248
+    assert all(int(m.out_features) < WIDE_MIN_N for m in _gate_linears(model))
+    assert all(int(m.out_features) >= WIDE_MIN_N for m in _wide_linears(model))
+    assert all(int(m.out_features) == 32 for m in _gate_linears(model))

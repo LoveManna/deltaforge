@@ -50,6 +50,9 @@ harness records it as the candidate.
 
 from __future__ import annotations
 
+import os
+import time
+
 import torch
 from torch import Tensor, nn
 
@@ -60,6 +63,7 @@ __all__ = [
     "FP8_MAX",
     "GEMV_MAX_ROWS",
     "ROW_CHUNK_ELEMENTS",
+    "TUNE_BUDGET_SECONDS",
     "TiledBf16Linear",
     "TiledFp8Linear",
     "TiledInt4Linear",
@@ -73,16 +77,21 @@ __all__ = [
     "install_tiled_fp8_mlp",
     "install_tiled_int4_full",
     "install_tiled_int4_head",
+    "install_tiled_int4_head_tuned",
+    "install_tiled_int4_mlp",
+    "install_tiled_int4_wide",
     "install_tiled_int8_head",
     "install_tiled_int8_all_linear",
     "quantise_fp8_per_channel",
     "quantise_int4_k_major",
+    "candidate_launch_shapes",
     "tiled_bf16_correctness_checks",
     "tiled_gemv_bf16",
     "tiled_gemv_fp8",
     "tiled_gemv_int4",
     "tiled_gemv_int8",
     "to_k_major",
+    "tuned_launch_shapes",
 ]
 
 #: The largest finite value e4m3 represents. Symmetric per-channel scaling divides by it,
@@ -95,7 +104,35 @@ GEMV_MAX_ROWS = 64
 
 #: How many programs are worth launching before splitting K stops paying. An RTX 5090 has
 #: 170 SMs; 256 is one full wave with room for the scheduler to hide a tail.
+#:
+#: **Batch 005 says one wave is not the right target.** The tied LM head launches 3880
+#: programs -- 23 waves -- and reached 656 GB/s at int4, where the same kernel family
+#: averaged 228-319 over layer projections that land on 40-320 program instances. One
+#: block per SM cannot keep enough loads in flight to cover DRAM latency, whatever the
+#: occupancy calculator says. This constant now only seeds `_heuristic_shape`, which is
+#: the tuner's first candidate rather than its answer.
 TARGET_PROGRAMS = 256
+
+#: Ceiling on ``ceil(N / BLOCK_N) * SPLIT_K`` in the tuner's search space. 8192 is 48
+#: waves on a 170-SM card: past that the split-K partial buffer and its reduction pass
+#: cost more than the extra parallelism can return.
+MAX_PROGRAMS = 8192
+
+#: Triton's own default, made explicit so a tuned config and an untuned one are the same
+#: kind of object and `_time_launch` compares like with like.
+DEFAULT_NUM_STAGES = 3
+
+#: Wall-clock ceiling on tuning **one** ``(kind, N, K)``. A tuner that can hang a slot is
+#: worse than a heuristic; whatever is best when this expires is what gets installed, and
+#: the log says the search was cut short. ``DF_TILE_TUNE_BUDGET`` overrides it, and
+#: ``DF_TILE_TUNE=0`` turns tuning off entirely and restores batch 004's behaviour exactly.
+TUNE_BUDGET_SECONDS = float(os.environ.get("DF_TILE_TUNE_BUDGET", "90"))
+
+#: ``(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages)``.
+LaunchShape = tuple[int, int, int, int, int]
+
+#: Measured tiles, keyed by ``(kind, N, K)``. Written only by `tune_launch_shape`.
+_TUNED: dict[tuple[str, int, int], LaunchShape] = {}
 
 
 def to_k_major(weight: Tensor) -> Tensor:
@@ -200,13 +237,19 @@ def dequantise_int4_k_major(packed: Tensor, scale: Tensor, *, group_size: int) -
     return (q * scale.unsqueeze(1)).reshape(k, n)
 
 
-def _launch_shape(n: int, k: int) -> tuple[int, int, int, int]:
-    """``(BLOCK_N, BLOCK_K, SPLIT_K, num_warps)``.
+def _heuristic_shape(n: int, k: int) -> LaunchShape:
+    """Batch 004's tile, kept as the default and as the first config the tuner tries.
 
     ``tl.dot`` needs ``BLOCK_N >= 16`` and ``BLOCK_K >= 16``, so unlike batch 003's kernel
     the tile cannot be narrowed to buy parallelism. Split-K buys it instead, which is the
     right instrument anyway: ``in_proj_a`` is 32 channels wide and no tile choice reaches a
     full card.
+
+    **It was never measured, and batch 005 showed what that cost.** The head won at
+    BLOCK_N=64 with 3880 programs; every layer projection lands on 40-320 program instances
+    and achieved a third of the head's byte rate. `tune_launch_shape` is the answer to that
+    and this function is its baseline: the tuner cannot return anything slower than what
+    this chooses, because this is always the first candidate it times.
     """
     block_n = 32 if n <= 4096 else 64
     block_k = 64
@@ -214,7 +257,210 @@ def _launch_shape(n: int, k: int) -> tuple[int, int, int, int]:
     # Never split further than there are K-blocks to split: a program with no work still
     # costs a partial buffer row and a pass over it in the reduction kernel.
     split_k = max(1, min(8, -(-TARGET_PROGRAMS // max(programs, 1)), k // block_k))
-    return block_n, block_k, split_k, 4
+    return block_n, block_k, split_k, 4, DEFAULT_NUM_STAGES
+
+
+def _launch_shape(n: int, k: int, kind: str = "bf16") -> LaunchShape:
+    """The tile this kernel launches for ``N x K``: measured if it has been, guessed if not.
+
+    Keyed by ``(kind, n, k)`` rather than by module instance, because the 32 ``up_proj``
+    sites are one shape and one measurement. `tune_launch_shape` writes the table; nothing
+    else does, so a process that never tunes behaves exactly as batch 004's did.
+    """
+    tuned = _TUNED.get((kind, n, k))
+    return tuned if tuned is not None else _heuristic_shape(n, k)
+
+
+def candidate_launch_shapes(n: int, k: int) -> list[LaunchShape]:
+    """Round 1: a **coarse** sweep of the two axes batch 004 never varied by measurement.
+
+    * **Programs.** ``ceil(N / BLOCK_N) * SPLIT_K``. The head launches 3880 of them and
+      reached 656 GB/s; the layer projections land on 40-320 and reached ~200-280. The
+      heuristic caps ``SPLIT_K`` at 8 and targets 256 programs -- *one wave* on a 170-SM
+      card, which is one block per SM and nowhere near enough loads in flight to cover
+      DRAM latency.
+    * **Transaction width.** In ``[K, N]`` a program's row slice is ``BLOCK_N`` contiguous
+      elements. At BLOCK_N=32 that is **64 bytes, half a cache line**, and the heuristic
+      picks 32 for every site with ``N <= 4096``: ``down_proj``, ``out_proj``, ``o_proj``,
+      ``in_proj_z`` and the k/v projections, about 40% of the layer-projection bytes. It
+      narrows the tile to buy programs and pays in DRAM efficiency -- the opposite of the
+      trade the head won on.
+
+    Coarse on purpose. Every configuration is a Triton compile before it is a measurement,
+    and `tune_launch_shape` has a wall clock; a full cross product would spend the budget
+    on the first axis and never reach the second. `refine_split_k` and `refine_pipeline`
+    narrow around whatever this finds.
+    """
+    return _dedupe(
+        [_heuristic_shape(n, k)]
+        + [
+            (block_n, 64, split_k, 4, DEFAULT_NUM_STAGES)
+            for block_n in (32, 64, 128, 256)
+            for split_k in (1, 4, 16, 64)
+            if _tile_is_legal(n, k, block_n, 64, split_k)
+        ]
+    )
+
+
+def refine_split_k(best: LaunchShape, n: int, k: int) -> list[LaunchShape]:
+    """Round 2: the neighbours of the coarse winner on the same two axes.
+
+    The coarse grid steps ``SPLIT_K`` by 4x, so the winner is only known to within a
+    factor of two either side. This is the half-step, and it is where the answer to "how
+    many programs does this kernel actually want" gets its significant figures.
+    """
+    block_n, block_k, split_k, warps, stages = best
+    neighbours = [(block_n, block_k, sk, warps, stages) for sk in (split_k // 2, split_k * 2) if sk >= 1]
+    neighbours += [(bn, block_k, split_k, warps, stages) for bn in (block_n // 2, block_n * 2) if bn >= 16]
+    return [c for c in _dedupe(neighbours) if _tile_is_legal(n, k, c[0], c[1], c[2])]
+
+
+def refine_pipeline(best: LaunchShape, n: int, k: int) -> list[LaunchShape]:
+    """Round 3: warps, ``BLOCK_K`` and pipeline depth, one coordinate at a time.
+
+    These do not change how much parallelism the launch has, only how well each program
+    keeps memory in flight, so they are refined last and independently rather than crossed.
+    """
+    block_n, block_k, split_k, warps, stages = best
+    out = [(block_n, block_k, split_k, w, stages) for w in (2, 8) if w != warps]
+    out += [(block_n, bk, split_k, warps, stages) for bk in (32, 128) if bk != block_k]
+    out += [(block_n, block_k, split_k, warps, st) for st in (2, 5) if st != stages]
+    return [c for c in _dedupe(out) if _tile_is_legal(n, k, c[0], c[1], c[2])]
+
+
+def _tile_is_legal(n: int, k: int, block_n: int, block_k: int, split_k: int) -> bool:
+    """Whether a tile is worth compiling at all.
+
+    ``tl.dot`` refuses either dimension below 16. Past `MAX_PROGRAMS` the split-K partial
+    buffer and its reduction pass cost more than the parallelism returns. And a split that
+    leaves a program fewer than one ``BLOCK_K`` of work has it launch, allocate a partial
+    row, store a zero and be read back by the reduction — which is pure overhead however
+    the arithmetic is written.
+    """
+    if block_n < 16 or block_k < 16:
+        return False
+    if -(-n // block_n) * split_k > MAX_PROGRAMS:
+        return False
+    return split_k <= -(-k // block_k)
+
+
+def _dedupe(shapes: list[LaunchShape]) -> list[LaunchShape]:
+    seen: set[LaunchShape] = set()
+    out: list[LaunchShape] = []
+    for shape in shapes:
+        if shape not in seen:
+            seen.add(shape)
+            out.append(shape)
+    return out
+
+
+def tune_launch_shape(
+    kind: str, n: int, k: int, run, *, budget: float | None = None, log=None
+) -> LaunchShape:
+    """Time every candidate tile for ``N x K`` on the card in hand and keep the fastest.
+
+    **The point of the whole batch.** We are trying to beat ``max-autotune``, and
+    ``max-autotune`` is called that because it measures its tile instead of deriving it
+    from a comment about SM counts. Two rentals of hand-written GEMV lost on sites whose
+    tile no one had ever timed.
+
+    ``run`` is a zero-argument callable that performs one decode-shaped launch against the
+    real quantised weight. It is called with `_TUNED` already set to the config under test,
+    so the thing being timed is exactly the code path the benchmark will run -- not a
+    reconstruction of it.
+
+    Three guarantees, each of which is a failure this repository has already paid for:
+
+    * **It cannot lose to the heuristic.** `candidate_launch_shapes` puts
+      `_heuristic_shape` first, so the worst outcome is batch 004's tile and a few seconds.
+    * **It cannot hang a slot.** ``budget`` bounds the wall clock; whatever is best when it
+      expires is kept and the log says the search was truncated.
+    * **A config that will not compile costs that config.** Triton raises at launch for
+      tiles a shape cannot carry, and those are skipped rather than propagated.
+
+    Timed through `triton.testing.do_bench` where it exists, because it flushes L2 between
+    iterations. Without that an 11.8 MB int4 ``up_proj`` sits entirely in a 5090's 96 MB L2
+    and the tuner would rank tiles on a cache the real decode step has already evicted.
+
+    Three rounds, coarse to fine, so a truncated search still ends somewhere sensible:
+    `candidate_launch_shapes` steps the two parallelism axes by 4x, `refine_split_k` takes
+    the half-step around whatever won, and `refine_pipeline` varies warps, ``BLOCK_K`` and
+    pipeline depth one coordinate at a time. A single flat cross product would spend the
+    whole budget inside the first axis.
+    """
+    key = (kind, n, k)
+    cached = _TUNED.get(key)
+    if cached is not None:
+        return cached
+    budget = TUNE_BUDGET_SECONDS if budget is None else budget
+    deadline = time.monotonic() + budget
+
+    def measure(shape: LaunchShape) -> float | None:
+        _TUNED[key] = shape
+        try:
+            return _time_launch(run)
+        except Exception:  # noqa: BLE001 - an unlaunchable tile is a skipped candidate
+            return None
+
+    best: LaunchShape | None = None
+    best_time = float("inf")
+    truncated = False
+    rounds = 0
+    for build in (
+        lambda _best: candidate_launch_shapes(n, k),
+        lambda current: refine_split_k(current, n, k),
+        lambda current: refine_pipeline(current, n, k),
+    ):
+        if best is None and rounds:
+            break  # nothing in the coarse round ran; there is no winner to refine around
+        for shape in build(best):
+            if time.monotonic() > deadline:
+                truncated = True
+                break
+            elapsed = measure(shape)
+            if elapsed is not None and elapsed < best_time:
+                best, best_time = shape, elapsed
+        rounds += 1
+        if truncated:
+            break
+
+    chosen = best if best is not None else _heuristic_shape(n, k)
+    _TUNED[key] = chosen
+    if log is not None:
+        log(
+            f"[tile] {kind} N={n} K={k}: {chosen} after {rounds} round(s)"
+            f" at {best_time * 1e3:.1f} us"
+            f"{' -- SEARCH TRUNCATED BY BUDGET' if truncated else ''}"
+        )
+    return chosen
+
+
+def _time_launch(run) -> float:
+    """Seconds per call. `do_bench` when Triton is present, CUDA events otherwise."""
+    if triton is not None and hasattr(triton, "testing"):
+        try:
+            # `warmup` and `rep` are **milliseconds** in Triton, not iterations, and the
+            # return is a median in milliseconds. Small on purpose: the tuner runs this
+            # once per candidate and the compile dominates either way.
+            return float(triton.testing.do_bench(run, warmup=5, rep=20)) * 1e-3
+        except TypeError:  # pragma: no cover - a do_bench whose signature has moved
+            pass
+    for _ in range(3):
+        run()
+    torch.cuda.synchronize()
+    start = torch.cuda.Event(enable_timing=True)
+    stop = torch.cuda.Event(enable_timing=True)
+    start.record()
+    for _ in range(20):
+        run()
+    stop.record()
+    torch.cuda.synchronize()
+    return start.elapsed_time(stop) * 1e-3 / 20
+
+
+def tuned_launch_shapes() -> dict[tuple[str, int, int], LaunchShape]:
+    """What the tuner chose, for the slot record. Empty means nothing was tuned."""
+    return dict(_TUNED)
 
 
 # ======================================================================================
@@ -254,7 +500,7 @@ if HAS_TRITON:
         rows = tl.arange(0, 16)
         acc = tl.zeros((16, BLOCK_N), dtype=tl.float32)
 
-        chunk = tl.cdiv(K, SPLIT_K)
+        chunk = tl.cdiv(tl.cdiv(K, BLOCK_K), SPLIT_K) * BLOCK_K
         k_lo = pid_k * chunk
         k_hi = tl.minimum(k_lo + chunk, K)
         for k0 in range(k_lo, k_hi, BLOCK_K):
@@ -308,7 +554,7 @@ if HAS_TRITON:
         rows = tl.arange(0, 16)
         acc = tl.zeros((16, BLOCK_N), dtype=tl.float32)
 
-        chunk = tl.cdiv(K, SPLIT_K)
+        chunk = tl.cdiv(tl.cdiv(K, BLOCK_K), SPLIT_K) * BLOCK_K
         k_lo = pid_k * chunk
         k_hi = tl.minimum(k_lo + chunk, K)
         for k0 in range(k_lo, k_hi, BLOCK_K):
@@ -357,7 +603,24 @@ if HAS_TRITON:
         One byte block ``PACKED[j0:j0+BLOCK_K, n0:n0+BLOCK_N]`` holds elements
         ``[j0, j0+BLOCK_K)`` in its low nibbles and ``[j0+HALF, j0+HALF+BLOCK_K)`` in its
         high nibbles — two contiguous slices of ``x``, each inside exactly one scale group
-        because ``GROUP`` divides both ``K`` and ``HALF`` and ``BLOCK_K`` divides ``GROUP``.
+        because ``GROUP`` divides both ``K`` and ``HALF``, ``BLOCK_K`` divides ``GROUP``,
+        **and every split-K chunk starts on a ``BLOCK_K`` boundary.**
+
+        That last clause is load-bearing and was not true until batch 006. ``chunk`` was
+        ``cdiv(HALF, SPLIT_K)``, which splits *elements*: at ``in_proj_a`` -- HALF 1280,
+        SPLIT_K 8 -- that is 160, and 160 is not a multiple of 64, so program 1 started at
+        ``j0 = 160`` and read **one scale for a block straddling two groups.** Splitting
+        *blocks* instead makes the boundary exact by construction:
+        ``cdiv(cdiv(HALF, BLOCK_K), SPLIT_K) * BLOCK_K``. A program whose chunk starts past
+        ``HALF`` simply runs no iterations and stores its zero, which is what the reduction
+        expects.
+
+        It had never fired, because it needs ``SPLIT_K`` large enough that the element
+        split lands off a block boundary and batch 004's heuristic never went above 8 on a
+        site whose HALF it did not divide. `020-int4-full` was the slot that would have hit
+        it, and its precondition declined it in batch 004 and it was not in batch 005 --
+        **a declined slot is an unexecuted code path**, for the third time. The tuner makes
+        large ``SPLIT_K`` ordinary, so the same bug would have reached every site.
 
         The scale varies along K, so unlike int8 and fp8 it cannot leave the loop. It is
         applied to the **weight tile** rather than to a partial sum, so the accumulator's
@@ -371,7 +634,7 @@ if HAS_TRITON:
         rows = tl.arange(0, 16)
         acc = tl.zeros((16, BLOCK_N), dtype=tl.float32)
 
-        chunk = tl.cdiv(HALF, SPLIT_K)
+        chunk = tl.cdiv(tl.cdiv(HALF, BLOCK_K), SPLIT_K) * BLOCK_K
         j_lo = pid_k * chunk
         j_hi = tl.minimum(j_lo + chunk, HALF)
         for j0 in range(j_lo, j_hi, BLOCK_K):
@@ -463,7 +726,7 @@ def tiled_gemv_bf16(x: Tensor, w_k_major: Tensor) -> Tensor:
         # materialised: `w_k_major` is already the operand `matmul` wants.
         return (flat @ w_k_major).reshape(*x.shape[:-1], n)
 
-    block_n, block_k, split_k, num_warps = _launch_shape(n, k)
+    block_n, block_k, split_k, num_warps, num_stages = _launch_shape(n, k, "bf16")
     partials = torch.empty((split_k, rows, n), device=flat.device, dtype=torch.float32)
     _tiled_gemv_bf16_kernel[((n + block_n - 1) // block_n, split_k, rows)](
         flat,
@@ -480,6 +743,7 @@ def tiled_gemv_bf16(x: Tensor, w_k_major: Tensor) -> Tensor:
         BLOCK_K=block_k,
         SPLIT_K=split_k,
         num_warps=num_warps,
+        num_stages=num_stages,
     )
     return _reduce(partials, None, flat.dtype).reshape(*x.shape[:-1], n)
 
@@ -543,7 +807,7 @@ def _scaled_gemv(x: Tensor, w_k_major: Tensor, scale: Tensor, kind: str) -> Tens
         # in one piece, and a gate that OOMs reports nothing.
         return _dense_scaled(flat, w_k_major, scale, x, n)
 
-    block_n, block_k, split_k, num_warps = _launch_shape(n, k)
+    block_n, block_k, split_k, num_warps, num_stages = _launch_shape(n, k, kind)
     partials = torch.empty((split_k, rows, n), device=flat.device, dtype=torch.float32)
     _tiled_gemv_scaled_kernel[((n + block_n - 1) // block_n, split_k, rows)](
         flat,
@@ -560,6 +824,7 @@ def _scaled_gemv(x: Tensor, w_k_major: Tensor, scale: Tensor, kind: str) -> Tens
         BLOCK_K=block_k,
         SPLIT_K=split_k,
         num_warps=num_warps,
+        num_stages=num_stages,
     )
     return _reduce(partials, scale, flat.dtype).reshape(*x.shape[:-1], n)
 
@@ -587,7 +852,7 @@ def tiled_gemv_int4(x: Tensor, packed: Tensor, scale: Tensor, group_size: int) -
         dense = dequantise_int4_k_major(packed, scale, group_size=group_size)
         return (flat.float() @ dense).to(flat.dtype).reshape(*x.shape[:-1], n)
 
-    block_n, block_k, split_k, num_warps = _launch_shape(n, k)
+    block_n, block_k, split_k, num_warps, num_stages = _launch_shape(n, k, "int4")
     # Every K-block must lie inside one scale group, and every split-K chunk must start on
     # a block boundary. Both follow from BLOCK_K dividing GROUP, so clamp it.
     block_k = min(block_k, group_size)
@@ -611,6 +876,7 @@ def tiled_gemv_int4(x: Tensor, packed: Tensor, scale: Tensor, group_size: int) -
         SPLIT_K=split_k,
         GROUP=group_size,
         num_warps=num_warps,
+        num_stages=num_stages,
     )
     return _reduce(partials, None, flat.dtype).reshape(*x.shape[:-1], n)
 
@@ -780,6 +1046,78 @@ def _install_head(model, *, kind: str) -> None:
     model.__class__ = _quantised_head_model_class(type(model))
 
 
+#: The two projections per linear-attention layer that no tile can give parallelism to.
+#:
+#: ``in_proj_a`` and ``in_proj_b`` are **32 output channels wide**. ``tl.dot`` needs
+#: ``BLOCK_N >= 16``, so the widest grid available is two programs times whatever split-K
+#: can add -- well under one wave on a 170-SM card at any configuration in the search
+#: space. They are also worth **7.86 MB/token of 8587.80, 0.09%**, across 48 of the 248
+#: layer projections. Excluding them costs nothing measurable and removes the only sites
+#: whose slowness cannot be a property of the tile, which is what batches 003 and 004
+#: folded into a single aggregate byte rate.
+GATE_PROJECTIONS = ("in_proj_a", "in_proj_b")
+
+#: The ``N`` below which a site is a gate on this checkpoint. Not the selection criterion
+#: -- `_wide_linears` names the modules structurally, so it behaves on any config -- but
+#: the arithmetic behind it, asserted against the real model by
+#: `test_the_structural_gate_set_is_the_narrow_one`.
+WIDE_MIN_N = 1024
+
+
+def _gate_linears(model) -> list[nn.Linear]:
+    """The `GATE_PROJECTIONS` of every linear-attention layer."""
+    return [
+        module
+        for parent in model.modules()
+        for name in GATE_PROJECTIONS
+        if isinstance(module := getattr(parent, name, None), nn.Linear)
+    ]
+
+
+def _wide_linears(model) -> list[nn.Linear]:
+    """Every layer projection except the gates. See `GATE_PROJECTIONS`."""
+    gates = {id(linear) for linear in _gate_linears(model)}
+    return [linear for linear in _layer_linears(model) if id(linear) not in gates]
+
+
+def _tune_for(linears: list[nn.Linear], kind: str, *, head=None, log=None) -> None:
+    """Measure a tile for each distinct ``(N, K)`` these sites present.
+
+    Once per shape, not once per site: the 32 ``up_proj`` modules are one measurement and
+    one entry in `_TUNED`. Runs at **install** time, which is inside `_build_candidate` and
+    therefore outside every timed region -- `run_interleaved` excludes setup by design.
+
+    Silent no-op without CUDA, so the CPU suite exercises the installers without ever
+    needing a card, and `DF_TILE_TUNE=0` restores batch 004's untuned behaviour exactly.
+    """
+    if os.environ.get("DF_TILE_TUNE") == "0" or not torch.cuda.is_available():
+        return
+    sites: list[tuple[int, int, object]] = [
+        (int(linear.out_features), int(linear.in_features), linear) for linear in linears
+    ]
+    if head is not None:
+        packed_k = head.w_k_major.shape[0] * (2 if head.kind == "int4" else 1)
+        sites.append((int(head.w_k_major.shape[1]), int(packed_k), head))
+    seen: set[tuple[int, int]] = set()
+    for n, k, module in sites:
+        if (n, k) in seen:
+            continue
+        seen.add((n, k))
+        x = torch.randn((1, k), device=module.w_k_major.device, dtype=torch.bfloat16)
+        tune_launch_shape(kind, n, k, _runner(kind, x, module), log=log)
+
+
+def _runner(kind: str, x: Tensor, module):
+    """One decode-shaped launch of the op this module will actually call."""
+    if kind == "int4":
+        return lambda: tiled_gemv_int4(x, module.w_k_major, module.qscale, module.qgroup)
+    if kind == "fp8":
+        return lambda: tiled_gemv_fp8(x, module.w_k_major, module.qscale)
+    if kind == "int8":
+        return lambda: tiled_gemv_int8(x, module.w_k_major, module.qscale)
+    return lambda: tiled_gemv_bf16(x, module.w_k_major)
+
+
 def _guard(model, flag: str) -> bool:
     """True if this install has already run on this model. Installs are idempotent."""
     if getattr(model, flag, False):
@@ -872,6 +1210,89 @@ def install_tiled_int4_head(model, entry=None) -> None:
     if _guard(model, "_deltaforge_tiled_int4_head"):
         return
     _install_head(model, kind="int4")
+
+
+# --------------------------------------------------------------------------------------
+# Batch 006 — the same kernel, on the sites whose tile was never measured
+# --------------------------------------------------------------------------------------
+#
+# Batch 005's finding was about the *site*, and it left a second question standing that
+# the site-vs-kernel split had hidden: **what was ever wrong with the tile?** `_launch_shape`
+# is a heuristic nobody timed. It targets 256 programs -- one wave on a 170-SM card -- and
+# the one site this project has won on launches 3880. It also *narrows* BLOCK_N to 32 for
+# every site with N <= 4096, which buys programs by halving the contiguous run each program
+# reads from 128 bytes to 64: the opposite of the trade the head won on.
+#
+# So these installers change nothing about the kernel and everything about how it is
+# launched. `tune_launch_shape` times every candidate tile on the card in hand, exactly as
+# `max-autotune` does for the code we are trying to beat, and the heuristic is its first
+# candidate rather than its answer.
+#
+# What breaks even, in bytes this repository has measured. At the baseline's 1282 GB/s the
+# MLP's 4529.85 MB/token costs 3.53 ms of 6.70; group-128 int4 moves 0.2578 of that, so
+# the MLP slot **ties at 331 GB/s** and collects the full 1.643x ceiling at 1282. The wide
+# set plus the head is 97.83% of per-token bytes and ties at the same 331, for a 3.65x
+# ceiling. Batch 004's untuned tile reached ~196-280 GB/s on these sites and batch 005's
+# head reached 656 at int4, so the tie point sits squarely between the two numbers this
+# project has measured -- which is what makes it worth a rental rather than an argument.
+
+
+def install_tiled_int4_head_tuned(model, entry=None) -> None:
+    """`install_tiled_int4_head` with the head's tile measured instead of guessed.
+
+    The champion collected **70% of its 1.123x ceiling** at BLOCK_N=64, SPLIT_K=1,
+    num_warps=4 -- a configuration chosen by a comment about SM counts. The remaining 30%
+    is the cheapest slot in this batch and the one whose result is directly comparable to a
+    number already on the leaderboard.
+    """
+    if _guard(model, "_deltaforge_tiled_int4_head_tuned"):
+        return
+    _install_head(model, kind="int4")
+    _tune_for([], "int4", head=model.tiled_lm_head, log=_installer_log())
+
+
+def install_tiled_int4_mlp(model, entry=None) -> None:
+    """Group-128 int4 on the 96 MLP projections: **52.75% of what the compiled column moves.**
+
+    The largest single block of bytes in the model, and every one of its sites is wide:
+    ``gate_proj`` and ``up_proj`` are 9216 and ``down_proj`` 2560, against ``in_proj_a``'s
+    32. It is the cleanest test of whether the tile was the problem, because it is one
+    mechanism on one homogeneous group of sites.
+    """
+    if _guard(model, "_deltaforge_tiled_int4_mlp"):
+        return
+    linears = _mlp_linears(model)
+    _quantise_k_major(linears, TiledInt4Linear, kind="int4")
+    _tune_for(linears, "int4", log=_installer_log())
+
+
+def install_tiled_int4_wide(model, entry=None) -> None:
+    """int4 on every layer projection with ``N >= WIDE_MIN_N``, **and the tied head**.
+
+    200 sites plus the head: **97.83% of what the compiled column moves.** The 48 excluded
+    sites are ``in_proj_a`` and ``in_proj_b``, 32 channels wide and worth 0.05% of
+    per-token traffic between them. Batches 003 and 004 installed there too and reported
+    one aggregate byte rate over all 248, which is the measurement batch 005 showed cannot
+    separate a slow kernel from a starved grid.
+
+    **The head is inside this installer rather than composed beside it**, because the
+    registry allows one champion per replaceable operation and both would claim
+    ``decode_step``. That invariant is the right one -- two kernels claiming the same
+    boundary makes "what does `model.py` assemble?" ambiguous -- so the composition
+    happens here, where it is one named kernel with one set of layer-1 probes, exactly as
+    `tiled_int4_full` already does for all 248 sites.
+    """
+    if _guard(model, "_deltaforge_tiled_int4_wide"):
+        return
+    linears = _wide_linears(model)
+    _quantise_k_major(linears, TiledInt4Linear, kind="int4")
+    _install_head(model, kind="int4")
+    _tune_for(linears, "int4", head=model.tiled_lm_head, log=_installer_log())
+
+
+def _installer_log():
+    """Print the tuner's choices. They are the slot's finding as much as its ratio is."""
+    return print
 
 
 # ======================================================================================
@@ -985,7 +1406,30 @@ def tiled_int8_correctness_checks(model, *, device="cuda", dtype=None, seed: int
     return _scaled_checks(model, device=device, seed=seed, sites="layers", kind="int8", op="tiled_gemv_int8")
 
 
-def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0, sites: str = "full"):
+def _shape_probes(linears, *, head=None) -> tuple[tuple[Tensor, str], ...]:
+    """One real weight per distinct ``(N, K)`` among these sites.
+
+    `quantised_linear._probe_weights` groups by **BLOCK_N branch**, which was the right
+    key while the tile came from a branch on ``N``. `tune_launch_shape` keys on
+    ``(kind, N, K)`` and can hand two sites with the same BLOCK_N completely different
+    tiles, so a branch-grouped probe would leave real launch configurations uncovered —
+    the exact gap `_probe_weights` was written to close, moved one level down.
+
+    There are six distinct shapes among the wide layer projections, so covering every one
+    of them costs a few seconds and needs no argument about which are representative.
+    """
+    by_shape: dict[tuple[int, int], Tensor] = {}
+    for linear in linears:
+        by_shape.setdefault((int(linear.out_features), int(linear.in_features)), linear.weight)
+    probes = [(weight, f"N={n} K={k}") for (n, k), weight in sorted(by_shape.items())]
+    if head is not None:
+        probes.append((head, f"N={head.shape[0]} K={head.shape[1]} (tied lm head)"))
+    return tuple(probes)
+
+
+def tiled_int4_correctness_checks(
+    model, *, device="cuda", dtype=None, seed: int = 0, sites: str = "full", probes=None
+):
     """int4's reference rounds the scaled weight to bf16, because the kernel does.
 
     A shared reference is only shared if the implementations share their rounding. The
@@ -998,7 +1442,9 @@ def tiled_int4_correctness_checks(model, *, device="cuda", dtype=None, seed: int
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _probe_weights(model, sites=sites, launch_shape=_branch_of):
+    if probes is None:
+        probes = _probe_weights(model, sites=sites, launch_shape=_branch_of)
+    for weight, label in probes:
         quantised = quantise_int4_k_major(weight.detach())
         packed, scale, group = quantised.qweight, quantised.scale, quantised.group_size
         n = packed.shape[1]
@@ -1040,3 +1486,41 @@ def tiled_int4_head_correctness_checks(model, *, device="cuda", dtype=None, seed
     site whose error reaches the argmax with no further layer to attenuate it.
     """
     return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
+
+
+def tiled_int4_head_tuned_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """The same probe as the champion's. The tile changed; the arithmetic did not.
+
+    Registered separately rather than aliased because `CHECK_BUILDERS` keys by kernel name
+    and a kernel with no entry of its own is checked by nothing — which is the defect
+    `docs/BATCHES.md` records as keying a check table by the operation instead.
+    """
+    return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
+
+
+def tiled_int4_mlp_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """Every distinct shape among the 96 MLP projections: 9216x2560 and 2560x9216."""
+    return tiled_int4_correctness_checks(
+        model, device=device, dtype=dtype, seed=seed, probes=_shape_probes(_mlp_linears(model))
+    )
+
+
+def tiled_int4_wide_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """Every distinct shape this installer touches: six layer shapes and the tied head.
+
+    Seven probes rather than the three a BLOCK_N grouping would give, and the extra four
+    cost a few seconds. `tune_launch_shape` keys on ``(kind, N, K)`` and can hand two sites
+    with the same BLOCK_N different tiles, so grouping by branch would leave real launch
+    configurations unexercised -- the gap `_probe_weights` exists to close, one level down.
+
+    ``in_proj_a`` and ``in_proj_b`` are absent because the installer leaves them in bf16,
+    and a check that reports on a projection its hypothesis left alone is reporting on the
+    reference.
+    """
+    return tiled_int4_correctness_checks(
+        model,
+        device=device,
+        dtype=dtype,
+        seed=seed,
+        probes=_shape_probes(_wide_linears(model), head=model.lm_head_weight),
+    )
