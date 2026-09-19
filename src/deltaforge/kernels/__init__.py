@@ -633,12 +633,18 @@ REGISTRY.register(
     "tiled_int4_head",
     impl=_tiled_gemv.tiled_gemv_int4,
     replaces="decode_step",
+    status=KernelStatus.CHAMPION,
     hypothesis="022-int4-head",
     notes=(
         "Group-128 int4 on the tied LM head and nothing else: 248320 x 2560, 14.80% of "
         "what the compiled column moves, in one matmul that launches 3880 programs. The "
         "first hand-written GEMV this project has ever run on a site that is not "
         "grid-starved. Ties at 303 GB/s against a baseline spending 1.08 ms/token there."
+        " **CHAMPION as of rental 40 (2026-09-19): median ratio 1.0791, IQR 0.00034, "
+        "layer 1 one bf16 ULP, layer 2 0.9318 agreement and 0.01674 nats.** The first "
+        "candidate in this project to beat torch.compile(max-autotune), and it collects "
+        "70% of its 1.123x ceiling: the head site ran at ~654 GB/s where the same kernel "
+        "family averaged 228-319 over all 248 layer projections."
     ),
 )
 register_checks("tiled_int4_head", _tiled_gemv.tiled_int4_head_correctness_checks)

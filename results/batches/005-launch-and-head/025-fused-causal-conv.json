@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "win",
+  "timestamp": "2026-09-19T00:55:00.650804+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "025-fused-causal-conv",
+    "batch": "005-launch-and-head",
+    "statement": "One Triton kernel per linear-attention layer for the four-tap depthwise causal convolution: the `cat` that builds its input, the cuDNN `extern_kernels.convolution` itself, the `silu`, and the `copy_` that advances the history, in one launch. 72 of the step's 508 launches become 24.",
+    "prediction": "win",
+    "rationale": "**The one place in this model where launch count and byte count are wildly out of proportion: 14.2% of the dispatch for 0.055% of the traffic.** At batch-1 decode that convolution is 8192 channels x 4 taps -- 32768 multiplies, roughly a microsecond of arithmetic -- wrapped in three launches, one of which is the only `extern_kernels` call left in the whole decode graph. Inductor cannot close this itself, and that is the mechanistic claim: a scheduler cannot fuse a producer and a consumer across an opaque external call, so the `cat` and the `copy_` are stranded either side of it by construction rather than by oversight. Worth 48 of 508 launches, 9.4% of the dispatch, plus whatever a cuDNN convolution dispatch costs above a Triton launch -- against 0.9-2.5 ms of launch overhead that is **0.08-0.24 ms of 7.30, a ratio of 1.011 to 1.033**. The low end is inside the noise band and the high end is several times outside it, so this is a real coin with a weighted edge rather than a certainty, and it is predicted `win` because the launch saving is structural and the arithmetic it replaces is trivially small. It also pairs with 021: if launches cost nothing once the step is CUDA-graphed, this kernel is worth nothing inside 027, and that is a falsifiable pair rather than two independent hopes. Gated approximately because the policy forbids `exact`, but the kernel rounds exactly as the reference does -- fp32 accumulate, round to bf16, *then* silu -- so the bars are tight on purpose: a real disagreement here is a bug, not a dtype.",
+    "category": "A",
+    "byte_share": 0.00055,
+    "kernels": [
+      "fused_causal_conv"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.041190343035850674,
+    "correctness": 6.0566828699666075,
+    "compile_candidate_compiled": 0.004366845008917153,
+    "bench": 286.0061777619994
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-181-generic-x86_64-with-glibc2.39",
+    "hostname": "d73824a57013",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2400,
+      "memory": 13801,
+      "observed_at": "2026-09-19T00:55:00.798754+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        857.7599487304688,
+        857.8013916015625,
+        857.3574829101562,
+        857.837890625,
+        857.3485717773438,
+        857.4642333984375,
+        858.0415649414062
+      ],
+      "candidate_compiled": [
+        217959.125,
+        845.07470703125,
+        845.7242431640625,
+        849.6171875,
+        845.1947021484375,
+        844.8876953125,
+        845.5028686523438
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        857.3574829101562,
+        857.837890625,
+        857.3485717773438,
+        857.4642333984375,
+        858.0415649414062
+      ],
+      "candidate_compiled": [
+        845.7242431640625,
+        849.6171875,
+        845.1947021484375,
+        844.8876953125,
+        845.5028686523438
+      ]
+    },
+    "median_ms": {
+      "compiled": 857.4642333984375,
+      "candidate_compiled": 845.5028686523438
+    },
+    "achieved_gbps": {
+      "compiled": 1281.9644569655388,
+      "candidate_compiled": 1300.1004622114274
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.013755358014299,
+        1.0096757730963393,
+        1.0143799642828,
+        1.0148854553755642,
+        1.0148298684178896
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.0143799642828
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.0010745104035905229
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "025-fused-causal-conv",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "fused_causal_conv.step[C=8192 batch=1]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3840,
+        "total_elements": 32768,
+        "note": "headline decode step: batch 1, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "fused_causal_conv.step[C=8192 batch=32]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 120601,
+        "total_elements": 1048576,
+        "note": "secondary decode step: batch 32, one token; output and the advanced history are both compared"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 1.0,
+      "top1_interval": [
+        0.9856577137186275,
+        1.0
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "num_positions": 264,
+      "top1_threshold": 0.9848484848484849,
+      "kl_threshold": 0.001,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

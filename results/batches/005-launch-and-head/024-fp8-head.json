@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "error",
+  "timestamp": "2026-09-19T00:50:05.812149+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "024-fp8-head",
+    "batch": "005-launch-and-head",
+    "statement": "The same site and the same 8 bits as 023, stored e4m3 instead of int8, so the conversion happens inside sm_120's MMA pipeline rather than as an ALU instruction on the critical path.",
+    "prediction": "win",
+    "rationale": "Adjacent to 023 so the only difference between the two slots is the conversion tax, which batch 003 measured at **1.438x** -- int8 cost that much more time than bf16 in the same kernel on the same sites, and nothing since has isolated it on a site where the kernel was not already bound by something else. Identical ceiling to 023 (1.080x, identical bytes), so 023 minus 024 is the tax and nothing else. Predicted 1.03-1.08, a little above 023 for the same reason batch 004 ordered fp8 ahead of int8. The accuracy goes the other way and the bar says so: e4m3 carries 3 mantissa bits against int8's effective 7 at per-channel scale, so batch 004 interpolated fp8's error at ~3x int8's in amplitude and ~9x in KL. Applied to the ~0.0001 nats batch 003 measured for the int8 head that is ~0.001; the bar is 0.012 and 252/264 allows 12 flips. Both are derived from the two measured points this repository owns, not from what fp8 is generally said to cost.",
+    "category": "B",
+    "byte_share": 0.148,
+    "kernels": [
+      "tiled_fp8_head"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.06627609394490719
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-181-generic-x86_64-with-glibc2.39",
+    "hostname": "d73824a57013",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2400,
+      "memory": 13801,
+      "observed_at": "2026-09-19T00:50:06.011302+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": null,
+  "correctness": null,
+  "cost": null,
+  "notes": "CompilationError: at 39:12:\n    rows = tl.arange(0, 16)\n    acc = tl.zeros((16, BLOCK_N), dtype=tl.float32)\n\n    chunk = tl.cdiv(K, SPLIT_K)\n    k_lo = pid_k * chunk\n    k_hi = tl.minimum(k_lo + chunk, K)\n    for k0 in range(k_lo, k_hi, BLOCK_K):\n        offs_k = k0 + tl.arange(0, BLOCK_K)\n        mask_k = offs_k < k_hi\n        xv = tl.load(X + pid_m * stride_xm + offs_k, mask=mask_k, other=0.0)\n        xt = tl.where(rows[:, None] == 0, xv[None, :], 0.0).to(tl.bfloat16)\n        w = tl.load(\n            ^\ncannot cast int32[constexpr[64], constexpr[64]] to <['64', '64'], fp8e4nv>\nTraceback (most recent call last):\n  File \"/usr/local/lib/python3.12/dist-packages/triton/language/core.py\", line 43, in wrapper\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/language/core.py\", line 2167, in load\n    return _semantic.load(pointer, mask, other, boundary_check, padding_option, cache_modifier, eviction_policy,\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/language/semantic.py\", line 1089, in load\n    return self._load_legacy(ptr, mask, other, boundary_check, padding, cache, eviction, is_volatile)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/language/semantic.py\", line 1057, in _load_legacy\n    other = self.cast(other, elt_ty)\n            ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/language/semantic.py\", line 899, in cast\n    assert False, f'cannot cast {input} to {dst_ty}'\n           ^^^^^\nAssertionError: cannot cast int32[constexpr[64], constexpr[64]] to <['64', '64'], fp8e4nv>\n\nThe above exception was the direct cause of the following exception:\n\nTraceback (most recent call last):\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 455, in run_slot\n    correctness = self._run_correctness(hypothesis, candidate)\n                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/batch_run.py\", line 349, in _run_correctness\n    kernel_checks = build_kernel_checks(self.reference, registry=registry, device=\"cuda\")\n                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/__init__.py\", line 255, in build_kernel_checks\n    checks.extend(builder(model, **kwargs))\n                  ^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/tiled_gemv.py\", line 1020, in tiled_fp8_head_correctness_checks\n    return _scaled_checks(model, device=device, seed=seed, sites=\"head\", kind=\"fp8\", op=\"tiled_gemv_fp8\")\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/tiled_gemv.py\", line 933, in _scaled_checks\n    check_kernel(\n  File \"/workspace/deltaforge/src/deltaforge/harness/correctness.py\", line 153, in check_kernel\n    cand_out = candidate_fn(*args, **kwargs)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/tiled_gemv.py\", line 941, in <lambda>\n    (lambda a, q, s: tiled_gemv_fp8(a, to_k_major(q), s))\n                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_library/custom_ops.py\", line 698, in __call__\n    return self._opoverload(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_ops.py\", line 865, in __call__\n    return self._op(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_library/autograd.py\", line 112, in autograd_impl\n    result = forward_no_grad(*args, Metadata(keyset, keyword_only_args))\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_library/autograd.py\", line 41, in forward_no_grad\n    result = op.redispatch(keyset & _C._after_autograd_keyset, *args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_ops.py\", line 872, in redispatch\n    return self._handle.redispatch_boxed(keyset, *args, **kwargs)  # type: ignore[return-value]\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_library/custom_ops.py\", line 347, in backend_impl\n    result = self._backend_fns[device_type](*args, **kwargs)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_compile.py\", line 54, in inner\n    return disable_fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_dynamo/eval_frame.py\", line 1263, in _fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/torch/_library/custom_ops.py\", line 382, in wrapped_fn\n    return fn(*args, **kwargs)\n           ^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/tiled_gemv.py\", line 504, in tiled_gemv_fp8\n    return _scaled_gemv(x, w_k_major, scale, \"fp8\")\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/workspace/deltaforge/src/deltaforge/kernels/tiled_gemv.py\", line 535, in _scaled_gemv\n    _tiled_gemv_scaled_kernel[((n + block_n - 1) // block_n, split_k, rows)](\n  File \"/usr/local/lib/python3.12/dist-packages/triton/runtime/jit.py\", line 370, in <lambda>\n    return lambda *args, **kwargs: self.run(grid=grid, warmup=False, *args, **kwargs)\n                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/runtime/jit.py\", line 720, in run\n    kernel = self._do_compile(key, signature, device, constexprs, options, attrs, warmup)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/runtime/jit.py\", line 849, in _do_compile\n    kernel = self.compile(src, target=target, options=options.__dict__)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/compiler/compiler.py\", line 304, in compile\n    module = src.make_ir(target, options, codegen_fns, module_map, context)\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/usr/local/lib/python3.12/dist-packages/triton/compiler/compiler.py\", line 80, in make_ir\n    return ast_to_ttir(self.fn, self, context=context, options=options, codegen_fns=codegen_fns,\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\ntriton.compiler.errors.CompilationError: at 39:12:\n    rows = tl.arange(0, 16)\n    acc = tl.zeros((16, BLOCK_N), dtype=tl.float32)\n\n    chunk = tl.cdiv(K, SPLIT_K)\n    k_lo = pid_k * chunk\n    k_hi = tl.minimum(k_lo + chunk, K)\n    for k0 in range(k_lo, k_hi, BLOCK_K):\n        offs_k = k0 + tl.arange(0, BLOCK_K)\n        mask_k = offs_k < k_hi\n        xv = tl.load(X + pid_m * stride_xm + offs_k, mask=mask_k, other=0.0)\n        xt = tl.where(rows[:, None] == 0, xv[None, :], 0.0).to(tl.bfloat16)\n        w = tl.load(\n            ^\ncannot cast int32[constexpr[64], constexpr[64]] to <['64', '64'], fp8e4nv>\n"
+}

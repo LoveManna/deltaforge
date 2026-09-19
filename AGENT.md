@@ -248,12 +248,17 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Thirty-eight rentals have been billed, $6.445 lifetime, zero leaked. The harness is
-calibrated, blocker 16 is closed, and the remaining problem is entirely scientific.**
-Batch 003 (2026-09-16) produced seven admissible ratios, all losses. Batch 004 (2026-09-17)
-rewrote the kernel that lost hardest around the cause batch 003 had named — and it lost
-harder: **0.2801 → 0.1934**. Its preconditions then declined the five quantised slots behind
-it, ending the rental at 39.65 billed minutes instead of 55.
+**Forty rentals have been billed, $6.706 lifetime, zero leaked. There is a champion.**
+Batch 005 (2026-09-19) produced this project's first two wins: `022-int4-head` at **1.0791,
+IQR 0.00034** — group-128 int4 on the tied LM head alone — and `025-fused-causal-conv` at
+**1.0144**. Batch 003 (2026-09-16) produced seven admissible ratios, all losses, and batch
+004 (2026-09-17) rewrote the kernel that lost hardest and lost harder, 0.2801 → 0.1934.
+
+**What changed between losing by 5x and winning was not the kernel.** Batches 003 and 004
+installed on all 248 layer projections at once; batch 005 installed on one site. The same
+kernel family achieves 228-319 GB/s averaged over the projections and **656 GB/s on the
+head**, which launches 3880 programs where `in_proj_a` launches four. Before concluding
+anything about a kernel, check whether the sites you measured it on could fill the card.
 
 **The baseline is characterised, and the number in this paragraph used to be wrong twice
 over.** Rental 38's `TORCH_LOGS=output_code` dump shows inductor folds the GQA head
@@ -569,6 +574,25 @@ quantisation does not help", which is false and would have closed the backlog's 
 hypothesis for the wrong reason. **Put the mechanism's control in the batch, and put it
 early**: five of batch 003's seven slots were determined the moment `009` returned 0.2801,
 and nothing in the framework could act on that. See `docs/BATCHES.md` on conditional slots.
+
+**A declined slot is an unexecuted code path, not a verified one.** Batch 004's
+preconditions declined five slots and saved 16 billed minutes, which was right. What came
+with the saving is that `_tiled_gemv_scaled_kernel` shipped, passed CI and review, and had
+**never run** — so batch 005 discovered on a rented box that it declared `SCALE` and
+`HAS_SCALE` and read neither, returning unscaled int8 dot products at a layer-1 relative
+error of **4511**. The same kernel's `other=0` will not cast to e4m3, so the fp8 slot did
+not compile at all. **A Triton body is a string a GPU compiles; the CPU suite cannot see
+into it**, and `kernels/kernel_contract_test.py` now checks what the AST *can* see — a
+parameter declared and never read, and a dtype-polymorphic masked load whose `other` only
+one dtype accepts. When a batch picks up a kernel an earlier batch declined, treat it as
+new code.
+
+**A candidate that replaces the root model class pays a full `max-autotune` recompile.**
+The identity slot's candidate reuses the reference's compiled code and its first warmup
+round takes ~860 ms; on rental 40 `021`'s took **71.7 s** and `025`'s **218 s**, because a
+new class is a new dynamo code object. Both rounds are discarded warmup so no ratio is
+affected — but it is 1-4 minutes a slot, it is not in `COLD_PHASE_ESTIMATES`, and it is
+easy to mistake for a hang.
 
 **Two installers that both swap the root class will silently discard each other.** The
 tiled LM head and the static decode cache each work by replacing `type(model)` with a

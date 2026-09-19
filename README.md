@@ -10,19 +10,29 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**No champion. Sixteen kernels have run on a GPU and the compiler has beaten all of them.**
+**A hand-written Triton kernel beats the compiler, by 7.91%, and we can say where and
+why.**
 
-On 2026-09-16 (rental 37) batch 003 returned **seven admissible ratios** — `calibrated:
-true`, every slot compiled, nothing voided, for the first time in this project. Every slot
-lost. On 2026-09-17 (rental 38) batch 004 rewrote the kernel that lost hardest around the
-cause batch 003 had named, and it **lost harder: 0.2801 → 0.1934**. Its preconditions then
-declined the five slots behind it.
+On 2026-09-19 (rental 40) `022-int4-head` returned a median ratio of **1.0791 with an
+interquartile spread of 0.00034**, on a harness that calibrated at 1.0008 in the same run.
+It stores the **tied LM head** — 248320 x 2560, *14.80% of every byte the compiled column
+moves, in a single matmul* — at 4 bits with group-128 scales, and collects 70% of the
+1.123x that arithmetic allows. A second kernel won in the same batch on an unrelated
+mechanism: `025-fused-causal-conv`, **1.0144**, bit-identical to the reference.
+
+**The finding is not "our kernel is fast". It is where the compiler can be beaten and why
+two earlier attempts could not find it.** Batches 003 and 004 installed a hand-written GEMV
+on all 248 layer projections at once and lost by 5x — 0.2801, then 0.1934 after a rewrite.
+Measured per site, the same kernel family gives **228-319 GB/s over the projections and
+656 GB/s on the head**. The head launches 3880 programs on a 170-SM card; `in_proj_a` is 32
+channels wide and launches four. The kernel was never structurally slow: **it was
+grid-starved, and an aggregate number over 248 sites could not show that.**
 
 The most useful number the project has produced is not a ratio. It is the baseline:
 
-> **`torch.compile(mode="max-autotune")` runs this model's decode at 7.30 ms/token —
-> 1177 GB/s, 65.7% of an RTX 5090's 1792 GB/s vendor peak**, against a 5.11 ms/token
-> roofline.
+> **`torch.compile(mode="max-autotune")` runs this model's decode at 6.70-7.30 ms/token —
+> 1177-1282 GB/s, 65.7-71.5% of an RTX 5090's 1792 GB/s vendor peak** (two different
+> physical cards), against a 4.79 ms/token roofline on the bytes it actually moves.
 
 And the most useful thing rental 38 produced was not a ratio either. It was **reading the
 code we are trying to beat**, which had never been done:
@@ -40,7 +50,13 @@ code we are trying to beat**, which had never been done:
 
 That reframes the whole exercise. The compiler is two thirds of the way to the memory wall
 *and* fusing everything around the matmuls it generates, so the only large win left is to
-move fewer bytes — and taking a matmul away from inductor now has a measured price attached.
+move fewer bytes — and taking a matmul away from inductor has a measured price attached.
+
+**Rental 40 is where that price became payable.** At the LM head it is paid once, on a
+matmul so large that a hand-written kernel finally has the card to itself. At the 248 layer
+projections it is paid 248 times, on matmuls as narrow as 32 channels. Same kernel, same
+arithmetic, opposite result — which is the mechanistic account this project exists to
+produce, and it was registered before the measurement rather than after it.
 
 Batch 003 tried exactly that — weight-only int8 and int4 with the dequantisation fused into
 the GEMV's K-loop, attacking the 91.85% of per-token bytes that are weights — and produced

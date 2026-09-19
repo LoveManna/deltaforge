@@ -2,22 +2,43 @@
 
 ## Champion
 
-**None — no baseline has been recorded yet.**
+**`022-int4-head` — group-128 int4 on the tied LM head.**
 
 | | |
 |---|---|
-| Kernel | — |
-| Replaces | — |
-| Median ratio vs `torch.compile(max-autotune)` | — |
-| IQR of the scoring rounds | — |
-| Last verified on | — |
-| Result record | — |
+| Kernel | `tiled_int4_head` (`src/deltaforge/kernels/tiled_gemv.py`) |
+| Replaces | `decode_step` — `ReferenceModel.project_logits`, and nothing else |
+| Median ratio vs `torch.compile(max-autotune)` | **1.0791** |
+| IQR of the scoring rounds | **0.00034** |
+| Correctness | layer 1 one bf16 ULP (7.8e-3); layer 2 top-1 0.9318, mean KL 0.01674 nats |
+| Last verified on | RTX 5090, rental 40, 2026-09-19 |
+| Result record | [`results/batches/005-launch-and-head/`](results/batches/005-launch-and-head/) |
 
-**Still no champion, and rental 38 moved the reason.** Batch 003 (rental 37) returned seven
-admissible ratios and every one lost; batch 004 (rental 38, 2026-09-17) rewrote the kernel
-that lost hardest around the cause batch 003 named — and it got **worse**, 0.2801 → 0.1934.
-The batch's preconditions then declined the five quantised slots behind it. Nothing here is
-estimated, projected, or placeheld.
+**After thirty-nine rentals, a hand-written Triton kernel has beaten what
+`torch.compile(mode="max-autotune")` generates on the decode path of Qwen3.5-4B** — by
+7.91%, at an interquartile spread of 0.03%, on a harness that calibrated at 1.0008 in the
+same run. A second kernel won in the same batch on an unrelated mechanism:
+`025-fused-causal-conv`, **1.0144**, bit-identical to the reference.
+
+**The mechanism, stated before the measurement and confirmed by it.** The tied LM head is
+248320 x 2560 — **1271.40 MB/token, 14.80% of everything the compiled column moves, in one
+matmul.** Storing it at 4 bits with group-128 scales removes 943.7 MB/token, a 1.123x
+ceiling, and the kernel collected 70% of it.
+
+**Why here and not on the 248 projections two rentals lost on.** At BLOCK_N=64 the head
+launches **3880 programs** on a 170-SM card; `in_proj_a` is 32 channels wide and launches
+four. The same kernel family achieved 319 and 228 GB/s averaged over the layer projections
+and **656 GB/s on the head**, with its flop padding and split-K unchanged. The GEMV was
+grid-starved, not structurally slow — and that could not be seen while every slot installed
+on all 248 sites at once and reported one aggregate number.
+
+**What the batch cost to learn it: 32.32 billed minutes, $0.2350.**
+
+**How the project got here.** Batch 003 (rental 37) returned seven admissible ratios and
+every one lost; batch 004 (rental 38) rewrote the kernel that lost hardest around the cause
+batch 003 named — and it got **worse**, 0.2801 → 0.1934. Batch 005 stopped rewriting the
+kernel and changed where it was installed. Nothing here is estimated, projected, or
+placeheld.
 
 **The baseline is now characterised properly, and the earlier figure was wrong twice.**
 Rental 38's `TORCH_LOGS=output_code` dump — the diagnostic `docs/HYPOTHESES.md` had called
@@ -34,66 +55,23 @@ kernels carry the residual add and the RMSNorm inside them. It also runs with **
 graphs**, because `_causal_conv` mutates its cache in place. See
 [`results/batches/004-bandwidth-bound-gemv/README.md`](results/batches/004-bandwidth-bound-gemv/README.md).
 
-**The reference's reading of the weight *values* is no longer settled** — it matched
-HuggingFace token-for-token on 2026-09-07 and diverged on 2026-09-10 and again on
-2026-09-12; see below. That was the outstanding precondition, so it is now the outstanding
-*question*. The oracle's version is pinned rather than floored since 2026-09-11, which was
-right on its own terms and ruled itself out as the cause on the next rental. **The calibrated harness now exists**: on rentals 34 and 35 the identity champion
-measured 1.0009 and 1.0018 against IQRs of 0.0018 and 0.0043, with correctness exact. That
-was the other outstanding precondition and it is met. There is still no baseline and no
-champion, because no candidate has produced an admissible ratio — see the hypotheses table.
+**The reference's reading of the weight values is settled.** It matched HuggingFace
+token-for-token on 2026-09-07, diverged on 2026-09-10 and 2026-09-12, and has agreed on
+every rental since — rentals 30-32, 34, 35, 37, 38 and 40, on six physical hosts, with zero
+tie-breaks. That was the outstanding precondition for every number downstream of it and it
+is met; blocker 13 in the table below is closed. The historical account of the divergence
+is kept in `results/batches/002-compile-cost/README.md` because it cost five rentals to
+resolve and the shape of it is worth reading, not because the question is open.
 
-### The reference was validated on 2026-09-07, and disagreed on 2026-09-10.
+**The harness is calibrated, repeatedly and increasingly tightly.** The identity champion
+has measured 1.0009, 1.0018, 1.0024, 0.9913 and — on rental 40 — **1.0008 at an IQR of
+0.00017**, the tightest yet. A batch whose identity slot misses 1.00 voids every other
+number in it; none since rental 35 has.
 
-**2026-09-07 — the weight-value oracle passed for the first time.**
-
-```
-test_reference_greedy_decode_matches_the_oracle_token_for_token  PASSED
-```
-
-Our from-scratch `reference.py` greedy-decoded 32 tokens **identically to HuggingFace's own
-Qwen3.5-4B**, on the real checkpoint, on an RTX 5090. `AGENT.md` §4 calls this the
-precondition for every number downstream of it, and it had never run in nine previous
-rentals. It means `head_dim` 256 (not 160), the `1 + weight` RMSNorm convention, the
-sigmoid output gate, partial mRoPE, the fp32 recurrent state and the GatedDeltaNet
-projection layout were all corroborated.
-
-**2026-09-10 — the same test failed on rental 27.**
-
-```
-assert ours == theirs
-At index 2 diff: 11540 != 1528
-```
-
-**This claim is therefore no longer settled, and nothing should be built on it until it
-is.** What did *not* change: in the same run the logits oracle passed (`relative < 1e-2`
-against the tensor's own scale) and so did the mRoPE reduction test, so the architecture
-facts above are still corroborated. The disagreement is one argmax at token 2 of 32, with
-logits inside the bf16 bound — the exact failure the test's docstring anticipates, since
-"small drifts change argmax".
-
-The leading suspect is that **`transformers` moved under us**: the install is
-`>=5.16,<6`, a floor rather than a pin, and rental 27 resolved it to 5.17.0 where the
-2026-09-07 run predates that release. The assertion compares our tokens to *theirs*, so a
-change on their side fails it with nothing in this repo changing. **That is a hypothesis,
-not a finding** — one GPU minute settles it. Full account in
-`results/batches/002-compile-cost/README.md`.
-
-**No benchmark ratio exists yet.** Batch 001 has now been attempted on two more rentals and
-is still void: the identity champion has never returned a number, so nothing else it reports
-would mean anything. Full account: `results/batches/001-calibration/README.md`.
-
-What moved on 2026-09-08: candidate *construction* is fixed and proven, the rental path is
-fixed and proven, and the failure has relocated to the benchmark's own warmup — a CUDA OOM
-at 30.71 GiB of 31.36 with the default four columns. A cold `max-autotune` compile also
-turns out to cost ~40 minutes rather than the 3-4 the batch cost model assumes, which is now
-the binding constraint on how many hypotheses fit a rental.
-
-Twenty-seven rentals have now been billed across the project, $2.314 lifetime, **zero
-leaked**. Five of those were 2026-09-10, which measured no hypothesis and instead found
-five defects between renting a box and running one — including a stall guard that destroyed
-a healthy rental at the moment its container pull succeeded. See
-`results/batches/002-compile-cost/README.md`.
+**Forty rentals have now been billed, $6.706 lifetime, zero leaked.** Every instance was
+destroyed cleanly by the trap, including two cancelled mid-flight with SIGTERM. The
+cheapest informative rental in the set remains rental 28 at $0.0478; the most expensive
+mistake remains rental 32 at $1.3878, which spent its entire cap inside one compile.
 
 ### The chain of blockers, and where it stands
 
@@ -145,14 +123,15 @@ be the risky case. See `docs/GPU-ACCESS.md`,
 
 | | |
 |---|---|
-| Status | **characterised, not promoted** — 7.30 ms/token, 1177 GB/s, 65.7% of peak (rental 38) |
+| Status | **characterised, and beaten** — 6.70 ms/token, 1282 GB/s, 71.5% of peak (rental 40); 7.30 ms/token and 1177 GB/s on rental 38's card |
 | Definition | `src/deltaforge/reference.py` under `torch.compile(mode="max-autotune")` |
 | Headline workload | batch 1, context 2048, 128 decoded tokens |
 | Secondary workload | batch 32, context 2048, 128 decoded tokens |
 | Model | `Qwen/Qwen3.5-4B` (see `docs/ARCHITECTURE.md` on why not a newer one) |
 | Roofline at headline | 5.11 ms/token, 196 tok/s on an RTX 5090 — `docs/roofline.py` |
-| Bytes the compiled column actually moves | **8587.80 MB/token** — the roofline's 9158.23 less the GQA expansion inductor folds away |
-| Record | `results/baseline/` (empty); the numbers are in `results/batches/004-bandwidth-bound-gemv/` |
+| Bytes the compiled column actually moves | **8587.80 MB/token** — the roofline's 9158.23 less the GQA expansion inductor folds away. `harness.bytes_model` defaults to this since rental 40; it had been dividing by the eager total. |
+| CUDA graphs | **none, measured** — 0 recorded and 128 skipped on every slot of rental 40, because the decode cache is mutated in place |
+| Record | `results/baseline/` (empty); the numbers are in `results/batches/005-launch-and-head/` and `004-bandwidth-bound-gemv/` |
 
 ## Hypotheses
 
@@ -296,6 +275,59 @@ relative error 7.75e-3 (one bf16 ULP), top-1 agreement 261/264 with a 95% Wilson
 expansion — 6.23% of per-token bytes, the second-largest share in the model — into index
 arithmetic. Full account:
 [`results/batches/004-bandwidth-bound-gemv/README.md`](results/batches/004-bandwidth-bound-gemv/README.md).
+
+### Batch 005 — the launch, and the head, 2026-09-19 (rental 40)
+
+**The first two wins this project has recorded.** Six slots ran, two declined. Predictions
+scored **3 of 5**, and the two that were wrong were wrong in ways the record can name.
+
+| ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
+|---|---|---|---:|---:|---|---|---|---|
+| 000 | Identity champion | — | **1.0008** | 0.00017 | RTX 5090 | exact | calibrated | [dir](results/batches/005-launch-and-head/) |
+| 021 | Static decode cache, for CUDA graphs | `decode_cache` | 0.9986 | 0.00058 | RTX 5090 | 264/264, 0.00000 nats | **`loss` — untested, see below** | [dir](results/batches/005-launch-and-head/) |
+| 022 | **int4 group-128 on the tied LM head alone** | `decode_step` | **1.0791** | 0.00034 | RTX 5090 | 0.9318, 0.01674 nats | **`win` — CHAMPION** | [dir](results/batches/005-launch-and-head/) |
+| 023 | int8 per-channel on the head alone | `decode_step` | 1.0373 | 0.00011 | RTX 5090 | **fail — layer 1, rel 4511** | `incorrect` | [dir](results/batches/005-launch-and-head/) |
+| 024 | e4m3 on the head alone | `decode_step` | — | — | — | — | `error` — did not compile | [dir](results/batches/005-launch-and-head/) |
+| 025 | **Fused four-tap causal conv step** | `causal_conv` | **1.0144** | 0.00107 | RTX 5090 | 264/264, **0.0 abs** | **`win`** | [dir](results/batches/005-launch-and-head/) |
+| 026 | 022 + 021 | `decode_step`, `decode_cache` | — | — | — | — | `precondition_failed` | [dir](results/batches/005-launch-and-head/) |
+| 027 | 022 + 021 + 025 | three | — | — | — | — | `precondition_failed` | [dir](results/batches/005-launch-and-head/) |
+
+**Why 022 won where two rentals of GEMV work had lost: parallelism, not the kernel.**
+Batches 003 and 004 installed on all 248 layer projections at once and reported one
+aggregate byte rate. Measured per site, the same kernel family gives:
+
+| | achieved |
+|---|---:|
+| `009` naive GEMV, 248 layer projections (rental 37) | 319 GB/s |
+| `015` tiled GEMV, 248 layer projections (rental 38) | 228 GB/s |
+| `022` int4, **the LM head alone** | **656 GB/s** |
+| `023` int8, **the LM head alone** | **847 GB/s** |
+
+The head launches 3880 programs at BLOCK_N=64; `in_proj_a` is 32 channels wide and launches
+four. The flop padding and split-K that batch 004 suspected are unchanged here.
+
+**int8 beats int4 on byte rate and loses on time**, which settles a question two rentals
+could not: at this site the kernel is substantially bandwidth-bound, with a nibble unpack
+costing 29% of the achieved bandwidth. Batch 003's issue-bound regime was a property of the
+sites it measured, not of the kernel.
+
+**`021` did not test its hypothesis, and the record says so rather than implying a
+refutation.** `cudagraph_nodes: 0`, `cudagraph_skips: 127` — the candidate was refused for
+mutated inputs exactly as the reference is, so 0.9986 says nothing about what CUDA graphs
+are worth. Layer 1 passed, so the marking itself worked; the break is between
+`mark_static_address` and `func.static_input_idxs`, and `TORCH_LOGS=cudagraph_static_inputs`
+brackets it for free next time. Slot 0's own counters — 0 nodes, 128 skips — are the first
+*measurement* that the baseline has never been CUDA-graphed on any rental.
+
+**Two kernel defects, both in code that had never executed.** `023` failed layer 1 at a
+relative error of **4511**: `_reduce_partials_kernel` declared `SCALE` and `HAS_SCALE` and
+read neither, so the int8 and fp8 paths returned unscaled integer dot products. `024` did
+not compile at all — `other=0` is an int32 literal and will not cast to e4m3, in a kernel
+body shared by both dtypes. Batch 004 built five slots on that kernel and its preconditions
+declined every one, so it shipped, passed CI, and was never run. Both are fixed, and
+`kernels/kernel_contract_test.py` now catches the class of each on a CPU.
+
+Full account: [`results/batches/005-launch-and-head/README.md`](results/batches/005-launch-and-head/README.md).
 
 ### Column definitions
 

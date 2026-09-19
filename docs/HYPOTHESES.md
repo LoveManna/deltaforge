@@ -16,6 +16,17 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-19 (rental 40): this file has a win in it, and entry 1 is reachable after all.**
+> `022-int4-head` beat `torch.compile(max-autotune)` at **1.0791, IQR 0.00034** — int4 on
+> the tied LM head *alone*. `025-fused-causal-conv` won too, at **1.0144**, on launch count
+> rather than bytes. The fact that reframes the whole file: **the hand-written GEMV was
+> grid-starved, not structurally slow.** The same kernel family achieved 319 and 228 GB/s
+> averaged over all 248 layer projections and **656 GB/s on the head**, which launches 3880
+> programs where `in_proj_a` launches four. Entry 6's three suspects — flop padding,
+> split-K, forfeited fusion — are all unchanged in the winning slot, so none of them was the
+> binding cost. Entry 8 was **not tested** (cudagraphs never engaged) and entry 9 is
+> discharged. See `results/batches/005-launch-and-head/README.md`.
+
 > **2026-09-17 (rental 38): the `output_code` dump finally ran, and it closes entry 2 and
 > reframes entry 1.** Entry 5 is what made it happen and is now **partly discharged**.
 > Three facts, all read out of generated code rather than inferred:
@@ -140,6 +151,14 @@ stream not show up on the clock".
 
 **Replaces.** `swiglu_mlp`, `qkv_projection_rope`, and the linear-attention input
 projections — 91.8% of weight bytes sit behind those three.
+
+**Measured on rental 40: the ceiling is collectable, and the obstacle was never the
+arithmetic.** `022-int4-head` took 14.80% of the weight stream to 4 bits and returned
+**1.0791 against a 1.123x ceiling — 70% of it collected.** Everything this entry claimed
+about representation is intact; what was wrong was the assumption that a kernel losing on
+248 sites at once was losing for a reason that applied to all of them. It was not. The
+remaining 77.9% is still behind a tiling problem — see entry 6 — and that is now a concrete,
+bounded piece of work rather than an open question about whether the mechanism exists.
 
 **Measured on rental 38: the ceiling is intact and out of reach of *two* kernels now, and
 the dump explains the price nobody had costed.** Taking the matmul away from inductor also
@@ -278,7 +297,32 @@ the 16× flop padding (free only if the kernel is memory-bound, and at 228 GB/s 
 split-K's second kernel and fp32 round trip at each of **248 sites per token**; and the
 fusion forfeited by replacing a matmul that inductor had welded to its norm and residual.
 
-**The next step is an ablation, not another rewrite and not a quantisation batch.**
+**Rental 40 answered it without an ablation, and the answer was none of the three.**
+The suspects were the 16x flop padding, split-K's second kernel, and the fusion forfeited by
+replacing a matmul inductor had welded to its norm. **All three are unchanged in
+`022-int4-head`, which won at 1.0791.** What changed was the *site*: 3880 programs instead
+of four. Achieved bandwidth for the same kernel family, per site:
+
+| | achieved |
+|---|---:|
+| `009`, 248 layer projections | 319 GB/s |
+| `015`, 248 layer projections | 228 GB/s |
+| `022` int4, the LM head alone | **656 GB/s** |
+| `023` int8, the LM head alone | **847 GB/s** |
+
+**So this entry is closed, and it is closed as a tiling problem.** `_launch_shape` caps
+split-K at 8 and cannot narrow below `BLOCK_N = 16` because `tl.dot` will not, which on a
+32-channel projection is four programs on a 170-SM card whatever else is done. The next
+attempt at the layer projections needs a tile that reaches a full card on a narrow `N` —
+far more aggressive split-K, or an accumulator that does not require `tl.dot`. That is the
+one thing neither batch 003 nor batch 004 varied.
+
+**And the int4/int8 ordering settles the regime.** int8 achieves a *higher* byte rate (847
+against 656) and still loses on time, because it moves twice the bytes. At a site with
+enough parallelism the kernel is substantially bandwidth-bound with a 29% nibble-unpack
+tax — not the issue-bound regime batch 003 diagnosed, which was a property of the sites.
+
+**The historical next step, kept because the reasoning is still worth reading.**
 `SPLIT_K=1` and an FMA accumulator instead of `tl.dot` are two slots that would name which
 of the first two is paying. **And before any of that, put a published int4 kernel — Marlin,
 machete — in as an unscored column.** Two rentals have established that our kernel is slow.
@@ -372,8 +416,29 @@ measures 1.00 and reads exactly like a refutation, so the slot record carries
 1.00 with nodes above 128 means launch dispatch was never the gap. Those are different
 findings and the record has to be able to tell them apart.
 
-**Measured on rental 39 as `021-static-cache-cudagraphs`.** See
-`results/batches/005-launch-and-head/README.md`.
+**Ran on rental 40 as `021-static-cache-cudagraphs`, and was NOT tested.** The slot
+returned 0.9986 with **`cudagraph_nodes: 0` and `cudagraph_skips: 127`** — the candidate was
+refused for mutated inputs exactly as the reference is, so no graph was ever recorded and
+the ratio says nothing about this entry. **The entry stays open**, and the counters are the
+only reason that is legible rather than looking like a refutation.
+
+Layer 1 passed: every decode-cache tensor carried `_dynamo_static_input_type` after
+`new_cache`, and the reference's own cache did not. So `mark_static_address` did its job and
+the break is downstream, between the mark and `func.static_input_idxs`. Two suspects, in
+order: the cache tensors reach the graph through a plain Python object
+(`DecodeCache.layers[i].conv`) rather than an nn.Module attribute, and `_extract_tensor_dict`
+only stamps `tensor_dict` on placeholders dynamo wraps by a source it tracks; and the warm
+fx-graph cache may be returning a `CompiledFxGraph` whose `static_input_idxs` were computed
+on a run where nothing was marked.
+
+**The next diagnostic costs nothing and brackets the gap exactly:**
+`TORCH_LOGS=cudagraph_static_inputs` prints `Adding static input pos %s for source %s` at
+trace time and `check mutation static input indices: %s` at run time. Run it before writing
+any more code for this entry.
+
+**What the slot did establish, as measurement rather than inference:** slot 0 recorded
+**0 cudagraph nodes and 128 skips**, so the compiled baseline has never been CUDA-graphed on
+any rental this project has run. See `results/batches/005-launch-and-head/README.md`.
 
 ### 9. The tied LM head — the one site where a hand-written GEMV is not grid-starved
 
@@ -408,8 +473,27 @@ nothing downstream to attenuate it, so it carries the batch's largest accuracy r
 smallest share of bytes. Derive its bars from `013` minus `012`, which is the int8 head
 measured on its own: ~0.0001 nats and about one flip of 264.
 
-**Measured on rental 39 as `022`, `023` and `024`.** See
-`results/batches/005-launch-and-head/README.md`.
+**Discharged on rental 40, and it produced this project's first champion.**
+
+| slot | ratio | head-site achieved | correctness |
+|---|---:|---:|---|
+| `022` int4 group-128 | **1.0791** (IQR 0.00034) | **656 GB/s** | 0.9318, 0.01674 nats |
+| `023` int8 per-channel | 1.0373 | **847 GB/s** | **wrong** — layer 1 rel 4511 |
+| `024` e4m3 | — | — | did not compile |
+
+Against a 1.123x ceiling, int4 collected 70%. The bar derived from `013` minus `012`
+predicted 0.004-0.03 nats and the measurement was 0.01674, so the method of deriving a gate
+from something this repository has already measured worked for the first time without
+failing a working kernel.
+
+`023` and `024` were defects in code that had never executed, not statements about the
+hypothesis: a dropped per-channel scale and an `other=0` that will not cast to e4m3, both
+fixed. **Their predictions are unscored, and 8 bits at this site is still an open
+question** — the int8 *timing* is usable (the missing multiply is one FMA in an epilogue)
+and says 8 bits loses to 4 on time while winning on byte rate, but that is a byte-rate datum
+and not a measured hypothesis.
+
+See `results/batches/005-launch-and-head/README.md`.
 
 ---
 

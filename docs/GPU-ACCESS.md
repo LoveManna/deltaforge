@@ -25,7 +25,7 @@ exposing the next problem in the chain:
 | 14 | A cold `max-autotune` compile never finishes inside a session | rentals 22, 30-32 | the unrolled prefill scan is not compiled; it is untimed setup | yes — 6980.9s unfinished → 267.5s → 57.4s warm |
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
 | 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
-| 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **no — not yet exercised on a GPU** |
+| 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **yes — rental 40 synced clean and its fixed cost fell from ~30 min to ~13** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -432,9 +432,10 @@ project have not been the loud ones.
 | 37 | 2026-09-16 | **batch 003: seven admissible ratios, nothing voided**, seven losses | 55.55 min | $0.3786 |
 | 38 | 2026-09-17 | **batch 004: two slots, five declined**; the `output_code` dump ran | 39.65 min | $0.2883 |
 | 39 | 2026-09-19 | ssh dropped mid-repo-sync, before torch — blocker 17 | 3.53 min | $0.0257 |
+| 40 | 2026-09-19 | **batch 005: the project's first two wins**, 1.0791 and 1.0144 | 32.32 min | $0.2350 |
 
-Thirty-nine rentals, $6.471, **zero leaked instances** — every one destroyed cleanly by
-the trap, including two cancelled mid-flight with SIGTERM.
+Forty rentals, $6.706, **zero leaked instances** — every one destroyed cleanly by the
+trap, including two cancelled mid-flight with SIGTERM.
 
 **Rental 28 is the cheapest informative rental yet**, and worth reading against rental 27.
 Both reached the GPU suite and died at the same assertion; 27 cost $0.6242 and 28 cost

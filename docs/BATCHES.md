@@ -80,8 +80,11 @@ the result — and until batches arrived nothing in this repo recorded a predict
 it could be scored. **The batch summary is a prediction scorecard**, and it is worth more
 than any single ratio in it.
 
-Predict honestly. A batch that predicted a win everywhere would not be a prediction, it
-would be hope; `batches_test.py` asserts that only the highest byte-share slot predicts one.
+Predict honestly, and prefer a range to a verdict — batch 005 registered "1.05-1.12" for
+the slot that measured 1.0791, which is a sharper claim than "win" and was scored the same.
+A batch that predicted a win everywhere would be hope rather than prediction; batch 001 is
+pinned to exactly one winner by `batches_test.py`, and later batches carry per-batch tests
+instead, because a batch of six variations on one mechanism legitimately predicts several.
 
 ## Ordering is load-bearing and is never sorted
 
@@ -261,3 +264,55 @@ flattening them would erase the evidence.
 
 The first user was `docs/HYPOTHESES.md` entry 6's gate — **"the bf16 GEMV control must reach
 ≥ 0.56 before any quantised slot is worth running"** — and it is the one that fired.
+
+## Measured costs, rental 40 (2026-09-19) — batch 005, six slots run and two declined
+
+The batch that produced the project's first champion. RTX 5090 at $0.4363/hr, warm compile
+cache, and **the cheapest fixed cost this project has recorded.**
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **32.32 minutes, $0.2350** |
+| Fixed cost before slot 0 | **~13 minutes** — of which the 9.32 GB checkpoint was **1m24s** |
+| The `output_code` dump step | ~2 minutes, both compiles off the warm cache |
+| Slot 0 — identity, includes the reference's first compiled call | **116 s** |
+| Slots 1-5 | **147-292 s** |
+| Of which the approximate correctness gate | 5.8-9.2 s |
+| Slots 6-7 | **0 s** — `precondition_failed` |
+| Peak memory | 8.07 GiB bf16, **16.73 GiB** with the int4 head resident, of 31.36 |
+
+**The fixed cost is 13-30 minutes and the variable is the network, plus one avoidable
+1.4 GB.** Rental 38 paid ~30 minutes and rental 40 paid ~13. Part of that is the
+checkpoint endpoint being fast this time; part is that the repo sync had been shipping the
+compile cache — 1.4 GB against 9.5 MB of repository — buried inside it, to a path nothing
+reads, on every rental since one first came home. It is excluded now.
+[`docs/GPU-ACCESS.md`](GPU-ACCESS.md) blocker 17 has the account.
+
+**A cost the model does not carry: a candidate that replaces the root model class pays a
+full `max-autotune` recompile in its first warmup round.** The identity candidate reuses the
+reference's compiled code and took 858 ms; `021-static-cache-cudagraphs` took **71.7 s** and
+`025-fused-causal-conv` **218 s**, because a new class is a new dynamo code object. Warmup
+rounds are discarded so no ratio moves, but budget 1-4 extra minutes for any slot whose
+installer swaps `type(model)`, and do not mistake it for a hang.
+
+## What a declined slot costs, which is not nothing
+
+Batch 004's preconditions declined five slots and saved 16 billed minutes. That was right,
+and batch 005's declined two more for the same good reason.
+
+**What comes with the saving is that the declined code never runs.**
+`_tiled_gemv_scaled_kernel` was written for batch 004, carried five slots, was declined five
+times, and shipped. It passed `uv run pytest` and it was wrong: it declared `SCALE` and
+`HAS_SCALE` and read neither, so int8 and fp8 returned unscaled integer dot products —
+layer-1 relative error **4511** when batch 005 finally ran it. Its `other=0` also refuses to
+cast to e4m3, so the fp8 slot did not compile at all.
+
+A Triton body is a string compiled on a GPU. The type checker cannot see into it, the linter
+cannot, and neither can the CPU suite — so **"declined" means unexecuted, not verified**.
+Two things follow:
+
+* `kernels/kernel_contract_test.py` checks what the AST *can* see: a parameter declared and
+  never read, and a dtype-polymorphic masked load whose `other` only one dtype accepts. Both
+  of rental 40's defects are that shape, and both now fail on a laptop.
+* **When a batch picks up a kernel an earlier batch declined, order it as new code** —
+  early, where a failure costs a slot and informs the rest, not last among the riskiest.

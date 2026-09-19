@@ -1,0 +1,201 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-19T00:43:03.978955+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "021-static-cache-cudagraphs",
+    "batch": "005-launch-and-head",
+    "statement": "Allocate the decode cache with `torch._dynamo.mark_static_address`, which is the promise inductor's cudagraph mutation check requires and cannot infer from a tensor handed in as an argument. The candidate then runs the same 508 kernels in the same order from one graph replay instead of 508 Python dispatches. No Triton, no arithmetic change, no byte saved.",
+    "prediction": "win",
+    "rationale": "Byte share 0.0 and the largest ceiling in the batch, which is a combination this repository has not seen before -- every previous hypothesis was priced in bytes. The arithmetic is dispatch, not traffic: 8587.80 MB/token is 4.79 ms at an RTX 5090's 1792 GB/s vendor peak and 5.3-6.4 ms at the 75-90% a real kernel reaches, against a measured 7.30. That residue over 508 launches is 1.8-4.9 us each, which is what inductor's Python launch path costs uncaptured. **Predicted 1.15-1.30 against a ~1.26x ceiling**, and it is a win or an explained null rather than a coin toss because the mechanism is verified in torch's own source rather than assumed: `cudagraph_utils.check_for_mutation` exempts an index in `static_input_idxs`, and `_dynamo_static_input_type` is what puts it there. The two ways it can fail are both informative and both visible in the record. `cudagraph_nodes == 0` means it did not engage -- most likely because `cache_offset` reaches the graph as a symint and cudagraph trees key a recording per distinct int, so 128 decode steps want 128 recordings. `cudagraph_nodes > 0` with a ratio near 1.00 means launch dispatch was never the gap, which retires the whole line and is worth knowing. Gated approximately at 264/264 and 1e-6 nats because the policy forbids `exact` for a non-identity slot; unlike every other candidate here this one really is bit-identical, and a bar it can only miss by being broken is the right shape for that claim.",
+    "category": "A",
+    "byte_share": 0.0,
+    "kernels": [
+      "static_decode_cache"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.05246703198645264,
+    "correctness": 5.83571481902618,
+    "compile_candidate_compiled": 0.004325283982325345,
+    "bench": 141.12102260999382
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-181-generic-x86_64-with-glibc2.39",
+    "hostname": "d73824a57013",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2850,
+      "memory": 13801,
+      "observed_at": "2026-09-19T00:43:04.144473+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        858.387939453125,
+        864.9260864257812,
+        864.445068359375,
+        864.8712768554688,
+        864.8140258789062,
+        864.67626953125,
+        864.6227416992188
+      ],
+      "candidate_compiled": [
+        71685.2578125,
+        902.7798461914062,
+        865.6400756835938,
+        865.701904296875,
+        865.7758178710938,
+        866.137939453125,
+        866.0891723632812
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        864.445068359375,
+        864.8712768554688,
+        864.8140258789062,
+        864.67626953125,
+        864.6227416992188
+      ],
+      "candidate_compiled": [
+        865.6400756835938,
+        865.701904296875,
+        865.7758178710938,
+        866.137939453125,
+        866.0891723632812
+      ]
+    },
+    "median_ms": {
+      "compiled": 864.67626953125,
+      "candidate_compiled": 865.7758178710938
+    },
+    "achieved_gbps": {
+      "compiled": 1271.2719303976141,
+      "candidate_compiled": 1269.657395882206
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.9986195101661911,
+        0.9990405156355976,
+        0.9988890981102331,
+        0.998312428245785,
+        0.9983068363964636
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.9986195101661911
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.0005766698644480428
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "021-static-cache-cudagraphs",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "static_cache.every_cache_tensor_is_static",
+        "replaces": "decode_cache",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.0,
+        "atol": 0.0,
+        "shape": [
+          2
+        ],
+        "dtype": "torch.float32",
+        "excluded_near_zero": 1,
+        "total_elements": 2,
+        "note": "64 of 64 decode-cache tensors marked static; one unmarked tensor skips cudagraphs for the whole region"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 1.0,
+      "top1_interval": [
+        0.9856577137186275,
+        1.0
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "num_positions": 264,
+      "top1_threshold": 1.0,
+      "kl_threshold": 1e-06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

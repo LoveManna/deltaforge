@@ -316,10 +316,14 @@ if HAS_TRITON:
             mask_k = offs_k < k_hi
             xv = tl.load(X + pid_m * stride_xm + offs_k, mask=mask_k, other=0.0)
             xt = tl.where(rows[:, None] == 0, xv[None, :], 0.0).to(tl.bfloat16)
+            # `other=0` is an int32 literal. Triton casts it to int8 happily and refuses
+            # it for e4m3 -- `cannot cast int32[64, 64] to fp8e4nv` -- so the fp8 slot did
+            # not compile at all on rental 40 while the int8 slot did. A float literal is
+            # castable to both.
             w = tl.load(
                 W + offs_k[:, None] * stride_wk + offs_n[None, :],
                 mask=mask_k[:, None] & mask_n[None, :],
-                other=0,
+                other=0.0,
             ).to(tl.bfloat16)
             acc = tl.dot(xt, w, acc)
 
@@ -423,6 +427,15 @@ if HAS_TRITON:
         acc = tl.zeros((BLOCK,), dtype=tl.float32)
         for s in range(SPLIT_K):
             acc += tl.load(PARTIALS + s * stride_pk + pid_m * stride_pm + offs_n, mask=mask_n, other=0.0)
+        # The per-channel scale, which this kernel took in its signature and then did not
+        # apply. Rental 40 measured the consequence: `023-int8-head` returned layer-1
+        # relative error **4511** and 9473 nats at layer 2, which is what an int8 dot
+        # product looks like when nobody divides it back down -- |q| <= 127 against weights
+        # near 0.05. `quantised_linear`'s epilogue had always done this (line 355); the
+        # batch-004 rewrite moved the epilogue here and dropped the multiply, and then the
+        # preconditions declined all five slots that would have run it.
+        if HAS_SCALE:
+            acc = acc * tl.load(SCALE + offs_n, mask=mask_n, other=0.0)
         tl.store(OUT + pid_m * stride_om + offs_n, acc.to(OUT.dtype.element_ty), mask=mask_n)
 
 

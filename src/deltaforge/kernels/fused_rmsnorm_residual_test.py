@@ -57,15 +57,25 @@ def test_the_kernel_is_registered_retired_and_still_installable():
     assert "fused_rmsnorm_residual" in INSTALLERS
 
 
-def test_no_champion_ships_so_the_candidate_column_is_the_identity():
-    """The shipped registry installs nothing, on purpose.
+def test_exactly_one_champion_ships_and_it_is_the_one_that_won():
+    """Until rental 40 this asserted the registry was empty, and that was right.
 
-    With every entry retired, ``apply_champions`` is a no-op and the ``candidate`` column
-    is bit-identical to ``eager``. That is the *identity champion* a first GPU session uses
-    to calibrate the harness: every column must return 1.00 +/- noise, at zero
-    kernel-writing risk. See AGENT.md, "If this is the first session that ever gets a GPU".
+    For thirty-nine rentals nothing had beaten `torch.compile(max-autotune)`, so shipping
+    no champion made ``apply_champions`` a no-op and the ``candidate`` column bit-identical
+    to ``eager`` — the *identity champion* a first GPU session calibrates on, at zero
+    kernel-writing risk.
+
+    `022-int4-head` ended that on 2026-09-19: median ratio **1.0791**, IQR 0.00034, layer 1
+    at one bf16 ULP, layer 2 at 0.9318 agreement and 0.01674 nats. The calibration argument
+    is untouched, because a batch's identity slot has never come from this registry — it is
+    `Hypothesis(kernels=())`, and `scoped_registry` builds an empty registry for it whatever
+    is champion here.
     """
-    assert REGISTRY.champions() == {}
+    champions = REGISTRY.champions()
+
+    assert set(champions) == {"decode_step"}
+    assert champions["decode_step"].name == "tiled_int4_head"
+    assert "tiled_int4_head" in INSTALLERS
 
 
 # -- installation ---------------------------------------------------------------------
