@@ -25,7 +25,7 @@ exposing the next problem in the chain:
 | 14 | A cold `max-autotune` compile never finishes inside a session | rentals 22, 30-32 | the unrolled prefill scan is not compiled; it is untimed setup | yes — 6980.9s unfinished → 267.5s → 57.4s warm |
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
 | 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
-| 17 | An ssh connection drops mid-`rsync`, and the repo sync has no retry | rental 39 | `df_retry` plus `rsync --partial` on both syncs | **no — not yet exercised on a GPU** |
+| 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **no — not yet exercised on a GPU** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -603,6 +603,14 @@ restarting.
 **It is deliberately not applied to anything that creates or destroys an instance.**
 Retrying a lifecycle call is how a project ends up paying for two rentals and knowing about
 one. The retry covers transfers, which are idempotent, and nothing else.
+
+**And it exposed what the transfer actually was.** The repo is **9.5 MB**. The compile
+cache pulled off previous rentals is **1.4 GB**, it lives in `cache/compile/<key>/` inside
+the checkout, and `EXCLUDES` did not name it — so every rental since one first came home
+has shipped it twice: once buried in the repo sync to `/workspace/deltaforge/cache`, where
+nothing looks for it, and once properly via `cache-up` to `/workspace/df-cache`, where the
+run points torch. It is gitignored, which is exactly why nobody saw it: `git status` is
+silent about it and rsync does not read `.gitignore`. The sync now excludes it, with a test.
 
 Two things this cost beyond the four cents. The teardown's cache pull ran with
 `DF_CACHE_KEY` still unset — the key is read off the box, and the box had not got that far

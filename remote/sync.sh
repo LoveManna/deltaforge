@@ -66,6 +66,13 @@ RSYNC_SSH="ssh $DF_SSH_ID -p $DF_SSH_PORT -o StrictHostKeyChecking=accept-new -o
 
 # .env carries the API key and must never be transferred. Listing it here is belt and
 # braces: it is gitignored too, but rsync does not read .gitignore.
+#
+# `cache` is the same lesson costing real minutes. The compile cache pulled off previous
+# rentals lives in `cache/compile/<key>/` and is **1.4 GB**; the rest of the repo is 9.5
+# MB. It is gitignored, so it is invisible in `git status`, and rsync does not read
+# .gitignore — so every rental since one came home has shipped it twice, once buried in
+# the repo sync to a path nothing reads and once properly via `cache-up` to
+# /workspace/df-cache. Rental 39's broken pipe happened during that transfer.
 EXCLUDES="
 --exclude=.git
 --exclude=.venv
@@ -78,6 +85,7 @@ EXCLUDES="
 --exclude=weights
 --exclude=*.safetensors
 --exclude=.deltaforge-instance
+--exclude=cache
 "
 
 case "$DF_DIRECTION" in

@@ -845,6 +845,32 @@ def test_sync_never_transfers_the_dotenv_file():
     assert "--exclude=.env" in (REMOTE / "sync.sh").read_text()
 
 
+def test_sync_never_ships_the_compile_cache_inside_the_repo():
+    """It goes up separately, by `cache-up`, to a path the run actually reads.
+
+    The cache pulled off previous rentals is 1.4 GB against 9.5 MB of repository, and it is
+    gitignored -- so it is invisible in `git status` and rsync does not read .gitignore.
+    Every rental since one came home shipped it twice, once to `/workspace/deltaforge/cache`
+    where nothing looks for it. Rental 39's broken pipe happened during that transfer.
+    """
+    assert "--exclude=cache" in (REMOTE / "sync.sh").read_text()
+
+
+def test_a_dropped_transfer_is_retried_and_a_lifecycle_call_is_not():
+    """`df_retry` covers transfers, which are idempotent. Retrying a create or a destroy is
+    how a project ends up paying for two rentals and knowing about one."""
+    sync = (REMOTE / "sync.sh").read_text()
+    lib = (REMOTE / "lib.sh").read_text()
+
+    assert "df_retry rsync" in sync
+    assert "--partial" in sync, "a retry that restarts from zero is not much of a retry"
+    assert "df_retry" in lib
+    for lifecycle in ("df_create_instance", "df_destroy_instance"):
+        if lifecycle in lib:
+            body = lib.split(f"{lifecycle}()", 1)[1].split("\n}", 1)[0]
+            assert "df_retry" not in body, f"{lifecycle} must not be retried"
+
+
 def test_sync_dry_run_reports_both_directions(workdir):
     up = run("sync.sh", "up", "--dry-run")
     down = run("sync.sh", "down", "--dry-run")
