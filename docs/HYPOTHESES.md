@@ -16,6 +16,21 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-20 (rental 42): entry 6 is closed for the third time, and this time by a
+> number rather than an inference.** Batch 006's premise was that the GEMV lost on the
+> layer projections because of a **tile nobody had measured**. `tune_launch_shape` timed
+> every candidate on the card; on the champion's own site it chose BLOCK_N=256 and
+> measured **0.9920 where the heuristic's BLOCK_N=64 measured 1.0791** — the same kernel,
+> the same bytes, **282 GB/s against 656.** On the MLP it reached **67 GB/s**, within
+> noise of batch 003's **65** at a different tile in a different kernel structure. Three
+> rentals, two structures, two selection methods, one number. **The tile is not the
+> difference between the head and the layer projections**, and per-site micro-benchmarking
+> does not select tiles here at all: the tuner reported 1639 GB/s in isolation for a
+> kernel that runs at 282 in place. Entry 8 ran again as `034` and **won at 1.0196 with
+> zero CUDA graphs recorded** — which makes it a win and still an untested hypothesis, and
+> the section below says which half is which. See
+> `results/batches/006-tile-and-sites/README.md`.
+
 > **2026-09-19 (rental 40): this file has a win in it, and entry 1 is reachable after all.**
 > `022-int4-head` beat `torch.compile(max-autotune)` at **1.0791, IQR 0.00034** — int4 on
 > the tied LM head *alone*. `025-fused-causal-conv` won too, at **1.0144**, on launch count
@@ -151,6 +166,16 @@ stream not show up on the clock".
 
 **Replaces.** `swiglu_mlp`, `qkv_projection_rope`, and the linear-attention input
 projections — 91.8% of weight bytes sit behind those three.
+
+**Measured on rental 42: the remaining 83% is not reachable with this kernel, and the
+number is now three-times independent.** `030-int4-mlp` took the MLP — **52.75% of
+per-token bytes, a 1.6545x ceiling, the largest homogeneous block in the model** — to 4
+bits at a tile chosen by search, and the MLP ran at **67 GB/s against a 331 GB/s tie
+point**: ratio **0.3545**. Batch 003 measured 65 GB/s over all 248 sites with a different
+kernel structure and a different tile. The candidate was *correct*, at 0.04868 nats
+against a bar of 0.10 derived in advance and predicted at ~0.048. **This entry's ceiling
+is intact and out of reach of three kernels now, and the obstacle is not representation,
+not the inner loop, and not the tile.** See entry 6.
 
 **Measured on rental 40: the ceiling is collectable, and the obstacle was never the
 arithmetic.** `022-int4-head` took 14.80% of the weight stream to 4 bits and returned
@@ -322,6 +347,37 @@ against 656) and still loses on time, because it moves twice the bytes. At a sit
 enough parallelism the kernel is substantially bandwidth-bound with a 29% nibble-unpack
 tax — not the issue-bound regime batch 003 diagnosed, which was a property of the sites.
 
+**Rental 42 tested the one thing neither batch varied, and the answer is no.**
+`tune_launch_shape` searched BLOCK_N over {32, 64, 128, 256}, SPLIT_K over {1 … 64},
+BLOCK_K, warps and pipeline depth, on the card, with the old heuristic as the first
+candidate — and the result is that **the tile was never the difference**:
+
+| | tile | programs | in-situ achieved |
+|---|---|---:|---:|
+| `022` head, rental 40, heuristic | BLOCK_N 64, SPLIT_K 1 | 3880 | **656 GB/s** |
+| `028` head, rental 42, searched | BLOCK_N **256**, SPLIT_K 1 | 970 | **282 GB/s** |
+| `030` MLP, rental 42, searched | BLOCK_N 128, SPLIT_K 4/16 | 288 / 320 | **67 GB/s** |
+| `014` all 248 sites, rental 37 | batch 003's kernel entirely | — | **65 GB/s** |
+
+67 against 65, at a different tile, in a different kernel structure, two rentals apart.
+**The layer projections are ~66 GB/s for this kernel family and no tile in the search space
+moves them.** The "far more aggressive split-K, or an accumulator that does not require
+`tl.dot`" this entry asked for was half-delivered — SPLIT_K reached 16 and 64 in the
+search — and it bought nothing.
+
+**And the method failed before the tile did.** The tuner ranks tiles by timing one site in
+a loop on an idle card. It reported the head at **1639 GB/s**, faster than the whole
+compiled model achieves, for a tile that runs at **282** in the decode step. A
+micro-benchmark and the same kernel in place are 5.6x apart here, and the ranking inverts:
+fewer, fatter programs win a loop dominated by launch and scheduling and lose a step where
+507 other kernels have shaped the cache and the clock. `DF_TILE_TUNE` defaults off.
+
+**So the remaining question is not the tile and not the kernel's inner loop.** It is what
+makes one 248320-wide GEMV behave ten times better than ninety-six 9216-wide ones. The
+cheapest instrument left is the one this entry has asked for since it was written: **put a
+published int4 kernel — Marlin, machete — in as an unscored column** and find out whether
+this shape is hard or our kernel is.
+
 **The historical next step, kept because the reasoning is still worth reading.**
 `SPLIT_K=1` and an FMA accumulator instead of `tl.dot` are two slots that would name which
 of the first two is paying. **And before any of that, put a published int4 kernel — Marlin,
@@ -440,6 +496,42 @@ any more code for this entry.
 **0 cudagraph nodes and 128 skips**, so the compiled baseline has never been CUDA-graphed on
 any rental this project has run. See `results/batches/005-launch-and-head/README.md`.
 
+**Ran again on rental 42 as `034-static-cache-cudagraphs`. It WON at 1.0196 (IQR 0.00149)
+and it STILL did not test this entry.** `cudagraph_nodes: 0`, `cudagraph_skips: 127`, all
+**64 of 64** cache tensors marked static, candidate bit-identical at 264/264 and 0.0 nats.
+Entry 8 is now **0 for 2** on slots built to test it.
+
+**The 2.0% is the other thing the mark does, and that is worth having on its own.**
+`mark_static_address` puts a tensor into `static_input_idxs`, which inductor reads twice:
+once for the cudagraph mutation check — refused again — and once in the launch path, where
+`get_input_idxs_to_check` skips the per-call alignment test for a static input and
+`copy_misaligned_inputs` skips the copy behind it. Sixty-four tensors, 128 decode steps.
+Achieved bandwidth rose **1198 → 1222 GB/s on identical bytes**, which is what removing
+work from dispatch looks like when the kernels do not change. Net of the rental's +0.53%
+calibration offset it is ~1.4%.
+
+**Both of this entry's ranked suspects are dead, and killing them needed no GPU.** Run the
+tiny config under `TORCH_LOGS=cudagraph_static_inputs` and dynamo prints
+
+```
+Adding static input pos 5 for source L['cache'].layers[0].conv
+Adding static input pos 12 for source L['cache'].layers[0].recurrent
+```
+
+so the mark *does* reach `static_input_indices` through a plain Python object and
+`_extract_tensor_dict` *does* stamp it. What the rented box logged instead is
+`skipping cudagraphs due to mutated inputs (64 instances)` — **64, with all 64 marked** —
+so the marking is not reaching that check there. The box runs torch **2.11**; the laptop
+that shows the mark working runs **2.14**. A version difference is the leading suspect and
+it costs one dump step to confirm.
+
+**The second half of the warning above is now confirmed too.** The captured log shows
+`Recording cudagraph tree for symint key 2049`, `2050`, `2051`, … — one per decode step, so
+`cache.seq_len` really does reach the graph as an int and `cudagraphify_impl` really does
+key its cache on it. Even once the mutation check passes, a 128-token decode wants 128
+recordings. **Any next attempt must report a non-zero node count before it reports a
+ratio.** See `results/batches/006-tile-and-sites/README.md`.
+
 ### 9. The tied LM head — the one site where a hand-written GEMV is not grid-starved
 
 **Share of bytes: 14.80%. Ceiling: 1.080x at 8 bits, 1.123x at int4.** Category **B**.
@@ -472,6 +564,12 @@ rentals have failed to explain. int8 against fp8 is the conversion tax batch 003
 nothing downstream to attenuate it, so it carries the batch's largest accuracy risk at the
 smallest share of bytes. Derive its bars from `013` minus `012`, which is the int8 head
 measured on its own: ~0.0001 nats and about one flip of 264.
+
+**Rental 42 re-ran this site at a searched tile and it lost: 0.9920.** Same kernel, same
+bytes, BLOCK_N 256 instead of 64 — **282 GB/s against 656**. So this entry's win is
+**conditional on its tile in a way nothing recorded until now**, and the champion's 1.0791
+has not been reproduced on a second card. Re-measuring `022` unchanged is the first slot
+of the next rental.
 
 **Discharged on rental 40, and it produced this project's first champion.**
 

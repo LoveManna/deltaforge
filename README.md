@@ -18,7 +18,20 @@ interquartile spread of 0.00034**, on a harness that calibrated at 1.0008 in the
 It stores the **tied LM head** — 248320 x 2560, *14.80% of every byte the compiled column
 moves, in a single matmul* — at 4 bits with group-128 scales, and collects 70% of the
 1.123x that arithmetic allows. A second kernel won in the same batch on an unrelated
-mechanism: `025-fused-causal-conv`, **1.0144**, bit-identical to the reference.
+mechanism: `025-fused-causal-conv`, **1.0144**, bit-identical to the reference. A third
+won on 2026-09-20 (rental 42): `034-static-cache-cudagraphs`, **1.0196**, also
+bit-identical — and it won *without* its stated mechanism firing, which the record says
+out loud because the slot carries a CUDA-graph node count beside its ratio.
+
+**Rental 42 also refuted the obvious next step, which is the more useful half.** If the
+GEMV won on the head because the head has parallelism, a better *tile* should have unlocked
+the other 83% of the bytes. The tile was then searched on the card — BLOCK_N, split-K,
+BLOCK_K, warps, pipeline depth — and the search made the champion's own site **2.3x
+slower** (656 → 282 GB/s, 1.0791 → 0.9920) while the MLP came back at **67 GB/s**, within
+noise of the 65 measured two rentals earlier at a different tile in a different kernel.
+The layer projections are not a tiling problem, and `1.0791` has not yet been reproduced on
+a second card. See
+[`results/batches/006-tile-and-sites/`](results/batches/006-tile-and-sites/).
 
 **The finding is not "our kernel is fast". It is where the compiler can be beaten and why
 two earlier attempts could not find it.** Batches 003 and 004 installed a hand-written GEMV

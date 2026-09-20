@@ -124,9 +124,33 @@ DEFAULT_NUM_STAGES = 3
 
 #: Wall-clock ceiling on tuning **one** ``(kind, N, K)``. A tuner that can hang a slot is
 #: worse than a heuristic; whatever is best when this expires is what gets installed, and
-#: the log says the search was cut short. ``DF_TILE_TUNE_BUDGET`` overrides it, and
-#: ``DF_TILE_TUNE=0`` turns tuning off entirely and restores batch 004's behaviour exactly.
+#: the log says the search was cut short. ``DF_TILE_TUNE_BUDGET`` overrides it.
 TUNE_BUDGET_SECONDS = float(os.environ.get("DF_TILE_TUNE_BUDGET", "90"))
+
+#: **Off, because rental 42 measured it choosing a tile 2.3x slower than the heuristic.**
+#:
+#: `tune_launch_shape` times one site at a time on an otherwise idle card. On the head it
+#: reported 0.2 ms for 327 MB -- **1639 GB/s, faster than the whole compiled model
+#: achieves** -- and picked BLOCK_N=256, which ran at **282 GB/s in the decode step**
+#: against the heuristic tile's 656 on rental 40. A 5.6x gap between a micro-benchmark and
+#: the same code in place is not noise: the card boosts through a tight loop of one kernel,
+#: and in the real step that kernel is one of 508 arriving with a cache and a clock shaped
+#: by the 507 around it. Fewer, fatter programs win the first measurement and lose the
+#: second.
+#:
+#: The search space, the rounds and `_implausible` are kept because the machinery is not
+#: what was wrong -- the *measurement it ranks on* is. A tuner that times the decode step
+#: rather than the site can use all of it. Until one exists this defaults off, so no batch
+#: silently inherits a selector a rental has discredited.
+#: See `results/batches/006-tile-and-sites/README.md` section 1.
+TILE_TUNING_ENABLED = os.environ.get("DF_TILE_TUNE", "0") != "0"
+
+#: Bytes/second above which a tuning measurement is refused as impossible. An HBM-class
+#: card tops out near 1.8 TB/s and no GEMV reading from DRAM can exceed it; a number above
+#: this means the timer measured something other than the kernel, and acting on it is
+#: worse than not tuning. Rental 42's head measurement was 1639 GB/s -- under this bar and
+#: still wrong, which is why the bar is a floor on scepticism and not a substitute for it.
+IMPLAUSIBLE_GBPS = 2500.0
 
 #: ``(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages)``.
 LaunchShape = tuple[int, int, int, int, int]
@@ -354,8 +378,28 @@ def _dedupe(shapes: list[LaunchShape]) -> list[LaunchShape]:
     return out
 
 
+def _implausible(elapsed_s: float, weight_bytes: int | None) -> bool:
+    """Whether a measurement implies a bandwidth no card can deliver.
+
+    Rental 42 is why this exists and also why it is not enough on its own: the head's
+    measurement implied **1639 GB/s**, under this bar, and the tile it endorsed ran at 282
+    GB/s in the decode step. A guard can refuse an impossible number; it cannot make a
+    possible one representative.
+    """
+    if weight_bytes is None or elapsed_s <= 0:
+        return False
+    return weight_bytes / elapsed_s / 1e9 > IMPLAUSIBLE_GBPS
+
+
 def tune_launch_shape(
-    kind: str, n: int, k: int, run, *, budget: float | None = None, log=None
+    kind: str,
+    n: int,
+    k: int,
+    run,
+    *,
+    budget: float | None = None,
+    log=None,
+    weight_bytes: int | None = None,
 ) -> LaunchShape:
     """Time every candidate tile for ``N x K`` on the card in hand and keep the fastest.
 
@@ -398,9 +442,10 @@ def tune_launch_shape(
     def measure(shape: LaunchShape) -> float | None:
         _TUNED[key] = shape
         try:
-            return _time_launch(run)
+            elapsed = _time_launch(run)
         except Exception:  # noqa: BLE001 - an unlaunchable tile is a skipped candidate
             return None
+        return None if _implausible(elapsed, weight_bytes) else elapsed
 
     best: LaunchShape | None = None
     best_time = float("inf")
@@ -429,7 +474,7 @@ def tune_launch_shape(
     if log is not None:
         log(
             f"[tile] {kind} N={n} K={k}: {chosen} after {rounds} round(s)"
-            f" at {best_time * 1e3:.1f} us"
+            f" at {best_time * 1e3:.3f} ms"
             f"{' -- SEARCH TRUNCATED BY BUDGET' if truncated else ''}"
         )
     return chosen
@@ -1090,7 +1135,7 @@ def _tune_for(linears: list[nn.Linear], kind: str, *, head=None, log=None) -> No
     Silent no-op without CUDA, so the CPU suite exercises the installers without ever
     needing a card, and `DF_TILE_TUNE=0` restores batch 004's untuned behaviour exactly.
     """
-    if os.environ.get("DF_TILE_TUNE") == "0" or not torch.cuda.is_available():
+    if not TILE_TUNING_ENABLED or not torch.cuda.is_available():
         return
     sites: list[tuple[int, int, object]] = [
         (int(linear.out_features), int(linear.in_features), linear) for linear in linears
@@ -1104,7 +1149,14 @@ def _tune_for(linears: list[nn.Linear], kind: str, *, head=None, log=None) -> No
             continue
         seen.add((n, k))
         x = torch.randn((1, k), device=module.w_k_major.device, dtype=torch.bfloat16)
-        tune_launch_shape(kind, n, k, _runner(kind, x, module), log=log)
+        tune_launch_shape(
+            kind,
+            n,
+            k,
+            _runner(kind, x, module),
+            log=log,
+            weight_bytes=module.w_k_major.numel() * module.w_k_major.element_size(),
+        )
 
 
 def _runner(kind: str, x: Tensor, module):

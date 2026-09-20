@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "baseline",
   "outcome": "baseline",
-  "timestamp": "2026-09-19T00:38:07.181583+00:00",
+  "timestamp": "2026-09-20T00:02:14.128412+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": null,
   "workload": {
@@ -18,8 +18,8 @@
   },
   "environment": {
     "python_version": "3.12.3",
-    "platform": "Linux-5.15.0-181-generic-x86_64-with-glibc2.39",
-    "hostname": "d73824a57013",
+    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
+    "hostname": "880f6245e9ff",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
@@ -29,9 +29,9 @@
     "driver_version": "580.159.03",
     "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2827,
+      "sm": 2910,
       "memory": 13801,
-      "observed_at": "2026-09-19T00:38:07.313396+00:00"
+      "observed_at": "2026-09-20T00:02:14.302844+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0"
@@ -46,32 +46,32 @@
     "baseline": "compiled",
     "timings_ms": {
       "compiled": [
-        38007.7109375
+        39835.15234375
       ],
       "candidate_compiled": [
-        866.8548583984375
+        52214.34375
       ]
     },
     "scoring_timings_ms": {
       "compiled": [
-        38007.7109375
+        39835.15234375
       ],
       "candidate_compiled": [
-        866.8548583984375
+        52214.34375
       ]
     },
     "median_ms": {
-      "compiled": 38007.7109375,
-      "candidate_compiled": 866.8548583984375
+      "compiled": 39835.15234375,
+      "candidate_compiled": 52214.34375
     },
     "achieved_gbps": {},
     "ratios": {
       "candidate_compiled": [
-        43.84553027449296
+        0.7629158863794012
       ]
     },
     "median_ratio": {
-      "candidate_compiled": 43.84553027449296
+      "candidate_compiled": 0.7629158863794012
     },
     "iqr_ratio": {
       "candidate_compiled": 0.0

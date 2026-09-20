@@ -712,3 +712,32 @@ def test_the_structural_gate_set_is_the_narrow_one_on_the_real_checkpoint():
     assert all(int(m.out_features) < WIDE_MIN_N for m in _gate_linears(model))
     assert all(int(m.out_features) >= WIDE_MIN_N for m in _wide_linears(model))
     assert all(int(m.out_features) == 32 for m in _gate_linears(model))
+
+
+def test_tile_tuning_is_off_until_something_can_measure_the_decode_step():
+    """Rental 42 measured the tuner choosing a tile **2.3x slower** than the heuristic.
+
+    It timed the head at 0.2 ms for 327 MB — 1639 GB/s, faster than the whole compiled
+    model — and picked BLOCK_N=256, which ran at 282 GB/s in place against the heuristic
+    tile's 656 on rental 40. The machinery stays; the default does not, because a batch
+    that silently inherited it would measure a tile instead of its own hypothesis.
+    """
+    from .tiled_gemv import TILE_TUNING_ENABLED
+
+    assert TILE_TUNING_ENABLED is False
+
+
+def test_a_measurement_implying_more_bandwidth_than_exists_is_refused():
+    """A guard on the one part of the tuner that is checkable arithmetic.
+
+    It would not have caught rental 42 — 1639 GB/s is possible on paper — which is the
+    point of recording both numbers: the bar refuses the impossible, and nothing but a
+    measurement of the decode step refuses the unrepresentative.
+    """
+    from .tiled_gemv import IMPLAUSIBLE_GBPS, _implausible
+
+    bytes_moved = 318_000_000
+
+    assert _implausible(bytes_moved / (IMPLAUSIBLE_GBPS * 1e9) / 2, bytes_moved)
+    assert not _implausible(bytes_moved / 656e9, bytes_moved)
+    assert not _implausible(0.001, None), "no byte count means no opinion"

@@ -248,10 +248,12 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Forty rentals have been billed, $6.706 lifetime, zero leaked. There is a champion.**
-Batch 005 (2026-09-19) produced this project's first two wins: `022-int4-head` at **1.0791,
-IQR 0.00034** — group-128 int4 on the tied LM head alone — and `025-fused-causal-conv` at
-**1.0144**. Batch 003 (2026-09-16) produced seven admissible ratios, all losses, and batch
+**Forty-one instances created, forty-one destroyed, $7.177 lifetime, zero leaked. There
+is a champion.** Batch 005 (2026-09-19) produced this project's first two wins:
+`022-int4-head` at **1.0791, IQR 0.00034** — group-128 int4 on the tied LM head alone —
+and `025-fused-causal-conv` at **1.0144**. Batch 006 (2026-09-20) added a third,
+`034-static-cache-cudagraphs` at **1.0196**, and refuted its own premise: see §8 on the
+tuner. Batch 003 (2026-09-16) produced seven admissible ratios, all losses, and batch
 004 (2026-09-17) rewrote the kernel that lost hardest and lost harder, 0.2801 → 0.1934.
 
 **What changed between losing by 5x and winning was not the kernel.** Batches 003 and 004
@@ -259,6 +261,15 @@ installed on all 248 layer projections at once; batch 005 installed on one site.
 kernel family achieves 228-319 GB/s averaged over the projections and **656 GB/s on the
 head**, which launches 3880 programs where `in_proj_a` launches four. Before concluding
 anything about a kernel, check whether the sites you measured it on could fill the card.
+
+**But the tile is not the difference, and batch 006 spent a rental establishing it.** The
+obvious next step from that paragraph — the layer projections are starved, so give them a
+better tile — was searched on the card across BLOCK_N, SPLIT_K, BLOCK_K, warps and
+pipeline depth. The MLP came back at **67 GB/s** against batch 003's 65 at a completely
+different tile, and the search made the *head* 2.3x worse. **This kernel family is ~66
+GB/s on the layer projections and ~656 on the head, and three rentals have now failed to
+move it.** The next idea there has to be a different algorithm, and the cheapest
+instrument is a published int4 kernel as an unscored column.
 
 **The baseline is characterised, and the number in this paragraph used to be wrong twice
 over.** Rental 38's `TORCH_LOGS=output_code` dump shows inductor folds the GQA head
@@ -603,6 +614,59 @@ return a plausible ratio for a candidate holding one of the two kernels it claim
 factories now subclass whatever the model already is, keyed by base. **Before composing two
 installers, check what each one actually replaces** — two that patch disjoint submodules
 compose for free, and two that patch the same attribute do not.
+
+**A micro-benchmark of one site does not rank tiles for the step that site is part of.**
+Batch 006 built an install-time autotuner — the honest answer to competing with
+`max-autotune`, which measures its tile where we were deriving ours from a comment about
+SM counts. It timed each site in a loop on an idle card with L2 flushed between
+iterations, and on the champion's own site it reported **1639 GB/s, faster than the whole
+compiled model achieves**, then chose BLOCK_N=256. That tile ran at **282 GB/s in the
+decode step** where the heuristic's BLOCK_N=64 had run at 656: the same kernel, the same
+bytes, **2.3x slower**, and the slot fell from 1.0791 to 0.9920.
+
+The direction is the tell. Fewer, fatter programs win a tight loop over one kernel on an
+idle card, where launch and scheduling dominate; they lose a step where 507 other kernels
+have already shaped the cache and the clock. **A tuner is only as good as the thing it
+times**, and the thing worth timing here is the decode step, not the site. `DF_TILE_TUNE`
+defaults off; the search space and the rounds are kept for a tuner that measures the right
+thing. A plausibility guard (`IMPLAUSIBLE_GBPS`) now refuses a measurement implying more
+bandwidth than exists — and note that it would **not** have caught this one, because 1639
+GB/s is possible on paper. An impossible number can be refused by arithmetic; an
+unrepresentative one cannot.
+
+**Two kernels that each win alone can lose badly together, and nothing predicts it.**
+`022-int4-head` won at 1.0791 and `025-fused-causal-conv` at 1.0144, on mechanisms that
+share nothing — one removes bytes from a matmul, the other removes launches from 24
+layers. Composed on rental 42 they returned **0.7937**: the head cost +0.064 ms/token and
+the conv, unmodified since the rental it won on, added **~1.85 ms/token**. Both installers
+had passed alone; `027` was built to test the pair on rental 40 and its precondition
+declined it, so this was the first execution. Before assuming a composition is the product
+of its parts, **measure it** — and order it where a surprise still informs the rest of the
+batch.
+
+**A slot can win while its mechanism never fires, and only a counter can tell you.**
+`034-static-cache-cudagraphs` returned **1.0196, IQR 0.00149**, bit-identical, with
+`cudagraph_nodes: 0`. The hypothesis it was built for — CUDA-graphing the decode step — is
+still untested at 0 for 2. The 2.0% came from the *other* thing `mark_static_address`
+does: a static input skips inductor's per-call alignment check, 64 tensors on each of 128
+steps. Reporting that as "CUDA graphs are worth 2%" would have been false in both
+directions, and the only reason it is not in this file as a finding is that the slot
+record carries the node count beside the ratio.
+
+**And record the reason, not only the counter.** Batch 005 had `cudagraph_skips: 127` and
+spent a section of its writeup ranking three suspects it could not separate;
+`cudagraphs_during` now captures the message inductor logs beside the counter, which named
+`mutated inputs (64 instances)` with all 64 tensors marked and printed
+`Recording cudagraph tree for symint key 2049, 2050, …` — confirming both halves of the
+diagnosis in one run. **When a guard fires, log what it read, not just that it fired.**
+
+**Two of batch 005's ranked suspects were refuted on a laptop, for nothing.** Running the
+tiny config under `TORCH_LOGS=cudagraph_static_inputs` prints `Adding static input pos 5
+for source L['cache'].layers[0].conv`, which settles that `mark_static_address` reaches
+`static_input_indices` through a plain Python object. Before booking a rental to
+investigate a dynamo or inductor behaviour, **check whether the tiny CPU config plus a
+`TORCH_LOGS` artifact already answers it.** Most of the compile-time machinery is
+device-independent.
 
 **A byte model that a rental has corrected still has to be corrected in the code.** Rental
 38 established that the compiled columns move 8587.80 MB/token rather than the roofline's

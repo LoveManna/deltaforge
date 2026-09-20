@@ -1,0 +1,479 @@
+{
+  "schema_version": 1,
+  "kind": "batch",
+  "batch_id": "006-tile-and-sites",
+  "session_id": "batch006-20260919T233510Z",
+  "description": "Batch 005 found that the hand-written GEMV was **grid-starved, not structurally slow**: the same kernel family achieved 228-319 GB/s averaged over all 248 layer projections and **656 GB/s on the tied LM head**, which launches 3880 programs where `in_proj_a` launches four. That reframed the site. It left the *tile* un-examined, and the tile is a heuristic no rental has ever timed: `_launch_shape` targets 256 programs -- one wave on a 170-SM card -- and it *narrows* BLOCK_N to 32 for every site with N <= 4096, which halves the contiguous run each program reads from 128 bytes to 64. Both are the opposite of what the head won on. So this batch measures the tile instead of deriving it, on the card in hand, exactly as `max-autotune` does for the code we are trying to beat -- and then runs the same int4 kernel on the 52.75% of per-token bytes behind the MLP and the 83.03% behind the 200 layer projections wide enough for a tile to matter. Nine slots. Every one of them can beat the champion's 1.0791: there is no control here whose ceiling is 1.0, because after batch 005 the cheapest control is a slot that also has a ceiling.",
+  "timestamp": "2026-09-20T00:23:57.570657+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "000-identity.candidate_build": 0.05599600821733475,
+    "000-identity.correctness": 16.368280248716474,
+    "000-identity.compile_candidate_compiled": 0.006770899519324303,
+    "000-identity.bench": 162.1973294923082,
+    "028-int4-head-tuned.candidate_build": 12.094725831411779,
+    "028-int4-head-tuned.correctness": 12.73526700027287,
+    "028-int4-head-tuned.compile_candidate_compiled": 0.005804269574582577,
+    "028-int4-head-tuned.bench": 175.12623184919357,
+    "029-head-and-conv.candidate_build": 0.11015767231583595,
+    "029-head-and-conv.correctness": 10.3936936147511,
+    "029-head-and-conv.compile_candidate_compiled": 0.006000875495374203,
+    "029-head-and-conv.bench": 324.06010310258716,
+    "030-int4-mlp.candidate_build": 14.824912331998348,
+    "030-int4-mlp.correctness": 12.2432222366333,
+    "030-int4-mlp.compile_candidate_compiled": 0.005755661986768246,
+    "030-int4-mlp.bench": 335.0975634260103,
+    "034-static-cache-cudagraphs.candidate_build": 0.09060068428516388,
+    "034-static-cache-cudagraphs.correctness": 10.269212529994547,
+    "034-static-cache-cudagraphs.compile_candidate_compiled": 0.006116844713687897,
+    "034-static-cache-cudagraphs.bench": 167.2428963612765
+  },
+  "calibrated": true,
+  "counts": {
+    "win": 2,
+    "loss": 3,
+    "precondition_failed": 3
+  },
+  "predictions": [
+    {
+      "slug": "000-identity",
+      "predicted": "identity",
+      "outcome": "win",
+      "correct": true
+    },
+    {
+      "slug": "028-int4-head-tuned",
+      "predicted": "win",
+      "outcome": "loss",
+      "correct": false
+    },
+    {
+      "slug": "029-head-and-conv",
+      "predicted": "win",
+      "outcome": "loss",
+      "correct": false
+    },
+    {
+      "slug": "030-int4-mlp",
+      "predicted": "win",
+      "outcome": "loss",
+      "correct": false
+    },
+    {
+      "slug": "031-int4-mlp-and-head",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "032-int4-wide-and-head",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "033-int4-wide-head-and-conv",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "034-static-cache-cudagraphs",
+      "predicted": "win",
+      "outcome": "win",
+      "correct": true
+    }
+  ],
+  "prediction_record": {
+    "correct": 2,
+    "scored": 5
+  },
+  "slots": [
+    {
+      "slug": "000-identity",
+      "outcome": "win",
+      "prediction": "identity",
+      "category": "calibration",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [],
+      "mechanism": "Install nothing. The candidate is the reference, so the measured ratio is the harness's own noise floor rather than a property of any kernel.",
+      "rationale": "Must return 1.00 within the noise band. If it does not, the harness is measuring something other than the kernel under test and every other number in this batch is void -- a statement about the rental rather than about any hypothesis, and the writeup has to say so rather than reporting the rest as findings. It has measured 1.0009, 1.0018, 1.0024, 0.9913 and 1.0008 on the five rentals that got this far, so a miss here is news.",
+      "median_ratio": 1.0053043755669457,
+      "iqr_ratio": 0.0008596210351887734,
+      "error": null,
+      "duration_s": 178.62897254433483,
+      "peak_memory_mb": 9024,
+      "graphs_compiled": 3,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for graph without symints",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 715, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.05599600821733475,
+        "correctness": 16.368280248716474,
+        "compile_candidate_compiled": 0.006770899519324303,
+        "bench": 162.1973294923082
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "028-int4-head-tuned",
+      "outcome": "loss",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.148,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_int4_head_tuned"
+      ],
+      "mechanism": "The champion's site and the champion's arithmetic, with `tune_launch_shape` timing every candidate tile on the card instead of `_launch_shape` deriving one from a comment about SM counts. Same bytes, same kernel, same 1.1249x ceiling; only the launch geometry moves.",
+      "rationale": "**The cheapest slot in the batch and the only one directly comparable to a number already on the leaderboard.** `022-int4-head` measured 1.0791 against a 1.1249x ceiling -- it collected **70%**, at 656 GB/s where the baseline runs at 1282 -- with BLOCK_N=64, BLOCK_K=64, SPLIT_K=1, num_warps=4 and Triton's default 3 stages. Not one of those five numbers was ever measured. The search space includes that exact configuration first, so **the floor of this slot is the champion** and the only question is how much of the remaining 30% a measured tile collects. Predicted **1.08-1.12**. It runs before every other kernel because it is the tuner's own control: if the tuner cannot improve on the heuristic at the one site where the heuristic was accidentally right, the slots behind it are far less likely to -- and if it comes back *below* 1.0791 the tuner itself is broken and the batch says so in three minutes rather than at the end. Bars are 022's, unchanged and already met at 0.9318 and 0.01674 nats: the arithmetic is identical, so a different correctness result here would be a tiling bug rather than a quantisation effect.",
+      "median_ratio": 0.9919906569067984,
+      "iqr_ratio": 0.004806119702139178,
+      "error": null,
+      "duration_s": 199.96253391262144,
+      "peak_memory_mb": 14854,
+      "graphs_compiled": 3,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 730, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {
+        "int4 248320 2560": [
+          256,
+          64,
+          1,
+          4,
+          3
+        ]
+      },
+      "phases_s": {
+        "candidate_build": 12.094725831411779,
+        "correctness": 12.73526700027287,
+        "compile_candidate_compiled": 0.005804269574582577,
+        "bench": 175.12623184919357
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "029-head-and-conv",
+      "outcome": "loss",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.1486,
+      "replaces": [
+        "decode_step",
+        "causal_conv"
+      ],
+      "kernels": [
+        "tiled_int4_head_tuned",
+        "fused_causal_conv"
+      ],
+      "mechanism": "Batch 005's two winners on one candidate: int4 on the tied LM head, and the four-tap causal convolution's cat + cuDNN call + silu + cache copy collapsed into one Triton kernel per linear-attention layer. One removes 943.7 MB/token of weight traffic; the other removes 48 of 508 launches and no bytes at all.",
+      "rationale": "**The one slot here that is near-certain, and it is in the batch for exactly that reason.** Both halves won on rental 40 -- 1.0791 and 1.0144 -- on mechanisms that share nothing: the head slot changes what one matmul reads, the conv slot changes how 24 layers dispatch. Their installers patch disjoint attributes (`project_logits` via the root class, and the conv step inside each linear-attn module), so neither can discard the other -- the failure `AGENT.md` records for two root-class installers. Naive expectation is the product of the measured savings, 0.493 ms + 0.093 ms of 6.70, which is **1.0957**; predicted **1.09-1.13** because 028's tile can only add to the first term. If this slot does not clear 1.0791 then something about composing two installs is wrong, which is worth knowing before five slots depend on it. It also banks a champion early: after this the batch can spend its remaining slots on hypotheses that might fail without risking the session's result.",
+      "median_ratio": 0.7936781771217305,
+      "iqr_ratio": 0.01706496809168101,
+      "error": null,
+      "duration_s": 334.5704692918807,
+      "peak_memory_mb": 14854,
+      "graphs_compiled": 3,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 730, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {
+        "int4 248320 2560": [
+          256,
+          64,
+          1,
+          4,
+          3
+        ]
+      },
+      "phases_s": {
+        "candidate_build": 0.11015767231583595,
+        "correctness": 10.3936936147511,
+        "compile_candidate_compiled": 0.006000875495374203,
+        "bench": 324.06010310258716
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "030-int4-mlp",
+      "outcome": "loss",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.5275,
+      "replaces": [
+        "swiglu_mlp"
+      ],
+      "kernels": [
+        "tiled_int4_mlp"
+      ],
+      "mechanism": "Group-128 int4 on the 96 MLP projections and nothing else: 4529.85 MB/token to 1167.8, a **1.6545x ceiling** from the largest homogeneous block of bytes in the model. Every site is wide -- 9216 for gate_proj and up_proj, 2560 for down_proj -- and each gets a tile chosen by measurement.",
+      "rationale": "**The hypothesis the batch exists to test, and the number it turns on is 331 GB/s.** At the baseline's 1282 GB/s the MLP's 4529.85 MB/token costs 3.53 ms of 6.70; int4 moves 1167.8 MB there, so the slot ties at **1167.8 / 3.53 ms = 331 GB/s** and collects the full 1.6545x at 1282. That tie point sits **between the two rates this project has measured** -- 196-280 GB/s for the untuned kernel over the layer projections (rentals 37 and 38), 656 for the tuned-by-accident head (rental 40) -- which is what makes it a coin worth flipping rather than an argument. What moves it is the tile, and both defects are arithmetic rather than suspicion: `down_proj` at N=2560 gets BLOCK_N=32 and SPLIT_K=4, which is 320 program instances on 170 SMs *and* a 64-byte contiguous read where the hardware transacts 128; `up_proj` at N=9216 gets 288. The head got 3880 and a full 128-byte line. Predicted **1.05-1.40**: the low end is a tile that helps a little, the high end is one that reaches the head's byte rate, and below 1.0 means the layer projections are slow for a reason that is not the launch geometry -- which would be the first evidence for that, because nobody has varied the geometry before. Bars come from two measured points: batch 003's `014` put int4 on all 248 sites plus the head at 0.09185 nats and 226/264, and `022` put the head alone at 0.01674, so the layer projections carry ~0.075 nats and the MLP is 63.5% of their weight bytes -- call it ~0.048. The bar is 0.10 nats and 220/264, which is looser than `014` measured while quantising twice as much.",
+      "median_ratio": 0.35445570903274304,
+      "iqr_ratio": 0.0006310763121989971,
+      "error": null,
+      "duration_s": 362.17195645626634,
+      "peak_memory_mb": 10172,
+      "graphs_compiled": 3,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 730, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {
+        "int4 248320 2560": [
+          256,
+          64,
+          1,
+          4,
+          3
+        ],
+        "int4 9216 2560": [
+          128,
+          64,
+          4,
+          4,
+          3
+        ],
+        "int4 2560 9216": [
+          128,
+          64,
+          16,
+          4,
+          3
+        ]
+      },
+      "phases_s": {
+        "candidate_build": 14.824912331998348,
+        "correctness": 12.2432222366333,
+        "compile_candidate_compiled": 0.005755661986768246,
+        "bench": 335.0975634260103
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "031-int4-mlp-and-head",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.6755,
+      "replaces": [
+        "swiglu_mlp",
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_int4_mlp",
+        "tiled_int4_head_tuned"
+      ],
+      "mechanism": "030 and 028 composed: the two largest blocks of weight bytes in the model at 4 bits, 67.55% of what the compiled column moves, for a 2.0269x ceiling. Disjoint installs -- the MLP swaps `nn.Linear` subclasses, the head swaps the root class's `project_logits`.",
+      "rationale": "The mechanisms are the same mechanism at two sets of sites, so unlike 029 this is not a product of two unrelated effects but a single question asked of more bytes: **does the tuned kernel hold its byte rate as the share it carries grows?** That is not guaranteed and the failure mode is specific -- 96 extra pairs of launches where inductor had fused the projection into the norm and the residual, against a dispatch path that rental 38's dump measured at 508 launches per token with no CUDA graph anywhere. Predicted **1.15-1.55**: the midpoint is 030 and 028 collecting the same fraction of their ceilings together as they did apart. **031 materially below 030 x 028 is the interesting outcome**, because it prices the fusion loss per site for the first time -- batch 004 named it as a suspect and nothing has ever isolated it. Bars add the two measured contributions: ~0.048 nats for the MLP and 0.01674 for the head, so 0.12 and 215/264 leave roughly a factor of two on each.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "030-int4-mlp measured 0.3545 against a floor of 1.0: this slot is 030 plus a site the batch has already measured alone in 028; if int4 on the MLP cannot reach parity on its own then the MLP half contributes a known loss and the composition re-measures 028 with a handicap, which is a number the batch already has",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "032-int4-wide-and-head",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.9783,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "tiled_int4_wide"
+      ],
+      "mechanism": "int4 on every site a tile can help: the 200 layer projections with N >= 1024, plus the tied head, in **one** kernel -- the registry allows one champion per replaceable operation and a head installed beside this would claim `decode_step` twice. **97.83% of what the compiled column moves, a 3.7578x ceiling.** The 48 excluded projections are `in_proj_a` and `in_proj_b`, 32 channels wide and 7.86 MB/token between them.",
+      "rationale": "**The full ceiling, minus the only sites no tile can reach.** Batches 003 and 004 installed on all 248 and reported one aggregate byte rate, which batch 005 showed cannot separate a slow kernel from a starved grid -- so this slot removes the 48 that are starved by construction and costs 0.09% of per-token bytes to do it. Ties at the same 331 GB/s as 030, because the tie point is a property of int4 against a 1282 GB/s baseline and not of how many sites carry it. Predicted **1.10-2.20**, a wide range on purpose: this is 030's mechanism at 1.85x the byte share plus 028's, and if the tuned tile holds its rate the arithmetic says 1.9, while every per-site cost that does not scale with bytes -- the forfeited fusion, the second launch per site, split-K's reduction pass -- is multiplied by 200 here against 96 in 030. Reading 032 against 031 against 030 is a per-site-cost curve, which is the thing two rentals of aggregate numbers could not produce. Bars: batch 003's `014` measured this configuration plus the 48 gates at **0.09185 nats and 226/264**, so 0.18 nats and 210/264 are twice that measurement's error and sixteen more flips.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "030-int4-mlp measured 0.3545 against a floor of 1.0: the same floor and the same reason as 031: this slot adds 104 more sites of the mechanism 030 measures, so a 030 below parity makes this a larger measurement of a loss the batch has already recorded, and batch 003 spent five slots doing exactly that",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "033-int4-wide-head-and-conv",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.9789,
+      "replaces": [
+        "decode_step",
+        "causal_conv"
+      ],
+      "kernels": [
+        "tiled_int4_wide",
+        "fused_causal_conv"
+      ],
+      "mechanism": "Everything in this batch that can compose: 032's int4 on 97.83% of the weight bytes, and the fused causal convolution on 48 of the step's 508 launches. Two installers patching disjoint attributes.",
+      "rationale": "The batch's best shot at a champion and its riskiest slot, so it runs last among the kernels with everything cheaper already on disk: three installers, 200 quantised sites and the largest resident memory in the batch. Predicted **1.12-2.25**, which is 032 plus the conv's measured 0.093 ms. It also asks a question the arithmetic cannot answer: **the conv's win was a dispatch win, and 032 adds ~200 launches to the step.** If a saved launch is worth less when the step dispatches more of them, 033 minus 032 comes out below rental 40's 1.0144 and the launch account is not linear; if it comes out at 1.0144 the two effects are independent and the account holds. Either reading is a finding, and it costs one slot because the ingredients are measured separately above.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "032-int4-wide-and-head measured no ratio against a floor of 1.05: the conv is worth 0.093 ms of 6.70 and this slot's only novel ingredient is that 1.4%; if 032 has not cleared the noise band by more than the conv can contribute, this re-measures 032 and the batch already has that number with a tighter interval",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "034-static-cache-cudagraphs",
+      "outcome": "win",
+      "prediction": "win",
+      "category": "A",
+      "byte_share": 0.0,
+      "replaces": [
+        "decode_cache"
+      ],
+      "kernels": [
+        "static_decode_cache"
+      ],
+      "mechanism": "`021` again, with the diagnostic it was missing. The decode cache is allocated under `mark_static_address`, which is the promise inductor's cudagraph mutation check requires and cannot infer from a tensor handed in as an argument. Same 508 kernels in the same order, from one graph replay instead of 508 Python dispatches.",
+      "rationale": "**Still the largest unattacked number in the project, and rental 40 did not test it**: `cudagraph_nodes: 0, cudagraph_skips: 127` -- the candidate was refused exactly as the reference is, so 0.9986 said nothing. Its writeup ranked two suspects, and **this session refuted both on a CPU for nothing.** Running the tiny config under `TORCH_LOGS=cudagraph_static_inputs` prints `Adding static input pos 5 for source L['cache'].layers[0].conv` and the same for every recurrent state and KV slice: the mark does reach `static_input_indices`, through a plain Python object, and `_extract_tensor_dict` does stamp it. So the break is downstream of both, and the two remaining candidates are the int graph input -- `cache.seq_len` reaches the graph as a symint, `cudagraphify_impl` keys `fn_cache` on every int input, and a 128-token decode therefore wants 128 recordings against a `cudagraph_unexpected_rerecord_limit` of exactly 128 -- and a skip for some reason entirely unrelated to mutation. **This slot can now tell those apart**, because `cudagraphs_during` captures the skip *message* and not only the counter; batch 005 had the count and spent a section of its writeup ranking suspects the sentence beside it would have named. Ceiling ~1.26x from rental 38's dump: 8587.80 MB/token is 4.79 ms at an RTX 5090's vendor peak and 5.3-6.4 at an achievable one, against 6.70 measured, so 0.3-1.9 ms sits in 508 dispatches. Predicted **1.05-1.26 if it engages**, and it runs last because capturing 128 graphs of a 508-kernel step is the most likely thing in this batch to be slow or to exhaust memory, and everything else is on disk by then. Gated at 264/264 and 1e-6 nats because the policy forbids `exact` for a non-identity slot and this candidate really is bit-identical: a bar it can only miss by being broken is the right shape for that claim.",
+      "median_ratio": 1.0196003812115308,
+      "iqr_ratio": 0.0014907200369169704,
+      "error": null,
+      "duration_s": 177.60951929632574,
+      "peak_memory_mb": 9024,
+      "graphs_compiled": 3,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 127,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "Recording cudagraph tree for symint key 2049",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 715, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 648, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {
+        "int4 248320 2560": [
+          256,
+          64,
+          1,
+          4,
+          3
+        ],
+        "int4 9216 2560": [
+          128,
+          64,
+          4,
+          4,
+          3
+        ],
+        "int4 2560 9216": [
+          128,
+          64,
+          16,
+          4,
+          3
+        ]
+      },
+      "phases_s": {
+        "candidate_build": 0.09060068428516388,
+        "correctness": 10.269212529994547,
+        "compile_candidate_compiled": 0.006116844713687897,
+        "bench": 167.2428963612765
+      },
+      "prediction_correct": true
+    }
+  ],
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
+    "hostname": "880f6245e9ff",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2917,
+      "memory": 13801,
+      "observed_at": "2026-09-20T00:23:57.785050+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "cost": {
+    "instance_id": "51656940",
+    "hourly_rate_usd": 0.5162962962962963,
+    "gpu_model": null,
+    "actual_minutes": null,
+    "actual_cost_usd": null
+  },
+  "notes": ""
+}

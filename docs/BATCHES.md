@@ -316,3 +316,59 @@ Two things follow:
   of rental 40's defects are that shape, and both now fail on a laptop.
 * **When a batch picks up a kernel an earlier batch declined, order it as new code** —
   early, where a failure costs a slot and informs the rest, not last among the riskiest.
+
+
+## Measured costs, rental 42 (2026-09-20) — batch 006, five slots run and three declined
+
+RTX 5090 at $0.5163/hr, warm compile cache, and **the most expensive fixed cost since
+rental 38** — because this rental *sends the cache up* as well as pulling it down.
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **50.82 minutes, $0.4373** |
+| Fixed cost before slot 0 | **27.12 minutes** — of which the 9.32 GB checkpoint was only **1m27s** |
+| Slot 0 — identity | **179 s** (bench 162 s, correctness 16 s) |
+| Slots 1-4 | **178-362 s** |
+| Of which the approximate correctness gate | 10.3-16.4 s |
+| Of which install-time tile tuning | **12.1 s** for one shape, **14.8 s** for two |
+| A candidate that replaces the root model class | **+198 s** in its first warmup round |
+| Declined slots | **0 s** |
+| Peak memory | 8.39 GiB allocated, 16.61 GiB reserved, of 31.36 |
+
+**The fixed cost is 13-30 minutes and the network is only half the variable.** Rental 40
+paid ~13 and this one paid 27.12 with a *faster* checkpoint fetch (1m27s against 10m49s on
+rental 38). The difference is the container pull and the **1.4 GB compile cache going
+up**. That upload is deliberate and it buys a warm reference compile —
+`compile_candidate_compiled` rounds to 0.0 s on every slot — but on a 50-minute rental it
+cost more than the 3.5 minutes of cold compile it saved. Worth reconsidering for a short
+batch; worth keeping for a long one.
+
+**The root-class recompile now has a number rather than a range.** Rental 40 saw 72 s and
+218 s and recorded "1-4 minutes"; rental 42 put `029` at 197.7 s and `030` at 199.2 s.
+Budget ~200 s for any slot whose installer swaps `type(model)`, and note it is *separate*
+from install-time work, which `candidate_build` times on its own.
+
+**Three launches produced no rental and cost $0.0337 between them.** One died on CUDA
+`Error 804` after 5.13 billed minutes; two refused before provisioning — one to an HTTP
+429 on the offer search, one to a genuinely empty pool. Only the log line distinguishes
+those two, and they call for opposite responses: retry, or move a filter. See
+`docs/GPU-ACCESS.md`.
+
+## What a prediction scorecard looks like when the premise is wrong
+
+Batch 006 scored **1 of 4**. Every slot predicted `win`, and `docs/BATCHES.md` has said
+since it was written that "a batch that predicted a win everywhere would be hope rather
+than prediction". This batch was built under an explicit instruction that every slot have
+a real chance of beating the incumbent, which is a legitimate brief and is **not the same
+as predicting that every slot will**.
+
+The lesson is narrower and it is about *correlation*, not optimism: four of the eight
+slots shared one unexamined premise — that the tile was the problem — so the first slot
+to test it determined the rest. That is the same structure batch 003 had, where five
+slots were decided the moment `009` returned 0.2801, and the preconditions that exist
+because of it worked again here (three slots declined, ~15 minutes saved).
+
+**So: when several slots rest on one premise, put the slot that tests the premise first
+and gate the others on it** — which batch 006 did — **and register at least one slot
+whose prediction does not depend on that premise.** `034` was that slot, and it is the
+only prediction the batch got right.

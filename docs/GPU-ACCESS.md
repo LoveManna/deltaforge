@@ -642,3 +642,37 @@ measurement is no longer the rental path:
 
 Both are questions about the benchmark, not about access. That is a different project than
 the one this file has been documenting.
+
+
+## Rental 42 (2026-09-20): three launches before a card, and blocker 11 is now three for three
+
+| Launch | What happened | Cost |
+|---|---|---|
+| 1 | RTX 4090, machine 27290, advertised `cuda_max_good` **exactly 12.8**. Reached the box, installed torch, died at the first CUDA call: `Error 804: forward compatibility was attempted on non supported HW`. | **5.13 min, $0.0337** |
+| 2 | `DF_MIN_CUDA=12.9`, machine excluded. Vast answered the 4090 offer search with **HTTP 429**; zero offers; exit 4. | nothing created |
+| 3 | Same filters, no 429, and a genuinely empty 4090 pool at 12.9 under $0.45. Exit 4. | nothing created |
+| 4 | `--max-rate 0.65`: five RTX 5090 offers, took one at **$0.5163/hr, CUDA 13.0, 32607 MB, reliability 0.997**. Ran the batch and destroyed cleanly. | 50.82 min, $0.4373 |
+
+**Blocker 11, Proven? — the filter is now derived from three data points rather than one.**
+
+| rental | advertised `cuda_max_good` | outcome |
+|---|---|---|
+| 33 | 12.8 | `Error 804` |
+| 34 | 13.0 | fine |
+| 42 | 12.8 | `Error 804` |
+
+A host sitting *exactly on* the floor is the failing case, every time it has been tried.
+`DF_MIN_CUDA=12.9` is therefore the correct filter for a cu128 torch build — but it
+**emptied the 4090 pool at the default $0.45 ceiling**, so the two knobs are coupled:
+tighten the CUDA floor and the rate ceiling has to move with it. Raising `--max-rate` to
+0.65 produced five 5090 offers immediately, at $0.5163/hr against the $0.4363 rentals 38
+and 40 paid. A 50-minute rental at that rate is $0.43; the failed 4090 cost $0.03. **Pay
+the 18% and take the card that works.**
+
+**An exit-4 refusal is not always a market transient.** `AGENT.md` §8 says "widen
+`--max-rate` deliberately, or try again later" — and launches 2 and 3 are the two cases
+that advice conflates. Launch 2 was an HTTP 429 on the search: retrying was right, and
+nothing about the filters was wrong. Launch 3 was a real empty pool: retrying would have
+failed forever and moving a filter was the only fix. **The `curl: (22) ... error: 429`
+line is the whole difference**, and it is already in the log; read it before deciding
+which response a no-offer refusal wants.

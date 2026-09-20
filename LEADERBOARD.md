@@ -11,14 +11,21 @@
 | Median ratio vs `torch.compile(max-autotune)` | **1.0791** |
 | IQR of the scoring rounds | **0.00034** |
 | Correctness | layer 1 one bf16 ULP (7.8e-3); layer 2 top-1 0.9318, mean KL 0.01674 nats |
-| Last verified on | RTX 5090, rental 40, 2026-09-19 |
+| Last verified on | RTX 5090, rental 40, 2026-09-19. **Not re-benchmarked on rental 42** — see below. |
 | Result record | [`results/batches/005-launch-and-head/`](results/batches/005-launch-and-head/) |
 
-**After thirty-nine rentals, a hand-written Triton kernel has beaten what
-`torch.compile(mode="max-autotune")` generates on the decode path of Qwen3.5-4B** — by
-7.91%, at an interquartile spread of 0.03%, on a harness that calibrated at 1.0008 in the
-same run. A second kernel won in the same batch on an unrelated mechanism:
-`025-fused-causal-conv`, **1.0144**, bit-identical to the reference.
+**A hand-written Triton kernel has beaten what `torch.compile(mode="max-autotune")`
+generates on the decode path of Qwen3.5-4B** — by 7.91%, at an interquartile spread of
+0.03%, on a harness that calibrated at 1.0008 in the same run. Two other candidates have
+won since, on mechanisms that share nothing with it: `025-fused-causal-conv` at **1.0144**
+and `034-static-cache-cudagraphs` at **1.0196**, both bit-identical to the reference.
+
+**The champion's number is one rental old and was not re-verified on rental 42.** That
+batch replaced `022` with `028-int4-head-tuned` — the same kernel on the same site with a
+searched tile — which measured **0.9920**. The tile is the only difference and it is worth
+2.3x (§ batch 006), so 1.0791 stands as `022`'s own measurement and re-measuring it on a
+second card is the first slot of the next rental. Recording it any other way would be
+carrying a number across sessions, which this file forbids.
 
 **The mechanism, stated before the measurement and confirmed by it.** The tied LM head is
 248320 x 2560 — **1271.40 MB/token, 14.80% of everything the compiled column moves, in one
@@ -63,15 +70,19 @@ is met; blocker 13 in the table below is closed. The historical account of the d
 is kept in `results/batches/002-compile-cost/README.md` because it cost five rentals to
 resolve and the shape of it is worth reading, not because the question is open.
 
-**The harness is calibrated, repeatedly and increasingly tightly.** The identity champion
-has measured 1.0009, 1.0018, 1.0024, 0.9913 and — on rental 40 — **1.0008 at an IQR of
-0.00017**, the tightest yet. A batch whose identity slot misses 1.00 voids every other
-number in it; none since rental 35 has.
+**The harness is calibrated, repeatedly and tightly.** The identity champion has measured
+1.0009, 1.0018, 1.0024, 0.9913, 1.0008 and — on rental 42 — **1.0053 at an IQR of
+0.00086**. A batch whose identity slot misses 1.00 voids every other number in it; none
+since rental 35 has. Note the sign: rental 42 carried a **+0.53% offset**, so every ratio
+in batch 006 is that much flattering and `034`'s 1.0196 is ~1.4% net.
 
-**Forty rentals have now been billed, $6.706 lifetime, zero leaked.** Every instance was
-destroyed cleanly by the trap, including two cancelled mid-flight with SIGTERM. The
-cheapest informative rental in the set remains rental 28 at $0.0478; the most expensive
-mistake remains rental 32 at $1.3878, which spent its entire cap inside one compile.
+**Forty-one instances have now been created and forty-one destroyed, $7.177 lifetime,
+zero leaked.** Every one was destroyed cleanly by the trap, including two cancelled
+mid-flight with SIGTERM. The cheapest informative rental in the set remains rental 28 at
+$0.0478; the most expensive mistake remains rental 32 at $1.3878, which spent its entire
+cap inside one compile. (The count is the ledger's, and it is one lower than the "forty
+rentals" this file carried before rental 42 created two instances: the prose had drifted
+one ahead of `ledger/spend.jsonl`, which is the authority.)
 
 ### The chain of blockers, and where it stands
 
@@ -89,7 +100,7 @@ Each rental that got further than its predecessor did so by exposing the next pr
 | 8 | The benchmark OOMs at warmup with the default four columns | fixed, **proven** — rentals 34-35 held 8.07 GiB of 31.36 across nine slots |
 | 9 | **The stall guard destroyed a healthy rental** the moment its pull finished | fixed, **proven** — three instances have since passed through that state |
 | 10 | A phantom ask traps the deterministic, price-ordered offer search | manual `--exclude-machines` only, **no real fix** |
-| 11 | Host driver older than our torch build → CUDA `Error 804` | **recurred on rental 33** — `DF_MIN_CUDA` filters an advertised `cuda_max_good`, not a driver |
+| 11 | Host driver older than our torch build → CUDA `Error 804` | **recurred on rentals 33 and 42** — three for three, a host advertising `cuda_max_good` of *exactly* 12.8 fails and 13.0 does not. `DF_MIN_CUDA=12.9` is the filter; it empties the 4090 pool at $0.45, so the rate ceiling has to move with it |
 | 12 | The ghcr image ships no Python headers, so Triton's JIT shim will not build | fixed, **proven** — the GPU suite has passed on rentals 34 and 35 |
 | 13 | The oracle's greedy decode no longer matches HuggingFace | **closed** — agrees token-for-token on rentals 30-32 and 34-35, zero tie-breaks |
 | 14 | A cold `max-autotune` compile never finishes inside a session | fixed, **proven** — the unrolled prefill scan; 6980.9s (unfinished) → 267.5s → 57.4s warm |
@@ -328,6 +339,66 @@ declined every one, so it shipped, passed CI, and was never run. Both are fixed,
 `kernels/kernel_contract_test.py` now catches the class of each on a CPU.
 
 Full account: [`results/batches/005-launch-and-head/README.md`](results/batches/005-launch-and-head/README.md).
+
+### Batch 006 — the tile, and the promise that pays without the graph, 2026-09-20 (rental 42)
+
+**The batch's premise was refuted by its own first kernel slot, and the one win came from
+a mechanism that never fired.** Five slots ran, three declined. Predictions scored
+**1 of 4** — every slot predicted `win`.
+
+| ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
+|---|---|---|---:|---:|---|---|---|---|
+| 000 | Identity champion | — | **1.0053** | 0.00086 | RTX 5090 | exact | calibrated | [dir](results/batches/006-tile-and-sites/) |
+| 028 | int4 head, tile chosen by search | `decode_step` | 0.9920 | 0.00481 | RTX 5090 | 0.9318, 0.01674 nats | **`loss`** | [dir](results/batches/006-tile-and-sites/) |
+| 029 | 028 + the fused causal conv | `decode_step`, `causal_conv` | **0.7937** | 0.01706 | RTX 5090 | 0.9318, 0.01674 nats | **`loss`** | [dir](results/batches/006-tile-and-sites/) |
+| 030 | int4 on the 96 MLP projections | `swiglu_mlp` | **0.3545** | 0.00063 | RTX 5090 | 0.8977, 0.04868 nats | **`loss`** | [dir](results/batches/006-tile-and-sites/) |
+| 031 | 030 + the head | `swiglu_mlp`, `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/006-tile-and-sites/) |
+| 032 | int4 on the 200 wide sites + head | `decode_step` | — | — | — | — | `precondition_failed` | [dir](results/batches/006-tile-and-sites/) |
+| 033 | 032 + the fused conv | `decode_step`, `causal_conv` | — | — | — | — | `precondition_failed` | [dir](results/batches/006-tile-and-sites/) |
+| 034 | Static decode cache, for CUDA graphs | `decode_cache` | **1.0196** | 0.00149 | RTX 5090 | 264/264, **0.0 nats** | **`win`** | [dir](results/batches/006-tile-and-sites/) |
+
+**The tile is not what separates the head from the layer projections.** `028` is the
+champion's kernel on the champion's site with the tile chosen by an install-time search
+instead of a heuristic, and the search picked BLOCK_N=256 where the heuristic picks 64:
+
+| the head at group-128 int4 | tile | programs | in-situ achieved |
+|---|---|---:|---:|
+| `022`, rental 40 | BLOCK_N 64, SPLIT_K 1 | 3880 | **656 GB/s** |
+| `028`, rental 42 | BLOCK_N **256**, SPLIT_K 1 | 970 | **282 GB/s** |
+
+**Per-site micro-benchmarking does not select tiles for this workload.** The tuner timed
+the head at 0.2 ms for 327 MB — **1639 GB/s, faster than the whole compiled model** — and
+the tile it endorsed ran at 282 in the decode step. `DF_TILE_TUNE` now defaults to off.
+
+**And the layer projections are 65-67 GB/s whatever is done to them.** `030` put int4 on
+the MLP — 52.75% of per-token bytes, a 1.6545x ceiling — at a searched tile, and the MLP
+ran at **67 GB/s** against batch 003's **65** at a different tile in a different kernel
+structure. Three rentals, two structures, two tile-selection methods, the same number.
+The correctness bar was derived in advance from `014` minus `022` at ~0.048 nats and the
+measurement was **0.04868**, so the gate method is working and the kernel is not.
+
+**`034` won at 1.0196 with `cudagraph_nodes: 0`.** All 64 decode-cache tensors were marked
+static, the candidate is bit-identical (264/264, 0.0 nats, 0.0 absolute error), and no
+CUDA graph was ever recorded — so entry 8's hypothesis is **still untested at 0 for 2**
+while the slot is a real win. The 2.0% is the *other* thing `mark_static_address` does:
+64 tensors leave inductor's per-call alignment check on every one of 128 decode steps, and
+achieved bandwidth rose 1198 → **1222 GB/s on identical bytes**.
+
+**Batch 005's two ranked suspects for `021` are dead, killed on a CPU for nothing.**
+`TORCH_LOGS=cudagraph_static_inputs` on the tiny config prints `Adding static input pos 5
+for source L['cache'].layers[0].conv`: the mark does reach `static_input_indices` through
+a plain Python object, and `_extract_tensor_dict` does stamp it. The skip message captured
+on the box still says `mutated inputs (64 instances)` with all 64 marked, so the leading
+suspect is now the torch version — 2.11 on the box against 2.14 on the laptop.
+
+**The largest unexplained number this project holds is `029`.** The tiled head cost
++0.064 ms/token and the fused causal conv, which *saved* 0.093 ms/token alone on rental
+40, added ~1.85 ms/token composed with it. Same kernel, unmodified. `027` was built to
+test that pair on rental 40 and its precondition declined it, so this is the first time
+the two have ever run together.
+
+Full account, including what the three refusals cost before a card was obtained:
+[`results/batches/006-tile-and-sites/README.md`](results/batches/006-tile-and-sites/README.md).
 
 ### Column definitions
 
