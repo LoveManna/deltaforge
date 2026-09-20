@@ -14,7 +14,12 @@ from types import SimpleNamespace
 import pytest
 
 from .batch import Batch, Hypothesis, Precondition, SlotBudget
-from .batch_run import SlotResult, release_compiled_state, run_batch
+from .batch_run import (
+    SlotResult,
+    _no_new_graph_reading,
+    release_compiled_state,
+    run_batch,
+)
 
 
 def hyp(
@@ -854,3 +859,42 @@ def test_the_slot_record_carries_the_reasons_and_the_tiles():
 
     assert record["cudagraph_skip_reasons"] == ["skipping cudagraphs due to mutated inputs (64 instances)"]
     assert record["launch_shapes"] == {"int4 248320 2560": [64, 64, 1, 4, 3]}
+
+
+def _bench_result_with(candidate_rounds: list[float]):
+    """A stand-in carrying only what `_no_new_graph_reading` reads off a bench result."""
+    from statistics import median
+
+    return SimpleNamespace(
+        timings_ms={"candidate_compiled": candidate_rounds},
+        median_ms={"candidate_compiled": median(candidate_rounds)},
+    )
+
+
+def test_a_slow_first_round_reads_as_a_compile_not_an_eager_fallback():
+    """`graphs_compiled == 0` beside a 70-second warmup round means a compile happened.
+
+    Rental 43's `035` compiled in 70437 ms against a ~1370 ms steady state. A slot that
+    reports no *new* graph while spending a minute in round 0 compiled something; the
+    counter is a delta on `unique_graphs` and says nothing about that.
+    """
+    reading = _no_new_graph_reading(_bench_result_with([70437.0, 1371.0, 1377.0, 1380.0]))
+    assert "DID compile" in reading
+    assert "70437" in reading
+
+
+def test_a_flat_first_round_reads_as_no_compile():
+    """Rental 43's `037` reused `035`'s graph: 1501 ms in round 0, 1467 ms median.
+
+    This is the healthy case the old warning called an eager fallback, and the message
+    has to leave the reader able to tell which one they are looking at.
+    """
+    reading = _no_new_graph_reading(_bench_result_with([1500.6, 1448.8, 1484.4, 1467.2]))
+    assert "no compile happened" in reading
+
+
+def test_the_reading_declines_to_guess_without_timings():
+    """No verdict is better than a wrong one; the writeup has to fall back to raw rounds."""
+    reading = _no_new_graph_reading(SimpleNamespace(timings_ms={}, median_ms={}))
+    assert "DID compile" not in reading
+    assert "no compile happened" not in reading

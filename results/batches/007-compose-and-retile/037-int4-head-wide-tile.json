@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-20T22:29:08.224905+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "037-int4-head-wide-tile",
+    "batch": "007-compose-and-retile",
+    "statement": "The champion's kernel and site at BLOCK_N=128 with 8 warps instead of BLOCK_N=64 with 4: 1940 programs instead of 3880, a full 128 contiguous bytes of packed weight per row read instead of 64, and the same fp32 weight tile per thread because the warps double with the width.",
+    "prediction": "win",
+    "rationale": "**The tile on this site is worth 2.3x and only two points have ever been measured in the decode step.** BLOCK_N=64 ran at 656 GB/s (rental 40) and BLOCK_N=256 at 282 (rental 42), and the ranked suspect for the second is register pressure rather than the grid: at BLOCK_N=256, BLOCK_K=64 and 4 warps the kernel materialises a 64 KB fp32 weight tile per program, which is 128 registers a thread before the accumulator. This pin is the point between them that keeps per-thread pressure at the champion's while doubling the bytes each row read covers. The head streams 317.85 MB against a baseline that moves 1271.40 MB there at 1282 GB/s, so the slot ties the champion at 656 GB/s, reaches **1.105 at 900** and **1.122 at 1200**, against a ceiling of 1.1249. Predicted **1.09-1.12**. Two other outcomes are findings rather than nulls: ~1.079 means the tile is not what separates 656 from the baseline's 1198-1282, and **below 1.0 means the pressure suspect is wrong and the grid is what matters**, which points the next batch at BLOCK_N=32 rather than at another wide tile. Bars are 022's and must be met exactly: the launch geometry changes no arithmetic and SPLIT_K stays 1, so the summation order is unchanged and a different correctness number here is a tiling bug.",
+    "category": "B",
+    "byte_share": 0.148,
+    "kernels": [
+      "tiled_int4_head_wide"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.10526336100883782,
+    "correctness": 15.810921694035642,
+    "compile_candidate_compiled": 0.007718440960161388,
+    "bench": 176.70290505304
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
+    "hostname": "49cb0f189fd6",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.04",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2947,
+      "memory": 13801,
+      "observed_at": "2026-09-20T22:29:08.298698+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        1382.79736328125,
+        1366.80859375,
+        1378.8355712890625,
+        1418.1029052734375,
+        1370.843505859375,
+        1371.4351806640625,
+        1373.960205078125
+      ],
+      "candidate_compiled": [
+        1500.6358642578125,
+        1448.7938232421875,
+        1484.3743896484375,
+        1448.0416259765625,
+        1467.1728515625,
+        1450.989013671875,
+        1484.69091796875
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        1378.8355712890625,
+        1418.1029052734375,
+        1370.843505859375,
+        1371.4351806640625,
+        1373.960205078125
+      ],
+      "candidate_compiled": [
+        1484.3743896484375,
+        1448.0416259765625,
+        1467.1728515625,
+        1450.989013671875,
+        1484.69091796875
+      ]
+    },
+    "median_ms": {
+      "compiled": 1373.960205078125,
+      "candidate_compiled": 1467.1728515625
+    },
+    "achieved_gbps": {
+      "compiled": 800.0513160957933,
+      "candidate_compiled": 666.0322421419703
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.9289001352385424,
+        0.9793246822701425,
+        0.9343435604056217,
+        0.9451726841084114,
+        0.9254183402414026
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.9343435604056217
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.016272548869868952
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "037-int4-head-wide-tile",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.015625,
+    "worst_max_rel_err": 0.0078125,
+    "layer1_kernel_checks": [
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3161,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 94300,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9318181872367859,
+      "top1_interval": [
+        0.8948098967109219,
+        0.9564399469551654
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.016741156578063965,
+      "max_kl": 0.13749362528324127,
+      "num_positions": 264,
+      "top1_threshold": 0.9090909090909091,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

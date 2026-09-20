@@ -26,10 +26,49 @@ exposing the next problem in the chain:
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
 | 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
 | 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **yes — rental 40 synced clean and its fixed cost fell from ~30 min to ~13** |
+| 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | nothing yet — the identity slot's achieved bandwidth is the instrument, unused | **no — diagnosed nowhere, mitigated nowhere** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
-recorded as proven on rental 27 and rental 33 disproved it.
+recorded as proven on rental 27 and rental 33 disproved it. **Blocker 18 is open and
+unmitigated**, and it is the first one here that costs *correctness of conclusions* rather
+than a rental.
+
+### Blocker 18 — the card is an uncontrolled variable the size of the effect
+
+Rental 43 rented an RTX 5090 that ran the reference at **10.73 ms/token and 800 GB/s**
+where rental 40's ran at **6.70 and 1282**. Everything the environment record captures says
+the two cards are the same:
+
+| | rental 40 | rental 42 | **rental 43** |
+|---|---:|---:|---:|
+| reference ms/token | **6.70** | 7.17 | **10.73** |
+| reference achieved | **1282 GB/s** | 1198 GB/s | **800 GB/s** |
+| memory clock | 13801 MHz | 13801 MHz | **13801 MHz** |
+| SM clock | 2827 MHz | 2902 MHz | **2955 MHz** (highest of the three) |
+| driver | 580.159.03 | 580.159.03 | 580.159.04 |
+| torch / triton | 2.11.0+cu128 / 3.6.0 | same | same |
+| host platform | `5.15.0-181-generic` | `5.15.0-185-generic` | **`6.10.0-hiveos`** |
+| host reliability | — | — | 0.9808 (lowest accepted) |
+
+**Nothing here is a diagnosis.** A persistent power limit on a mining host is the obvious
+suspect and this rental captured no power telemetry to test it with. The clocks are read
+at capture time, unlocked, so they rule out little. What is established is the consequence:
+on that card **the int4 head and the static decode cache both measured zero**, against
++7.91% and +1.96% on their own rentals, and the identity champion itself carried +1.01%
+with an IQR of 0.0109 — ten times any previous rental's.
+
+**What to do about it, cheapest first.**
+
+1. **Capture power.** `nvidia-smi --query-gpu=power.draw,power.limit,enforced.power.limit,clocks_throttle_reasons.active`
+   into the environment block costs one command and would test the suspect outright.
+2. **Say it out loud at slot 0.** `000-identity` already reports the reference column's
+   achieved bandwidth before any kernel runs — 845 GB/s here. Comparing that against what
+   this GPU model has recorded before, and logging it loudly, costs nothing.
+3. **Probably do not abort.** A slow card still produces valid within-slot ratios, and
+   rental 43's most valuable result (`039` and its dump) came off this one. The failure
+   was not renting it; it was reading absolute predictions derived from another card's
+   clock as though they transferred.
 
 **Blocker 16 is closed.** It was recorded here as "the only thing between this project and
 its first admissible ratio", and that was right: rental 37 raised the limit to 22 for a

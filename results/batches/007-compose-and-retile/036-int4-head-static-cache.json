@@ -1,0 +1,238 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "inconclusive",
+  "timestamp": "2026-09-20T22:25:54.861723+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "036-int4-head-static-cache",
+    "batch": "007-compose-and-retile",
+    "statement": "The champion plus `mark_static_address` on all 64 decode-cache tensors. One removes 953.55 MB/token from a matmul; the other removes inductor's per-call alignment check from 64 tensors on each of 128 decode steps, which is worth 1198 -> 1222 GB/s on identical bytes. Nothing in either touches what the other does.",
+    "prediction": "win",
+    "rationale": "**This is batch 005's `026`, which has never run**: its precondition declined it on rental 40 and batch 006 did not carry it. Both halves are now measured alone -- 1.0791 on rental 40 and 1.0196 (about 1.4% net of that rental's +0.53% offset) on rental 42 -- and they are the two mechanisms in this project furthest apart: bytes in one kernel against dispatch work outside every kernel. Naive expectation is the product, 0.493 ms and 0.094 ms off 6.70, which is **1.0960**; predicted **1.08-1.11**. It runs second because it is the batch's most likely champion and banking one early is what lets the slots behind it fail safely. The composition itself is the risk and it is a **tested** one: both installers replace the root model class, which silently discarded each other until batch 005 keyed the factories by base, and `test_composing_two_root_class_patches_keeps_both` has asserted since that both survive. Bars are the head's, unchanged: the static cache is bit-identical (264/264, 0.0 nats on rental 42) so it cannot move them, and a correctness result away from 022's would mean the head install did not survive the composition.",
+    "category": "B",
+    "byte_share": 0.148,
+    "kernels": [
+      "tiled_int4_head",
+      "static_decode_cache"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.10383747098967433,
+    "correctness": 14.391908220946789,
+    "compile_candidate_compiled": 0.007483797031454742,
+    "bench": 237.73145433398895
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
+    "hostname": "49cb0f189fd6",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.04",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2947,
+      "memory": 13801,
+      "observed_at": "2026-09-20T22:25:54.934560+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        1382.0577392578125,
+        1373.551513671875,
+        1361.632568359375,
+        1368.0413818359375,
+        1352.0567626953125,
+        1414.2493896484375,
+        1374.18017578125
+      ],
+      "candidate_compiled": [
+        63638.72265625,
+        1352.4468994140625,
+        1343.0748291015625,
+        1355.273193359375,
+        1351.4156494140625,
+        1354.3140869140625,
+        1379.27978515625
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        1361.632568359375,
+        1368.0413818359375,
+        1352.0567626953125,
+        1414.2493896484375,
+        1374.18017578125
+      ],
+      "candidate_compiled": [
+        1343.0748291015625,
+        1355.273193359375,
+        1351.4156494140625,
+        1354.3140869140625,
+        1379.27978515625
+      ]
+    },
+    "median_ms": {
+      "compiled": 1368.0413818359375,
+      "candidate_compiled": 1354.3140869140625
+    },
+    "achieved_gbps": {
+      "compiled": 803.5127335554724,
+      "candidate_compiled": 721.5345637898595
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.0138173531777277,
+        1.0094211178521972,
+        1.0004744012558446,
+        1.0442550980703031,
+        0.9963027012866557
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.0094211178521972
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.013342951921883062
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "036-int4-head-static-cache",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.015625,
+    "worst_max_rel_err": 0.0078125,
+    "layer1_kernel_checks": [
+      {
+        "name": "static_cache.every_cache_tensor_is_static",
+        "replaces": "decode_cache",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.0,
+        "atol": 0.0,
+        "shape": [
+          2
+        ],
+        "dtype": "torch.float32",
+        "excluded_near_zero": 1,
+        "total_elements": 2,
+        "note": "64 of 64 decode-cache tensors marked static; one unmarked tensor skips cudagraphs for the whole region"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3161,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 94300,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9318181872367859,
+      "top1_interval": [
+        0.8948098967109219,
+        0.9564399469551654
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.016741156578063965,
+      "max_kl": 0.13749362528324127,
+      "num_positions": 264,
+      "top1_threshold": 0.9090909090909091,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

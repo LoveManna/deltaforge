@@ -354,6 +354,43 @@ from install-time work, which `candidate_build` times on its own.
 those two, and they call for opposite responses: retry, or move a filter. See
 `docs/GPU-ACCESS.md`.
 
+## Measured costs, rental 43 (2026-09-20) — batch 007, six slots run and three declined
+
+RTX 5090 at $0.4622/hr, warm compile cache, **cheapest full batch this project has run**
+and the first where the run plan's estimate was high rather than low.
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **42.67 minutes, $0.3287** |
+| Fixed cost before slot 0 | **~27 minutes**, including the composition dump |
+| Slot 0 — identity | **243 s** (bench 221 s, correctness 21.8 s) |
+| Slots that compiled a new candidate graph | **252-270 s** |
+| **Slots that reused a cached graph** | **192-193 s** |
+| Of which the approximate correctness gate | 14.4-15.9 s |
+| A candidate that replaces the root model class | **+63-70 s** in its first warmup round |
+| Declined slots | **0 s** |
+| Peak memory | 8.39 GiB allocated, 16.61 GiB reserved, of 31.36 |
+
+**The run plan estimated 75-95 minutes and $0.65-0.85; it took 42.67 and $0.3287.** Two
+reasons, and the second is new:
+
+1. Three of nine slots declined on their preconditions, which is the mechanism working.
+2. **Two slots reused a compiled graph and paid no compile at all.** `037` and `038` pin a
+   tile, and the tile is a launch parameter rather than graph structure, so dynamo's guards
+   passed and the candidate reused `035`'s graph. Those slots ran in **192-193 s against
+   252-270** for the slots that compiled — and they reported `graphs_compiled: 0`, which is
+   a **cache hit, not an eager fallback** (see `AGENT.md` §8).
+
+**So a batch whose slots differ only in launch parameters is materially cheaper than its
+slot count suggests**, and `COLD_PHASE_ESTIMATES` has no way to know that in advance. The
+pessimistic estimate is still the right gate; this is a note about why a batch can finish
+early, not a licence to plan against the optimistic number.
+
+**The root-class recompile fell from ~200 s to 63-70 s** on a warm cache for this card.
+Rental 42 put it at 197.7 and 199.2 s and this file said "budget ~200 s". That is now
+**63-70 s warm, ~200 s cold**; budget the cold number, because the cache key includes the
+card and the market decides which card.
+
 ## What a prediction scorecard looks like when the premise is wrong
 
 Batch 006 scored **1 of 4**. Every slot predicted `win`, and `docs/BATCHES.md` has said

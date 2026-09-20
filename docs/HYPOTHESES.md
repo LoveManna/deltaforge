@@ -16,6 +16,18 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-20 (rental 43): the champion is card-dependent, and a custom op costs more
+> than its own kernel.** `035` re-measured `022` unchanged and got **1.0161** where rental
+> 40 got 1.0791 — on a card running the reference at **800 GB/s against 1282**, where the
+> identity slot itself carried **+1.01%** and the head removed 0.097 ms/token against
+> identity's 0.102. **The head, and the static decode cache, both measured zero.** Two
+> RTX 5090s on the same memory clock, driver and torch differ by **1.61x**, so the card is
+> an uncontrolled variable the size of the effects this file predicts. Both tiles pinned in
+> advance lost (**0.9343** wide, **0.9502** deep), leaving BLOCK_N=32 as entry 9's last
+> tile direction. And `029`'s 0.7937 was **not the tile**: re-run at the champion's tile it
+> returned **0.8111**, and the dump of the pair says why — see entry 8. See
+> `results/batches/007-compose-and-retile/README.md`.
+
 > **2026-09-20 (rental 42): entry 6 is closed for the third time, and this time by a
 > number rather than an inference.** Batch 006's premise was that the GEMV lost on the
 > layer projections because of a **tile nobody had measured**. `tune_launch_shape` timed
@@ -283,7 +295,20 @@ worth more than the batch it preceded.** Score against the three questions:
    than anything cuBLAS would emit.
 3. **Does inductor fold the GQA expansion — answered, yes.** Entry 2 is in the graveyard.
 
-**Two for the price of a step.** Keep this entry open until (1) is answered.
+**Rental 43 pointed the dump at a real installation, and it earned its keep again.**
+`bench --install` names the kernels the dump's candidate column carries, so
+`--dump-install tiled_int4_head,fused_causal_conv` rendered the *composition* that had
+returned 0.7937 rather than whatever the registry held as champion. Both columns land in
+one file, so they diff directly — and the diff named the mechanism behind the largest
+unexplained number in the project inside one grep. **This is the cheapest instrument this
+repository owns: it costs one step of an existing rental and it answered a question three
+rentals of benchmarking could not.**
+
+Question (1) is still open — nothing has dumped `010` — but the *reason* it stayed open is
+now fixed: the dump could not be aimed, and now it can.
+
+**Two for the price of a step.** Keep this entry open until (1) is answered, and **aim it
+before every rental**: name the slot whose graph would answer something.
 
 ### 6. A GEMV that is actually bandwidth-bound
 
@@ -464,6 +489,36 @@ precondition for every launch-reduction hypothesis, including entry 9's sibling:
 launch is worth nothing once the step is one graph replay, and that pair is falsifiable in
 a single batch.
 
+**Rental 43: a removed launch is not a free launch, and the bill lands in the kernels next
+door.** `039-int4-head-and-conv` returned **0.8111** — 19% *below* baseline — while
+launching **24 fewer kernels than the baseline**. The `output_code` dump of that exact pair
+shows the fused causal conv doing precisely what it promised: all 24 `extern_kernels` gone,
+`triton_poi_*` 89 → 41, the `cat` replaced. And alongside it:
+
+| per decode step | reference | with the fused conv |
+|---|---:|---:|
+| `triton_red_*` launches | 298 | **321** |
+| `empty_strided_cuda` allocations | **59** | **190** |
+| total launches | 507 | 483 |
+
+`torch.ops.deltaforge.fused_causal_conv_step` is an **opaque custom op, so it is a fusion
+barrier**. Inductor must materialise its inputs and outputs into real buffers — that is the
+59 → 190 — and it splits a producer chain it had been fusing, then **recomputes the shared
+prologue instead of reading the buffer it just wrote**: the linear-attention state reduction
+over `(1, 32, 128, 128)` runs **twice per layer, 24 times per token**, on identical inputs
+at an identical 4096x128 grid.
+
+**The law this entry now carries: a custom op costs its own kernel plus everything inductor
+can no longer fuse across it, and that second term is invisible at the call site.** Any
+hypothesis in this file that replaces an operation inside the decode loop pays it. Counting
+the launches you removed is not evidence that you made the step faster — `039` removed 24
+and lost 19%.
+
+The magnitude is **not** closed: 24 extra reductions and 131 extra allocator calls do not
+add up to the measured +2.68 ms/token on that card. Next instruments, in order: dump the
+conv **alone** (`--dump-install fused_causal_conv`), then profile. This is the first
+question here that a launch census cannot answer.
+
 **Watch for.** `cache_offset` reaches the graph as a symint, and `cudagraphify_impl` keys a
 recording on each distinct int — so a 128-token decode wants **128 recordings**, against a
 `cudagraph_unexpected_rerecord_limit` that is itself 128. If it does not engage, the slot
@@ -600,22 +655,48 @@ inverted in place. So the instrument is now the slot: a tile is pinned in `batch
 before the rental like any other prediction and scored by the ratio the whole step
 returns, at three minutes a point.
 
-**The ranked suspect for 282 GB/s is register pressure, not the grid.** The kernel
-materialises a `(BLOCK_K, BLOCK_N)` fp32 weight tile before each `tl.dot`; at BLOCK_N=256,
-BLOCK_K=64 and 4 warps that is 64 KB per program — 128 registers a thread before the
-`(16, BLOCK_N)` accumulator — while 970 programs is still 5.7 waves on 170 SMs. Batch 007
-pins the two points that separate the suspects: `037` at BLOCK_N=128 with **8** warps,
-which doubles the width and the warps together so per-thread pressure is unchanged, and
-`038` at the champion's tile with `num_stages=5`, which is the only axis rental 42's search
-never varied on its own. **If both lose, the next point is BLOCK_N=32** — the wave-count
-theory rather than the pressure one — and it is deliberately not in batch 007, because two
-pins would spend two slots answering what one can.
+**Rental 43 pinned those two points and both lost, so the next point is BLOCK_N=32.**
+The ranked suspect for 282 GB/s was register pressure rather than the grid: the kernel
+materialises a `(BLOCK_K, BLOCK_N)` fp32 weight tile before each `tl.dot`, and at
+BLOCK_N=256, BLOCK_K=64 and 4 warps that is 64 KB per program — 128 registers a thread
+before the `(16, BLOCK_N)` accumulator — while 970 programs is still 5.7 waves on 170 SMs.
+Batch 007 pinned the two points that separate the suspects and scored them by the ratio the
+whole decode step returns:
+
+| the head at group-128 int4 | `[BLOCK_N, BLOCK_K, SPLIT_K, warps, stages]` | rental | ratio |
+|---|---|---|---:|
+| heuristic | `[64, 64, 1, 4, 3]` | 40 / 43 | **1.0791** / **1.0161** |
+| searched by micro-benchmark | `[256, …, 1, …]` | 42 | 0.9920 |
+| **wide, pinned in advance** | `[128, 64, 1, 8, 3]` | 43 | **0.9343** |
+| **deep, pinned in advance** | `[64, 64, 1, 4, 5]` | 43 | **0.9502** |
+
+`037` held per-thread pressure at the champion's while doubling the width, and cost **+0.83
+ms/token**. `038` deepened the pipeline from 3 stages to 5 — the axis rental 42's search
+never varied alone, and the one that pays if the kernel is latency-bound — and cost
+**+0.63**. Both pins appeared in `launch_shapes` exactly as registered and neither leaked
+into the slot behind it.
+
+**So the pressure theory is refuted and the latency theory with it. Four measured points,
+and the heuristic nobody chose on purpose is the best of them.** The registered
+consequence stands: **the next point is BLOCK_N=32**, the wave-count theory — thinner
+programs, more of them — and it is now the only tile direction this entry has left. If
+that loses too, the tile is not what holds the head at 656 GB/s and this entry should stop
+spending slots on tiles.
 
 **And the champion's own site has an accounting bias worth knowing before reading its
 GB/s.** `decode_bytes_per_token` scales a region's bf16 bytes by `bits/16` and counts no
 scales, so the int4 head is booked at **317.85 MB/token** against the **337.72** it really
 reads — 20 groups of fp32 scales over 248320 channels is 19.87 MB. Ratios are unaffected;
 the head's "656 GB/s" is ~697 GB/s of real traffic, and the bias is conservative.
+
+**Re-measured on rental 43, and the 1.0791 turned out to be card-dependent.** `035` is
+`022` unchanged and returned **1.0161** — on a card whose reference ran at 800 GB/s rather
+than 1282, where the identity slot itself carried +1.01% and the head removed **0.097
+ms/token against identity's 0.102**. The kernel is fine (layer 2 identical to the digit);
+the site's *value* is not a constant. **This entry's share-of-bytes arithmetic is a ceiling,
+and what a card actually collects against it varies by more than the effect.** Any future
+slot here must be read against an identity champion measured the same day, and any number
+this entry quotes must name its rental.
 
 **Discharged on rental 40, and it produced this project's first champion.**
 

@@ -248,12 +248,21 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Forty-one instances created, forty-one destroyed, $7.177 lifetime, zero leaked. There
-is a champion.** Batch 005 (2026-09-19) produced this project's first two wins:
-`022-int4-head` at **1.0791, IQR 0.00034** — group-128 int4 on the tied LM head alone —
-and `025-fused-causal-conv` at **1.0144**. Batch 006 (2026-09-20) added a third,
-`034-static-cache-cudagraphs` at **1.0196**, and refuted its own premise: see §8 on the
-tuner. Batch 003 (2026-09-16) produced seven admissible ratios, all losses, and batch
+**Forty-two instances created, forty-two destroyed, $7.506 lifetime, zero leaked. There
+is a champion, and its margin depends on the card.** Batch 005 (2026-09-19) produced this
+project's first two wins: `022-int4-head` at **1.0791, IQR 0.00034** — group-128 int4 on
+the tied LM head alone — and `025-fused-causal-conv` at **1.0144**. Batch 006 (2026-09-20)
+added a third, `034-static-cache-cudagraphs` at **1.0196**, and refuted its own premise:
+see §8 on the tuner.
+
+**Batch 007 (2026-09-20) re-measured the champion and got 1.0161.** Same kernel, same
+site, same heuristic tile — on a card that ran the reference at **800 GB/s where rental
+40's ran at 1282**, with the identity slot carrying **+1.01%** and the head removing 0.097
+ms/token against identity's 0.102. On that card the int4 head and the static decode cache
+both measured **zero**. Two RTX 5090s reporting the same memory clock, driver and torch
+differed by **1.61x** on the reference. **The card is an uncontrolled variable the size of
+the effects being measured**, so read every ratio against the identity slot from the same
+rental, and never quote one without naming its rental. Batch 003 (2026-09-16) produced seven admissible ratios, all losses, and batch
 004 (2026-09-17) rewrote the kernel that lost hardest and lost harder, 0.2801 → 0.1934.
 
 **What changed between losing by 5x and winning was not the kernel.** Batches 003 and 004
@@ -643,6 +652,29 @@ had passed alone; `027` was built to test the pair on rental 40 and its precondi
 declined it, so this was the first execution. Before assuming a composition is the product
 of its parts, **measure it** — and order it where a surprise still informs the rest of the
 batch.
+
+**`graphs_compiled: 0` does not mean the candidate ran eager.** The counter is a delta on
+dynamo's `unique_graphs`, so a **guard-passing cache hit scores zero** — and after a slot
+that compiled an identical graph, zero is the *healthy* value. Batch 007's two pinned-tile
+slots both recorded it and both tripped the "nothing compiled, this is eager against
+compiled" warning; both were fine. The tile is written into `_TUNED` at install time and
+read as a launch parameter, so it is not in the traced graph and dynamo correctly reused
+the previous slot's. **The evidence that separates the two cases is already recorded:**
+round 0 of a genuinely compiling candidate takes 60-70 s (rental 43: 70437 ms and 63639 ms)
+where a cache hit takes the same ~1.5 s as every other round; and rental 35's real fallback
+ran candidates **6.8x slow at ratios of 0.146-0.157**, not within 7% of the reference. The
+counter is still worth keeping — it caught rental 35 — but read the round-0 time before
+believing its warning.
+
+**A composition slot is worth nothing unless its ingredients were measured in the same
+process.** Batch 007 existed because rental 42 carried `022`'s number across sessions. It
+fixed that for the head — `035` re-measured the champion and is the reason the rest of the
+batch is readable — and then **made the identical mistake with the conv**, carrying `025`'s
+1.0144 from rental 40 and never re-measuring the conv alone. So `039`'s 0.8111 cannot
+separate "this composition is bad" from "the conv is bad on this card", on a rental where
+every other mechanism measured zero. Both numbers were equally one rental old; only one was
+under suspicion, and suspicion is not the criterion. **If a slot composes N mechanisms, the
+batch needs all N measured alone that day, or the composition's number means nothing.**
 
 **Install-time state in a module global outlives the slot that set it.** `scoped_registry`
 exists because the kernel registry is process-wide and a batch runs every slot in one

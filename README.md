@@ -10,11 +10,19 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**A hand-written Triton kernel beats the compiler, by 7.91%, and we can say where and
-why.**
+**A hand-written Triton kernel beats the compiler — by 7.91% on one card and 1.61% on
+another — and we can say where, why, and how much of that is the card.**
 
 On 2026-09-19 (rental 40) `022-int4-head` returned a median ratio of **1.0791 with an
 interquartile spread of 0.00034**, on a harness that calibrated at 1.0008 in the same run.
+On 2026-09-20 (rental 43) the identical kernel on the identical site returned **1.0161**,
+on a card that ran the reference at **800 GB/s against rental 40's 1282** — where the
+identity slot itself carried +1.01% and the head removed 0.097 ms/token against identity's
+0.102. **On that card it saved nothing.** Two RTX 5090s reporting the same memory clock,
+driver and torch differed by 1.61x on the baseline. The win is real and reproduced; its
+*magnitude* is a property of the hardware as much as of the kernel, and this file will not
+quote one without naming its rental. See
+[`results/batches/007-compose-and-retile/`](results/batches/007-compose-and-retile/).
 It stores the **tied LM head** — 248320 x 2560, *14.80% of every byte the compiled column
 moves, in a single matmul* — at 4 bits with group-128 scales, and collects 70% of the
 1.123x that arithmetic allows. A second kernel won in the same batch on an unrelated
@@ -29,9 +37,23 @@ the other 83% of the bytes. The tile was then searched on the card — BLOCK_N, 
 BLOCK_K, warps, pipeline depth — and the search made the champion's own site **2.3x
 slower** (656 → 282 GB/s, 1.0791 → 0.9920) while the MLP came back at **67 GB/s**, within
 noise of the 65 measured two rentals earlier at a different tile in a different kernel.
-The layer projections are not a tiling problem, and `1.0791` has not yet been reproduced on
-a second card. See
-[`results/batches/006-tile-and-sites/`](results/batches/006-tile-and-sites/).
+The layer projections are not a tiling problem. **Rental 43 then pinned two more tiles on
+the head in advance — BLOCK_N 128 at 8 warps, and `num_stages` 5 — and both lost (0.9343
+and 0.9502).** Four measured points now, and the heuristic tile nobody chose on purpose is
+the best of them. See
+[`results/batches/006-tile-and-sites/`](results/batches/006-tile-and-sites/) and
+[`results/batches/007-compose-and-retile/`](results/batches/007-compose-and-retile/).
+
+**And a win plus a win is not a win.** `022` (int4 on the head) and `025` (a fused causal
+convolution) each beat the compiler on mechanisms that share nothing. Composed, they
+return **0.79-0.81** — 19% *slower* than the baseline — while launching **24 fewer kernels
+than it**. The `output_code` dump of that exact pair says why: a hand-written kernel
+installed as an opaque custom op is a **fusion barrier**, so inductor must materialise its
+inputs and outputs (59 → 190 buffer allocations per decode step) and it splits a producer
+chain it had been fusing, then recomputes the shared prologue rather than reading the
+buffer it just wrote — the linear-attention state reduction runs **twice per layer, 24
+times per token**. **A custom op costs its own kernel plus everything the compiler can no
+longer fuse across it, and that second term is invisible at the call site.**
 
 **The finding is not "our kernel is fast". It is where the compiler can be beaten and why
 two earlier attempts could not find it.** Batches 003 and 004 installed a hand-written GEMV

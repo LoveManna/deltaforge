@@ -8,11 +8,11 @@
 |---|---|
 | Kernel | `tiled_int4_head` (`src/deltaforge/kernels/tiled_gemv.py`) |
 | Replaces | `decode_step` — `ReferenceModel.project_logits`, and nothing else |
-| Median ratio vs `torch.compile(max-autotune)` | **1.0791** |
-| IQR of the scoring rounds | **0.00034** |
-| Correctness | layer 1 one bf16 ULP (7.8e-3); layer 2 top-1 0.9318, mean KL 0.01674 nats |
-| Last verified on | RTX 5090, rental 40, 2026-09-19. **Not re-benchmarked on rental 42** — see below. |
-| Result record | [`results/batches/005-launch-and-head/`](results/batches/005-launch-and-head/) |
+| Median ratio vs `torch.compile(max-autotune)` | **1.0791** on rental 40 — and **1.0161** on rental 43 |
+| IQR of the scoring rounds | 0.00034 (rental 40); 0.00407 (rental 43) |
+| Correctness | layer 1 one bf16 ULP (7.8e-3); layer 2 top-1 0.9318, mean KL 0.01674 nats — identical on both |
+| Last verified on | RTX 5090, **rental 43, 2026-09-20**, as `035-int4-head` |
+| Result record | [`005-launch-and-head/`](results/batches/005-launch-and-head/), [`007-compose-and-retile/`](results/batches/007-compose-and-retile/) |
 
 **A hand-written Triton kernel has beaten what `torch.compile(mode="max-autotune")`
 generates on the decode path of Qwen3.5-4B** — by 7.91%, at an interquartile spread of
@@ -20,17 +20,31 @@ generates on the decode path of Qwen3.5-4B** — by 7.91%, at an interquartile s
 won since, on mechanisms that share nothing with it: `025-fused-causal-conv` at **1.0144**
 and `034-static-cache-cudagraphs` at **1.0196**, both bit-identical to the reference.
 
-**The champion's number is one rental old and was not re-verified on rental 42.** That
-batch replaced `022` with `028-int4-head-tuned` — the same kernel on the same site with a
-searched tile — which measured **0.9920**. The tile is the only difference and it is worth
-2.3x (§ batch 006), so 1.0791 stands as `022`'s own measurement and re-measuring it on a
-second card is the first slot of the next rental. Recording it any other way would be
-carrying a number across sessions, which this file forbids.
+**It has now been re-measured, and the 7.91% is card-dependent.** `035-int4-head` on
+rental 43 is `022` unchanged — same kernel, same single site, same heuristic tile, tuner
+off, `launch_shapes` empty — and it returned **1.0161**. The kernel is not in question:
+layer 2 came back at 0.9318 and 0.01674 nats, digit for digit what rental 40 recorded.
+What differs is the card.
 
-**That slot is registered**: `035-int4-head`, the champion unchanged at the heuristic tile,
-opening batch `007-compose-and-retile` (`src/deltaforge/batches.py`; the run plan is
-[`docs/superpowers/plans/2026-09-20-batch-007-compose-and-retile.md`](docs/superpowers/plans/2026-09-20-batch-007-compose-and-retile.md)).
-Nothing in this file moves until it has run.
+| | rental 40 | **rental 43** |
+|---|---:|---:|
+| reference | 6.70 ms/token, **1282 GB/s** | 10.73 ms/token, **800 GB/s** |
+| `000-identity` | 1.0008 (IQR 0.00034) | **1.0101 (IQR 0.01093)** |
+| `022` / `035` | **1.0791** | **1.0161** |
+| ms/token the head removed | **0.493** | **0.097** |
+
+**And on rental 43 the head removed nothing at all.** The identity slot — which installs
+no kernel — removed **0.102 ms/token**, and the head-plus-static-cache slot removed
+**0.107**. Three different candidates, one number: the head's saving on that card is
+**0.00 ± 0.11 ms/token**, and `035`'s `win` verdict is the candidate column's systematic
+advantage, which is exactly what the identity champion is for.
+
+So the champion stands — it is the best-measured candidate here and it has won on both
+cards it has run on — but **its magnitude belongs to rental 40's hardware as much as to
+the kernel.** Two RTX 5090s reporting the same 13801 MHz memory clock, the same driver and
+the same torch differed by **1.61x** on the reference. Until that is understood, a single
+rental's ratio is not a property of a kernel, and this file will not present one as though
+it were. See [`results/batches/007-compose-and-retile/README.md`](results/batches/007-compose-and-retile/README.md) §1.
 
 **The mechanism, stated before the measurement and confirmed by it.** The tied LM head is
 248320 x 2560 — **1271.40 MB/token, 14.80% of everything the compiled column moves, in one
@@ -401,14 +415,82 @@ a plain Python object, and `_extract_tensor_dict` does stamp it. The skip messag
 on the box still says `mutated inputs (64 instances)` with all 64 marked, so the leading
 suspect is now the torch version — 2.11 on the box against 2.14 on the laptop.
 
-**The largest unexplained number this project holds is `029`.** The tiled head cost
-+0.064 ms/token and the fused causal conv, which *saved* 0.093 ms/token alone on rental
-40, added ~1.85 ms/token composed with it. Same kernel, unmodified. `027` was built to
-test that pair on rental 40 and its precondition declined it, so this is the first time
-the two have ever run together.
+**`029` was the largest unexplained number this project held, and batch 007 named its
+mechanism.** The tiled head cost +0.064 ms/token and the fused causal conv, which *saved*
+0.093 ms/token alone on rental 40, added ~1.85 ms/token composed with it. The suspect
+recorded here was the tuned tile `029` inherited from `028`. **It was not the tile**:
+`039-int4-head-and-conv` re-ran the pair at the champion's heuristic tile on rental 43 and
+returned **0.8111**. The cause is that the conv's custom op is a fusion barrier — see
+batch 007 below.
 
 Full account, including what the three refusals cost before a card was obtained:
 [`results/batches/006-tile-and-sites/README.md`](results/batches/006-tile-and-sites/README.md).
+
+### Batch 007 — the champion is card-dependent, and the conv regression is not the tile, 2026-09-20 (rental 43)
+
+**Six slots ran, three declined. Predictions scored 2 of 6** — every kernel slot predicted
+`win`. The batch re-measured the champion, as it was written to, and the answer was that
+**no mechanism in this project measures anything on this card.**
+
+| ID | Hypothesis | Replaces | Median ratio | IQR | GPU | Correctness | Outcome | Record |
+|---|---|---|---:|---:|---|---|---|---|
+| 000 | Identity champion | — | **1.0101** | 0.01093 | RTX 5090 | exact | calibrated | [dir](results/batches/007-compose-and-retile/) |
+| 035 | int4 head, heuristic tile — **`022` re-measured** | `decode_step` | **1.0161** | 0.00407 | RTX 5090 | 0.9318, 0.01674 nats | **`win`** | [dir](results/batches/007-compose-and-retile/) |
+| 036 | 035 + the static decode cache | `decode_step`, `decode_cache` | 1.0094 | 0.01334 | RTX 5090 | 0.9318, 0.01674 nats | `inconclusive` | [dir](results/batches/007-compose-and-retile/) |
+| 037 | int4 head, **BLOCK_N 128 at 8 warps** | `decode_step` | **0.9343** | 0.01627 | RTX 5090 | 0.9318, 0.01674 nats | **`loss`** | [dir](results/batches/007-compose-and-retile/) |
+| 038 | int4 head, **`num_stages` 5** | `decode_step` | **0.9502** | 0.01356 | RTX 5090 | 0.9318, 0.01674 nats | **`loss`** | [dir](results/batches/007-compose-and-retile/) |
+| 039 | 035 + the fused causal conv | `decode_step`, `causal_conv` | **0.8111** | 0.01883 | RTX 5090 | 0.9318, 0.01674 nats | **`loss`** | [dir](results/batches/007-compose-and-retile/) |
+| 040 | 039 + the static cache | `decode_step`, `causal_conv`, `decode_cache` | — | — | — | — | `precondition_failed` | [dir](results/batches/007-compose-and-retile/) |
+| 041 | 037 + the static cache | `decode_step`, `decode_cache` | — | — | — | — | `precondition_failed` | [dir](results/batches/007-compose-and-retile/) |
+| 042 | 041 + the fused conv | `decode_step`, `causal_conv`, `decode_cache` | — | — | — | — | `precondition_failed` | [dir](results/batches/007-compose-and-retile/) |
+
+**The card is an uncontrolled variable the size of the effects being measured.** This
+RTX 5090 ran the reference at **10.73 ms/token and 800 GB/s** against rental 40's 6.70 and
+1282 — 1.61x slower, on the same memory clock (13801 MHz), a *higher* SM clock (2955 vs
+2827) and the same driver and torch. The one column that differs is the host: machine 9105
+runs HiveOS. That is a correlation, not a diagnosis, and no power telemetry was captured
+to test it.
+
+**`035`, `036` and `000-identity` measured the same thing, which was nothing.** Their
+per-token deltas are −0.097, −0.107 and −0.102 ms against a band of ±0.11. The int4 head
+and the static decode cache both vanish on this card.
+
+**Four tile points on the head, and the heuristic nobody chose is still the best.**
+
+| the head at group-128 int4 | `[BLOCK_N, BLOCK_K, SPLIT_K, warps, stages]` | rental | ratio |
+|---|---|---|---:|
+| heuristic | `[64, 64, 1, 4, 3]` | 40 / 43 | **1.0791** / **1.0161** |
+| searched on the card | `[256, …, 1, …]` | 42 | 0.9920 |
+| **wide, pinned in advance** | `[128, 64, 1, 8, 3]` | 43 | **0.9343** |
+| **deep, pinned in advance** | `[64, 64, 1, 4, 5]` | 43 | **0.9502** |
+
+Both pins appeared in `launch_shapes` exactly as registered, and `039` — running after both
+— came back on the heuristic, so no pin leaked. Widening the program and deepening the
+pipeline both lose. The untried direction is **thinner**, not wider.
+
+**`039` explains `029`, and the `output_code` dump of the pair is what explains it.** The
+fused conv does what it claims — all 24 `extern_kernels` gone, 48 pointwise launches
+removed, 24 fewer launches overall — and the composition is still 19% slower, because
+`fused_causal_conv_step` is an **opaque custom op and therefore a fusion barrier**.
+Inductor must materialise its inputs and outputs (59 → **190** buffer allocations per
+decode step) and it splits a producer chain it previously fused, then **recomputes the
+shared prologue rather than reading the buffer it just wrote**: the linear-attention state
+reduction over `(1, 32, 128, 128)` runs **twice per layer, 24 times per token**, on
+identical inputs at an identical 4096x128 grid. A custom op costs its own kernel *plus
+whatever inductor can no longer fuse around it*, and that bill is paid in the neighbouring
+kernels.
+
+The structure is named; the magnitude is not closed — the extra launches and bytes account
+for a fraction of the measured +2.68 ms/token. Next instruments, in order: dump the conv
+installed **alone** (`--dump-install fused_causal_conv`, now one line), then profile.
+
+**`graphs_compiled: 0` on `037` and `038` is a false positive.** It is a delta on dynamo's
+`unique_graphs`, and the pinned tile is a launch parameter rather than graph structure, so
+both slots legitimately reused `035`'s compiled graph. Their candidate round 0 ran in
+~1450 ms where `035`'s took 70437 ms compiling, and both passed layer 2 at 0.9318 /
+0.01674 nats. `0` means *no new graph*, not *no compile*.
+
+Full account: [`results/batches/007-compose-and-retile/README.md`](results/batches/007-compose-and-retile/README.md).
 
 ### Column definitions
 

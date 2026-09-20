@@ -140,8 +140,15 @@ class SlotResult:
     error: str | None = None
     duration_s: float | None = None
     peak_memory_mb: int | None = None
-    #: How many graphs dynamo compiled during this slot's benchmark. `0` means the ratio
-    #: compares eager against compiled; `None` means the counter could not be read.
+    #: How many graphs dynamo compiled during this slot's benchmark. This is a delta on
+    #: `unique_graphs`, so **`0` means "no NEW graph", not "no compile"**: a slot whose
+    #: candidate differs from an earlier slot's only in launch parameters — a pinned tile
+    #: lives in `_TUNED`, not in the traced graph — passes its guards and legitimately
+    #: reuses the cached graph. Rental 43's `037` and `038` did exactly that. The eager
+    #: fallback this counter exists to catch (blocker 16) looks different and the bench
+    #: record distinguishes them: a compiling candidate's first warmup round takes tens of
+    #: seconds, a cache hit's takes as long as every other round, and rental 35's real
+    #: fallback ran 6.8x slow. `None` means the counter could not be read.
     graphs_compiled: int | None = None
     #: CUDA-graph nodes inductor recorded during this slot's benchmark, and how many times
     #: it declined to record one. Batch 005 is the first hypothesis whose whole claim is
@@ -523,9 +530,10 @@ class BatchRunner:
                 )
                 if graphs.compiled == 0:
                     self.log(
-                        f"[batch] {hypothesis.slug}: WARNING nothing compiled during this "
-                        "benchmark -- the ratio below compares eager against compiled, not a "
-                        "kernel against inductor. See recompile_limit_for()."
+                        f"[batch] {hypothesis.slug}: NOTE dynamo compiled no NEW graph here. "
+                        f"{_no_new_graph_reading(result)} A cache hit is healthy -- a slot that "
+                        "differs from an earlier one only in launch parameters reuses its graph. "
+                        "An eager fallback is not, and voids the ratio: see recompile_limit_for()."
                     )
 
             ratio = result.median_ratio.get(CANDIDATE_COLUMN)
@@ -773,6 +781,29 @@ def graphs_compiled_during(counters=None):
         count.compiled = counters["stats"]["unique_graphs"] - before
     except (KeyError, TypeError):  # pragma: no cover - defensive
         count.compiled = None
+
+
+def _no_new_graph_reading(result) -> str:
+    """Which reading of `graphs_compiled == 0` this slot's own timings support.
+
+    The counter cannot tell a guard-passing cache hit from dynamo giving up and running
+    the candidate eagerly, but the warmup round can. A candidate that compiled spends tens
+    of seconds in its first round (rental 43: 70437 ms and 63639 ms, against ~1370 ms
+    steady state); a candidate that reused a graph spends the same as every other round;
+    and rental 35's real fallback ran **6.8x slower than the reference** for every round.
+
+    So this reports the evidence rather than a verdict, because a wrong verdict here is
+    worse than none: batch 007 spent a writeup arguing back from raw round timings that
+    the warning had already thrown away.
+    """
+    rounds = (result.timings_ms or {}).get(CANDIDATE_COLUMN) or []
+    median = (result.median_ms or {}).get(CANDIDATE_COLUMN)
+    if not rounds or not median:
+        return "No candidate timings to read it against."
+    first = rounds[0]
+    if first > 4 * median:
+        return f"First round {first:.0f} ms against {median:.0f} ms median -- it DID compile."
+    return f"First round {first:.0f} ms against {median:.0f} ms median -- no compile happened."
 
 
 def _raise_recompile_limit(slots: int, log=print) -> None:
