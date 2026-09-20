@@ -77,7 +77,9 @@ __all__ = [
     "install_tiled_fp8_mlp",
     "install_tiled_int4_full",
     "install_tiled_int4_head",
+    "install_tiled_int4_head_deep",
     "install_tiled_int4_head_tuned",
+    "install_tiled_int4_head_wide",
     "install_tiled_int4_mlp",
     "install_tiled_int4_wide",
     "install_tiled_int8_head",
@@ -85,6 +87,9 @@ __all__ = [
     "quantise_fp8_per_channel",
     "quantise_int4_k_major",
     "candidate_launch_shapes",
+    "clear_launch_shape",
+    "head_shape_key",
+    "pin_launch_shape",
     "tiled_bf16_correctness_checks",
     "tiled_gemv_bf16",
     "tiled_gemv_fp8",
@@ -155,8 +160,30 @@ IMPLAUSIBLE_GBPS = 2500.0
 #: ``(BLOCK_N, BLOCK_K, SPLIT_K, num_warps, num_stages)``.
 LaunchShape = tuple[int, int, int, int, int]
 
-#: Measured tiles, keyed by ``(kind, N, K)``. Written only by `tune_launch_shape`.
+#: The tile in force for each ``(kind, N, K)``, overriding `_heuristic_shape`.
+#:
+#: Written by `tune_launch_shape` -- and, since batch 007, by `pin_launch_shape`, because
+#: the only two tiles this project has ever measured **in the decode step** disagree by
+#: 2.3x and neither was chosen by timing that step. A pin is a tile registered in the
+#: manifest before the rental and read back out of the slot record afterwards, which is
+#: the one selection method rental 42 did not discredit: it ranks tiles by the ratio they
+#: produce in place rather than by a micro-benchmark on an idle card.
+#:
+#: **It is process-global, so a slot that pins a tile would otherwise change every slot
+#: behind it.** `_install_head` clears this key before every head install and the pinning
+#: installers set it immediately after, so a slot always runs the tile its manifest names.
+#: Without that, `035-int4-head` would re-measure the champion at whatever tile ran last.
 _TUNED: dict[tuple[str, int, int], LaunchShape] = {}
+
+
+def pin_launch_shape(kind: str, n: int, k: int, shape: LaunchShape) -> None:
+    """Force ``shape`` for this site, in place of the heuristic or a measured tile."""
+    _TUNED[(kind, n, k)] = shape
+
+
+def clear_launch_shape(kind: str, n: int, k: int) -> None:
+    """Drop any tile in force for this site, so `_heuristic_shape` decides again."""
+    _TUNED.pop((kind, n, k), None)
 
 
 def to_k_major(weight: Tensor) -> Tensor:
@@ -1077,7 +1104,26 @@ def _quantised_head_model_class(base: type | None = None) -> type:
     return _PATCHED[key]
 
 
-def _install_head(model, *, kind: str) -> None:
+def head_shape_key(head: TiledLMHead) -> tuple[str, int, int]:
+    """``(kind, N, K)`` for a built head, as `_launch_shape` keys it.
+
+    One function rather than the expression repeated, because `_tune_for` and the pinning
+    installers have to agree with the op about which entry they are writing: a key that is
+    off by the int4 packing factor would silently pin nothing.
+    """
+    packed_k = int(head.w_k_major.shape[0]) * (2 if head.kind == "int4" else 1)
+    return head.kind, int(head.w_k_major.shape[1]), packed_k
+
+
+def _install_head(model, *, kind: str, shape: LaunchShape | None = None) -> None:
+    """Replace `project_logits` with the tiled head, at ``shape`` or at the heuristic.
+
+    ``shape=None`` **clears** any tile an earlier slot pinned for this site rather than
+    leaving it in force. `_TUNED` lives for the life of the process and a batch runs every
+    slot in one process, so an uncleared pin would make `035-int4-head` a re-measurement of
+    whichever tile ran before it — a candidate that is not the one the manifest names, with
+    a plausible ratio beside it. That is blocker 16's shape, one layer down.
+    """
     from .quantised_linear import quantise_int8_per_channel
 
     weight = model.lm_head_weight
@@ -1088,6 +1134,11 @@ def _install_head(model, *, kind: str) -> None:
         quantised = quantise_fp8_per_channel(weight) if kind == "fp8" else quantise_int8_per_channel(weight)
         head = TiledLMHead(to_k_major(quantised.qweight), quantised.scale, kind)
     model.tiled_lm_head = head.to(weight.device)
+    key = head_shape_key(model.tiled_lm_head)
+    if shape is None:
+        clear_launch_shape(*key)
+    else:
+        pin_launch_shape(*key, shape)
     model.__class__ = _quantised_head_model_class(type(model))
 
 
@@ -1141,8 +1192,8 @@ def _tune_for(linears: list[nn.Linear], kind: str, *, head=None, log=None) -> No
         (int(linear.out_features), int(linear.in_features), linear) for linear in linears
     ]
     if head is not None:
-        packed_k = head.w_k_major.shape[0] * (2 if head.kind == "int4" else 1)
-        sites.append((int(head.w_k_major.shape[1]), int(packed_k), head))
+        _, head_n, head_k = head_shape_key(head)
+        sites.append((head_n, head_k, head))
     seen: set[tuple[int, int]] = set()
     for n, k, module in sites:
         if (n, k) in seen:
@@ -1340,6 +1391,62 @@ def install_tiled_int4_wide(model, entry=None) -> None:
     _quantise_k_major(linears, TiledInt4Linear, kind="int4")
     _install_head(model, kind="int4")
     _tune_for(linears, "int4", head=model.tiled_lm_head, log=_installer_log())
+
+
+# --------------------------------------------------------------------------------------
+# Batch 007 — the champion's tile, chosen by the decode step instead of by a loop
+# --------------------------------------------------------------------------------------
+#
+# Two tiles have ever been measured **in place** on the tied head, and they disagree by
+# 2.3x: BLOCK_N=64 ran at 656 GB/s on rental 40 and BLOCK_N=256 at 282 on rental 42. Every
+# other tile in this project's history was ranked by `tune_launch_shape`, which times one
+# site in a loop on an idle card and reported 1639 GB/s for the tile that ran at 282.
+#
+# So the instrument is the slot, not the tuner. A pinned tile is registered in
+# `batches.py` before the rental like any other prediction, installed with no measurement
+# on the box at all, and scored by the ratio the whole decode step returns. Three minutes
+# a point, against 12-15 seconds of micro-benchmark whose ranking inverted.
+#
+# **What the two in-place points say, and why these two pins.** The kernel materialises a
+# ``(BLOCK_K, BLOCK_N)`` fp32 weight tile in registers before each `tl.dot`. At BLOCK_N=256
+# and BLOCK_K=64 that is 64 KB of fp32 per program — 128 registers per thread at 4 warps,
+# on top of a ``(16, 256)`` accumulator — which is past what an SM can hold and is the
+# ranked suspect for 282 GB/s. Doubling the warps with the width keeps per-thread pressure
+# where the champion has it:
+#
+#   `tiled_int4_head_wide`  BLOCK_N 128, num_warps 8 — 1940 programs, 128 contiguous bytes
+#                           per row read, per-thread tile identical to the champion's.
+#   `tiled_int4_head_deep`  BLOCK_N 64, num_stages 5 — the champion's tile with four loads
+#                           in flight instead of two. If 656 GB/s of 1792 is latency rather
+#                           than pressure, this is the axis that moves it and nothing in
+#                           the search space rental 42 ran varied it independently.
+#
+# Neither changes an arithmetic operation, so both must reproduce `022`'s correctness
+# numbers exactly — 0.9318 agreement, 0.01674 nats. A different number there is a tiling
+# bug, not a quantisation effect, and the gate is set to catch it rather than to pass it.
+
+#: BLOCK_N 128 at 8 warps: twice the champion's width, twice its warps, same per-thread
+#: register pressure, and a full 128-byte contiguous run per row of the packed weight.
+HEAD_WIDE_SHAPE: LaunchShape = (128, 64, 1, 8, DEFAULT_NUM_STAGES)
+
+#: The champion's tile with a deeper software pipeline. `DEFAULT_NUM_STAGES` is 3, which
+#: keeps two loads in flight; 5 keeps four, at the cost of shared memory rather than
+#: registers.
+HEAD_DEEP_SHAPE: LaunchShape = (64, 64, 1, 4, 5)
+
+
+def install_tiled_int4_head_wide(model, entry=None) -> None:
+    """`install_tiled_int4_head` at `HEAD_WIDE_SHAPE`. Same site, same bytes, same math."""
+    if _guard(model, "_deltaforge_tiled_int4_head_wide"):
+        return
+    _install_head(model, kind="int4", shape=HEAD_WIDE_SHAPE)
+
+
+def install_tiled_int4_head_deep(model, entry=None) -> None:
+    """`install_tiled_int4_head` at `HEAD_DEEP_SHAPE`. Same site, same bytes, same math."""
+    if _guard(model, "_deltaforge_tiled_int4_head_deep"):
+        return
+    _install_head(model, kind="int4", shape=HEAD_DEEP_SHAPE)
 
 
 def _installer_log():
@@ -1547,6 +1654,21 @@ def tiled_int4_head_tuned_correctness_checks(model, *, device="cuda", dtype=None
     and a kernel with no entry of its own is checked by nothing — which is the defect
     `docs/BATCHES.md` records as keying a check table by the operation instead.
     """
+    return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
+
+
+def tiled_int4_head_wide_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """The champion's probe. `HEAD_WIDE_SHAPE` moves the launch geometry and nothing else.
+
+    Its own entry rather than an alias of the champion's, for the reason
+    `tiled_int4_head_tuned_correctness_checks` gives: `CHECK_BUILDERS` keys by kernel name
+    and a kernel with no entry of its own is checked by nothing.
+    """
+    return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
+
+
+def tiled_int4_head_deep_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """The champion's probe at `HEAD_DEEP_SHAPE`. See `tiled_int4_head_wide_correctness_checks`."""
     return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
 
 

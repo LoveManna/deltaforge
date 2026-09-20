@@ -734,3 +734,44 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_int4_wide", _tiled_gemv.tiled_int4_wide_correctness_checks)
+
+
+# --------------------------------------------------------------------------------------
+# Batch 007 — the champion's tile, ranked by the decode step
+# --------------------------------------------------------------------------------------
+#
+# The head is the one site where the tile is worth 2.3x, and the only two tiles ever timed
+# *in place* there were chosen by a heuristic and by a micro-benchmark rental 42
+# discredited. These two are pinned in the manifest and scored by the whole step: the
+# selection method is the batch itself.
+
+REGISTRY.register(
+    "tiled_int4_head_wide",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="037-int4-head-wide-tile",
+    notes=(
+        "The champion's kernel, site and arithmetic at BLOCK_N=128 with 8 warps. Twice the "
+        "champion's tile width and twice its warps, so per-thread register pressure is "
+        "unchanged while each row read of the packed weight covers a full 128 contiguous "
+        "bytes and the grid is 1940 programs. Rental 42's BLOCK_N=256 at 4 warps put 64 KB "
+        "of fp32 weight tile in registers per program and ran at 282 GB/s against the "
+        "champion's 656; this is the point between them that nothing has measured."
+    ),
+)
+register_checks("tiled_int4_head_wide", _tiled_gemv.tiled_int4_head_wide_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_head_deep",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="038-int4-head-deep-pipe",
+    notes=(
+        "The champion's tile with num_stages=5 instead of Triton's default 3: four loads "
+        "in flight per program instead of two, paid for in shared memory rather than "
+        "registers. The champion reaches 656 GB/s of a 1792 GB/s card at 23 waves of "
+        "occupancy, which is what a latency-bound loop looks like, and pipeline depth is "
+        "the one axis rental 42's search never varied on its own."
+    ),
+)
+register_checks("tiled_int4_head_deep", _tiled_gemv.tiled_int4_head_deep_correctness_checks)

@@ -644,6 +644,16 @@ declined it, so this was the first execution. Before assuming a composition is t
 of its parts, **measure it** — and order it where a surprise still informs the rest of the
 batch.
 
+**Install-time state in a module global outlives the slot that set it.** `scoped_registry`
+exists because the kernel registry is process-wide and a batch runs every slot in one
+process; `_TUNED` in `tiled_gemv.py` is the same shape one level down. It maps
+``(kind, N, K)`` to a tile, it is written at install time, and batch 007 pins tiles there
+deliberately -- so a slot that pinned BLOCK_N=128 would leave it in force for the next
+slot, which would then report a ratio for a candidate its manifest does not describe.
+`_install_head` now *clears* that key when no tile is named, and a CPU test asserts that an
+unpinned slot after a pinned one gets the heuristic back. **Before putting anything at
+module scope that an installer writes, ask what the slot after this one reads.**
+
 **A slot can win while its mechanism never fires, and only a counter can tell you.**
 `034-static-cache-cudagraphs` returned **1.0196, IQR 0.00149**, bit-identical, with
 `cudagraph_nodes: 0`. The hypothesis it was built for — CUDA-graphing the decode step — is

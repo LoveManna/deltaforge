@@ -18,6 +18,7 @@ from .batch import (
     calibration_holds,
     classify_outcome,
     precondition_holds,
+    registry_for,
     scoped_registry,
     score_predictions,
     session_fits_one_hypothesis,
@@ -177,6 +178,25 @@ def test_scoped_registry_rejects_two_kernels_replacing_the_same_operation():
 def test_scoped_registry_rejects_an_unknown_kernel_name():
     with pytest.raises(RegistryError, match="no kernel registered"):
         scoped_registry(make_hypothesis(kernels=("typo",)), make_registry())
+
+
+def test_registry_for_promotes_a_bare_list_of_names():
+    """The dump needs a registry and has no hypothesis. `--install` is that caller.
+
+    Rental 38's `output_code` dump rendered a candidate with nothing installed, and rental
+    42 left a composition losing 20% with no dump of the pair. A registry built from names
+    is what lets a diagnostic step render a composition rather than whatever happens to be
+    champion.
+    """
+    scoped = registry_for(("k1",), make_registry(), label="cli --install")
+
+    assert set(scoped.champions()) == {"rms_norm"}
+    assert scoped.get("k1").hypothesis == "cli --install"
+
+
+def test_registry_for_refuses_two_kernels_replacing_the_same_operation():
+    with pytest.raises(RegistryError, match="cannot install"):
+        registry_for(("k1", "k3"), make_registry(), label="cli --install")
 
 
 def test_scoped_registry_records_the_owning_hypothesis():

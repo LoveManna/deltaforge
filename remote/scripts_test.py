@@ -2403,6 +2403,30 @@ def test_the_dump_is_pulled_home_with_the_results():
     assert "results/diagnostics" in script
 
 
+def test_the_dump_can_be_pointed_at_a_composition_rather_than_the_champion():
+    """Entry 5's standing complaint, closed for the price of a flag.
+
+    Rental 38's dump compiled a candidate with no kernel in it, and rental 42 left the
+    project with a 20% regression from composing two kernels that each win alone. The dump
+    renders the registry's champions by default -- one kernel -- so naming the pair is the
+    only way a step can show the graph the composition actually lands in.
+    """
+    script = (REMOTE / "run_remote.sh").read_text()
+    line = next(line for line in script.splitlines() if "TORCH_LOGS=output_code" in line)
+
+    assert "--dump-install" in script
+    assert "DF_DUMP_INSTALL" in line
+    assert "--install" in line
+
+
+def test_the_dump_installs_the_champions_when_no_kernels_are_named():
+    """The flag is opt-in: an empty DF_DUMP_INSTALL must leave the command as it was."""
+    script = (REMOTE / "run_remote.sh").read_text()
+    line = next(line for line in script.splitlines() if "TORCH_LOGS=output_code" in line)
+
+    assert "${DF_DUMP_INSTALL:+ --install" in line
+
+
 def test_the_dump_cannot_take_the_rental_with_it():
     """A diagnostic that fails must cost the diagnostic, not the batch behind it."""
     script = (REMOTE / "run_remote.sh").read_text()

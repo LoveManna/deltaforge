@@ -51,6 +51,7 @@ __all__ = [
     "calibration_holds",
     "classify_outcome",
     "precondition_holds",
+    "registry_for",
     "score_predictions",
     "scoped_registry",
     "session_fits_one_hypothesis",
@@ -347,9 +348,27 @@ def scoped_registry(hypothesis: Hypothesis, source: KernelRegistry | None = None
     so two kernels in the same hypothesis that replace the same operation raise here
     rather than at benchmark time.
     """
+    return registry_for(hypothesis.kernels, source=source, label=hypothesis.slug)
+
+
+def registry_for(
+    names: tuple[str, ...] | list[str],
+    source: KernelRegistry | None = None,
+    *,
+    label: str = "",
+) -> KernelRegistry:
+    """A registry holding exactly ``names``, each as champion of what it replaces.
+
+    Separated from `scoped_registry` so that something which is not a hypothesis can ask
+    for the same thing. The `output_code` dump is the case that needed it: entry 5 of
+    `docs/HYPOTHESES.md` closed a 6.23% hypothesis for the price of a step and then said
+    the next dump must be pointed at *the batch's own slots*, because rental 38's was
+    pointed at a model with no kernel in it. A dump of one named composition is what
+    `029`'s unexplained 20% now needs, and it is a set of kernel names rather than a slot.
+    """
     source = REGISTRY if source is None else source
     scoped = KernelRegistry()
-    for name in hypothesis.kernels:
+    for name in names:
         entry = source.get(name)  # raises RegistryError on an unknown name
         try:
             scoped.register(
@@ -357,11 +376,11 @@ def scoped_registry(hypothesis: Hypothesis, source: KernelRegistry | None = None
                 impl=entry.impl,
                 replaces=entry.replaces,
                 status=KernelStatus.CHAMPION,
-                hypothesis=hypothesis.slug,
+                hypothesis=label or entry.hypothesis,
                 notes=entry.notes,
             )
         except RegistryError as exc:
-            raise RegistryError(f"hypothesis {hypothesis.slug!r} cannot install {name!r}: {exc}") from exc
+            raise RegistryError(f"{label or 'registry'} cannot install {name!r}: {exc}") from exc
     scoped.check_invariants()
     return scoped
 

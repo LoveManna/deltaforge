@@ -30,6 +30,7 @@ __all__ = [
     "BATCH_004",
     "BATCH_005",
     "BATCH_006",
+    "BATCH_007",
     "get_batch",
 ]
 
@@ -1477,6 +1478,368 @@ BATCH_006 = Batch(
 )
 
 
+BATCH_007 = Batch(
+    batch_id="007-compose-and-retile",
+    description=(
+        "Rental 42 left the leaderboard in a state no rental should: **the champion's "
+        "1.0791 was not re-measured**, because the slot that was meant to improve on it "
+        "replaced its tile and returned 0.9920. So this batch opens by re-measuring "
+        "`022-int4-head` unchanged, on a second card, and everything behind that slot is "
+        "read against it rather than against a number from another rental. "
+        "The rest is the two things rental 42 showed are worth a slot each and nothing "
+        "else is. **Compositions, because they are not predictable**: the project holds "
+        "three measured wins on disjoint mechanisms -- int4 on the head (1.0791), the "
+        "fused causal conv (1.0144) and the static decode cache (1.0196) -- and the one "
+        "pair ever composed returned 0.7937, which is the largest unexplained number here. "
+        "**Tiles, because on this one site the tile is worth 2.3x** and the only two ever "
+        "timed in the decode step were a heuristic and a micro-benchmark's pick. Both "
+        "pinned tiles are registered here, before the rental, and ranked by the ratio the "
+        "whole step returns -- the one selection method rental 42 did not discredit. "
+        "Nine slots. Every one of them can beat 1.0791: every kernel slot carries the "
+        "head's 1.1249x ceiling, and the two that add the conv and the cache carry their "
+        "measured savings on top of it."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band or every other number in this "
+                "batch is void. It has measured 1.0009, 1.0018, 1.0024, 0.9913, 1.0008 and "
+                "1.0053 on the six rentals that got this far. **Read its sign before "
+                "reading anything else**: rental 42 carried +0.53%, which is a third of "
+                "what `034` appeared to win, and this batch compares slots against a "
+                "champion measured on a rental that carried +0.08%."
+            ),
+        ),
+        Hypothesis(
+            slug="035-int4-head",
+            kernels=("tiled_int4_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion exactly as rental 40 ran it: group-128 int4 on the tied LM "
+                "head alone, at the heuristic tile -- BLOCK_N 64, BLOCK_K 64, SPLIT_K 1, 4 "
+                "warps, 3 stages -- with the install-time tuner off. 1271.40 MB/token of "
+                "bf16 weight becomes 317.85 MB of packed nibbles plus its group scales, in "
+                "one matmul that launches 3880 programs."
+            ),
+            prediction="win",
+            rationale=(
+                "**Not a new hypothesis: the incumbent, re-measured on hardware that has "
+                "never run it.** `AGENT.md` section 6 forbids carrying a number across "
+                "sessions and rental 42 carried one anyway, because `028` replaced this "
+                "slot with a searched tile and the leaderboard has stood on a single "
+                "rental's measurement ever since. Everything else in this batch is read "
+                "against this slot, so it runs first among the kernels and nothing is "
+                "gated on it -- a batch that made its whole tail conditional on one slot "
+                "would have no result if that slot errored. Predicted **1.06-1.10**: the "
+                "mechanism is measured and the arithmetic is fixed at a 1.1249x ceiling, "
+                "and the width of the range is the card, not the kernel. Rental 40's 5090 "
+                "ran the reference at 1282 GB/s and rental 42's at 1198, and a slower card "
+                "moves the head's share of the step, not just its clock. **Below 1.05 is "
+                "the interesting outcome** and it would mean the champion is "
+                "card-dependent in a way nothing has recorded. Bars are 022's own, already "
+                "met at 0.9318 and 0.01674 nats; this slot re-measures those too, and it "
+                "is the only slot here whose correctness result is a re-test rather than a "
+                "prediction."
+            ),
+        ),
+        Hypothesis(
+            slug="036-int4-head-static-cache",
+            kernels=("tiled_int4_head", "static_decode_cache"),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion plus `mark_static_address` on all 64 decode-cache tensors. "
+                "One removes 953.55 MB/token from a matmul; the other removes inductor's "
+                "per-call alignment check from 64 tensors on each of 128 decode steps, "
+                "which is worth 1198 -> 1222 GB/s on identical bytes. Nothing in either "
+                "touches what the other does."
+            ),
+            prediction="win",
+            rationale=(
+                "**This is batch 005's `026`, which has never run**: its precondition "
+                "declined it on rental 40 and batch 006 did not carry it. Both halves are "
+                "now measured alone -- 1.0791 on rental 40 and 1.0196 (about 1.4% net of "
+                "that rental's +0.53% offset) on rental 42 -- and they are the two "
+                "mechanisms in this project furthest apart: bytes in one kernel against "
+                "dispatch work outside every kernel. Naive expectation is the product, "
+                "0.493 ms and 0.094 ms off 6.70, which is **1.0960**; predicted "
+                "**1.08-1.11**. It runs second because it is the batch's most likely "
+                "champion and banking one early is what lets the slots behind it fail "
+                "safely. The composition itself is the risk and it is a **tested** one: "
+                "both installers replace the root model class, which silently discarded "
+                "each other until batch 005 keyed the factories by base, and "
+                "`test_composing_two_root_class_patches_keeps_both` has asserted since "
+                "that both survive. Bars are the head's, unchanged: the static cache is "
+                "bit-identical (264/264, 0.0 nats on rental 42) so it cannot move them, "
+                "and a correctness result away from 022's would mean the head install did "
+                "not survive the composition."
+            ),
+        ),
+        Hypothesis(
+            slug="037-int4-head-wide-tile",
+            kernels=("tiled_int4_head_wide",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion's kernel and site at BLOCK_N=128 with 8 warps instead of "
+                "BLOCK_N=64 with 4: 1940 programs instead of 3880, a full 128 contiguous "
+                "bytes of packed weight per row read instead of 64, and the same "
+                "fp32 weight tile per thread because the warps double with the width."
+            ),
+            prediction="win",
+            rationale=(
+                "**The tile on this site is worth 2.3x and only two points have ever been "
+                "measured in the decode step.** BLOCK_N=64 ran at 656 GB/s (rental 40) and "
+                "BLOCK_N=256 at 282 (rental 42), and the ranked suspect for the second is "
+                "register pressure rather than the grid: at BLOCK_N=256, BLOCK_K=64 and 4 "
+                "warps the kernel materialises a 64 KB fp32 weight tile per program, which "
+                "is 128 registers a thread before the accumulator. This pin is the point "
+                "between them that keeps per-thread pressure at the champion's while "
+                "doubling the bytes each row read covers. The head streams 317.85 MB "
+                "against a baseline that moves 1271.40 MB there at 1282 GB/s, so the slot "
+                "ties the champion at 656 GB/s, reaches **1.105 at 900** and **1.122 at "
+                "1200**, against a ceiling of 1.1249. Predicted **1.09-1.12**. Two other "
+                "outcomes are findings rather than nulls: ~1.079 means the tile is not "
+                "what separates 656 from the baseline's 1198-1282, and **below 1.0 means "
+                "the pressure suspect is wrong and the grid is what matters**, which "
+                "points the next batch at BLOCK_N=32 rather than at another wide tile. "
+                "Bars are 022's and must be met exactly: the launch geometry changes no "
+                "arithmetic and SPLIT_K stays 1, so the summation order is unchanged and a "
+                "different correctness number here is a tiling bug."
+            ),
+        ),
+        Hypothesis(
+            slug="038-int4-head-deep-pipe",
+            kernels=("tiled_int4_head_deep",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion's tile with `num_stages=5` instead of Triton's default 3: "
+                "four loads of the packed weight in flight per program instead of two, "
+                "paid for in shared memory rather than in registers."
+            ),
+            prediction="win",
+            rationale=(
+                "**The champion runs at 36% of the card and nobody has established what "
+                "binds it.** 656 GB/s against 1792 peak, with 3880 programs -- 23 waves on "
+                "170 SMs -- so it is not the grid. The arithmetic per byte is small enough "
+                "to rule out the ALU on its own: the nibble unpack is about ten operations "
+                "per byte, which is 3.2 G ops per token against a card that issues tens of "
+                "T ops/s, and the int8 slot at the same site reached 847 GB/s with a "
+                "fifth of that work -- one load and one convert per byte. What is left "
+                "is latency: 20 dependent loop "
+                "iterations, each waiting on a 4 KB tile, with a pipeline two deep. This "
+                "slot is the one axis rental 42's search never varied alone -- "
+                "`refine_pipeline` moved warps, BLOCK_K and depth together on a "
+                "micro-benchmark whose ranking inverted in place. Predicted **1.08-1.12**, "
+                "the same arithmetic as 037 because it is the same byte saving at a "
+                "different rate. It is read **against 037**, not only against 035: if both "
+                "win the two axes are independent and the next batch pins their "
+                "combination; if this one wins and 037 does not, the kernel is "
+                "latency-bound and the width is a distraction. Bars are 022's, exactly as "
+                "in 037 and for the same reason."
+            ),
+        ),
+        Hypothesis(
+            slug="039-int4-head-and-conv",
+            kernels=("tiled_int4_head", "fused_causal_conv"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion plus the four-tap causal convolution's cat, cuDNN call, silu "
+                "and cache copy collapsed into one Triton kernel per linear-attention "
+                "layer: 953.55 MB/token of weight traffic removed from one matmul, and 48 "
+                "of the step's 508 launches removed from 24 layers."
+            ),
+            prediction="win",
+            rationale=(
+                "**The re-run of the largest unexplained number this project holds, with "
+                "the one variable rental 42 changed put back.** `029` was this pair with "
+                "the *tuned* head -- BLOCK_N=256, the tile that measured 282 GB/s alone -- "
+                "and it returned **0.7937**, with the conv adding ~1.85 ms/token where it "
+                "had saved 0.093 by itself. This slot is the same pair at the champion's "
+                "tile, so it separates two readings that rental 42 could not: if it lands "
+                "near **1.096** (0.493 + 0.093 ms off 6.70) the regression belonged to the "
+                "tuned tile, and if it lands near 0.79 the regression belongs to composing "
+                "these two installers and the `TORCH_LOGS=output_code` dump this rental "
+                "takes of exactly this pair names it. Predicted **win, 1.08-1.11**, and "
+                "the prediction is deliberately the optimistic branch: the conv installer "
+                "patches `GatedDeltaNet` while the head replaces the root class, which is "
+                "the same disjointness 036 relies on, and nothing in the conv's kernel "
+                "reads the head's. **The honest confidence is about two in three**, which "
+                "is why nothing ahead of this slot is gated on it and why it runs after "
+                "the three that are not."
+            ),
+        ),
+        Hypothesis(
+            slug="040-int4-head-conv-cache",
+            kernels=("tiled_int4_head", "fused_causal_conv", "static_decode_cache"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="039-int4-head-and-conv",
+                floor=1.05,
+                reason=(
+                    "this slot is 039 plus a mechanism 036 has already measured composed "
+                    "with the head, so if the head-and-conv pair has not cleared the "
+                    "champion there is nothing here the batch does not already have: it "
+                    "would re-measure the conv regression with a third install on top, "
+                    "which is what batch 003 spent five slots doing"
+                ),
+            ),
+            mechanism=(
+                "All three measured wins at once: int4 on the tied head, the fused causal "
+                "conv, and the decode cache allocated static. Bytes, launches and dispatch "
+                "work, on three disjoint parts of the step."
+            ),
+            prediction="win",
+            rationale=(
+                "**This is batch 005's `027`, which has also never run**, and it is the "
+                "batch's arithmetic maximum at the champion's tile: 6.70 - 0.493 - 0.093 - "
+                "0.094 = 6.020 ms, or **1.113**. Predicted **1.10-1.14**. What makes it "
+                "worth a slot rather than an inference is that two of the three pairs "
+                "inside it are measured by the time it runs -- 036 and 039 -- so 040 "
+                "against those two is the first three-way composition this project can "
+                "*read*: if it falls short of 036 x 039 / 035 the shortfall is the "
+                "interaction, isolated, with both pairs on disk to subtract. Two of the "
+                "three installers replace the root class and the third patches "
+                "`GatedDeltaNet`; all three survive together on the CPU fixture. Bars are "
+                "the head's again -- conv and cache are both bit-identical -- so a miss is "
+                "an install that did not survive, and the layer-1 checks name which one."
+            ),
+        ),
+        Hypothesis(
+            slug="041-wide-tile-and-cache",
+            kernels=("tiled_int4_head_wide", "static_decode_cache"),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="037-int4-head-wide-tile",
+                floor=1.08,
+                reason=(
+                    "this is 036 with the wide tile substituted for the champion's, so it "
+                    "is only worth a slot if that tile beat the champion's; below 1.08 the "
+                    "batch already holds the better version of this measurement in 036 and "
+                    "the tile question has been answered by 037 on its own"
+                ),
+            ),
+            mechanism=(
+                "037's pinned tile composed with the static decode cache: the best "
+                "measured head tile in the batch, plus the dispatch saving that shares "
+                "nothing with it."
+            ),
+            prediction="win",
+            rationale=(
+                "The point of 037 is to find a better tile; the point of this slot is to "
+                "**carry it into the composition that is otherwise the batch's champion**. "
+                "If 037 reaches 1.10, this lands near **1.116** on the same arithmetic 036 "
+                "uses, and predicted **1.10-1.15**. It is gated rather than unconditional "
+                "because its whole content above 036 is the tile: with 037 below 1.08 this "
+                "slot is a worse 036 and the three minutes are better spent on 042. Bars "
+                "are the head's, for the third time and for the same reason -- neither "
+                "ingredient changes an arithmetic operation."
+            ),
+        ),
+        Hypothesis(
+            slug="042-wide-tile-conv-cache",
+            kernels=("tiled_int4_head_wide", "fused_causal_conv", "static_decode_cache"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="041-wide-tile-and-cache",
+                floor=1.10,
+                reason=(
+                    "everything this slot adds to 041 is the conv, worth 0.093 ms of 6.70, "
+                    "and everything it adds to 040 is the tile; below 1.10 on 041 neither "
+                    "addition can carry the composition past what the batch has already "
+                    "measured, and a declined 041 -- which is what a 037 below 1.08 gives "
+                    "-- means the champion's tile stands and 040 is already this slot"
+                ),
+            ),
+            mechanism=(
+                "Everything in this batch that composes: the head at 037's tile, the fused "
+                "causal conv, and the static decode cache. 97% of the step untouched, "
+                "three disjoint mechanisms on the rest."
+            ),
+            prediction="win",
+            rationale=(
+                "**The batch's arithmetic maximum and its riskiest slot, so it runs last "
+                "with everything cheaper already on disk.** It is 040 with the tile "
+                "swapped, or 041 with the conv added, and both of those are measured by "
+                "the time it runs -- so whatever it returns is readable as a difference "
+                "rather than as a number on its own. Predicted **1.12-1.17** if 037 gave a "
+                "faster tile, which is 040's 1.113 plus whatever 037 beat 035 by. The "
+                "question it asks that nothing else here does: **the conv's win is a "
+                "dispatch win and the static cache is also a dispatch win**, so if 042 "
+                "minus 041 comes out below the conv's measured 0.093 ms the two are "
+                "competing for the same microseconds, and the launch account this project "
+                "has been keeping since rental 38 is not additive. Either reading is a "
+                "finding and it costs one slot, because every ingredient is measured "
+                "separately above it."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -1484,6 +1847,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_004.batch_id: BATCH_004,
     BATCH_005.batch_id: BATCH_005,
     BATCH_006.batch_id: BATCH_006,
+    BATCH_007.batch_id: BATCH_007,
 }
 
 

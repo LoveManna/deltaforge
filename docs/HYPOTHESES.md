@@ -532,6 +532,28 @@ key its cache on it. Even once the mutation check passes, a 128-token decode wan
 recordings. **Any next attempt must report a non-zero node count before it reports a
 ratio.** See `results/batches/006-tile-and-sites/README.md`.
 
+**Two routes are left, and neither of them is a slot — which is why batch 007 has
+neither.** The mutation check exempts an input that is a parameter or a buffer, and both
+routes are about making that exemption apply:
+
+1. **Put the cache in buffers.** Our 64 tensors reach the graph through
+   `L['cache'].layers[i].conv` — a plain Python object handed in as an argument — so they
+   are lifted as graph *inputs* however they are marked, and dynamo's source, not the
+   tensor's identity, is what decides that. Registering them as non-persistent buffers and
+   having the layers read their own state is a real build across two module classes and
+   the root, and its first claim is **checkable on a CPU**: under a counting backend the
+   conv history should stop appearing as a graph placeholder at all. That is the same kind
+   of free refutation that killed this entry's two previous suspects on a laptop.
+2. **Bump torch.** The box runs 2.11 from the cu128 index; the laptop runs 2.14, where the
+   mark demonstrably reaches `static_input_indices`. It changes both scoring columns
+   equally, so it is fair — but it changes the baseline, invalidates the warm compile
+   cache, and drags in a newer CUDA index against blocker 11's driver floor. **A
+   whole-rental decision, not a slot**, and not to be taken inside a batch that is also
+   measuring kernels.
+
+Either way the symint warning above still stands: `cache.seq_len` reaches the graph as an
+int and a 128-token decode wants 128 recordings against a rerecord limit of 128.
+
 ### 9. The tied LM head — the one site where a hand-written GEMV is not grid-starved
 
 **Share of bytes: 14.80%. Ceiling: 1.080x at 8 bits, 1.123x at int4.** Category **B**.
@@ -570,6 +592,30 @@ bytes, BLOCK_N 256 instead of 64 — **282 GB/s against 656**. So this entry's w
 **conditional on its tile in a way nothing recorded until now**, and the champion's 1.0791
 has not been reproduced on a second card. Re-measuring `022` unchanged is the first slot
 of the next rental.
+
+**Batch 007 is registered against exactly that, and it changes how a tile is chosen.** The
+two tiles ever measured *in the decode step* are 656 GB/s at BLOCK_N=64 and 282 at 256;
+every other tile this project has ranked was ranked by a micro-benchmark whose ordering
+inverted in place. So the instrument is now the slot: a tile is pinned in `batches.py`
+before the rental like any other prediction and scored by the ratio the whole step
+returns, at three minutes a point.
+
+**The ranked suspect for 282 GB/s is register pressure, not the grid.** The kernel
+materialises a `(BLOCK_K, BLOCK_N)` fp32 weight tile before each `tl.dot`; at BLOCK_N=256,
+BLOCK_K=64 and 4 warps that is 64 KB per program — 128 registers a thread before the
+`(16, BLOCK_N)` accumulator — while 970 programs is still 5.7 waves on 170 SMs. Batch 007
+pins the two points that separate the suspects: `037` at BLOCK_N=128 with **8** warps,
+which doubles the width and the warps together so per-thread pressure is unchanged, and
+`038` at the champion's tile with `num_stages=5`, which is the only axis rental 42's search
+never varied on its own. **If both lose, the next point is BLOCK_N=32** — the wave-count
+theory rather than the pressure one — and it is deliberately not in batch 007, because two
+pins would spend two slots answering what one can.
+
+**And the champion's own site has an accounting bias worth knowing before reading its
+GB/s.** `decode_bytes_per_token` scales a region's bf16 bytes by `bits/16` and counts no
+scales, so the int4 head is booked at **317.85 MB/token** against the **337.72** it really
+reads — 20 groups of fp32 scales over 248320 channels is 19.87 MB. Ratios are unaffected;
+the head's "656 GB/s" is ~697 GB/s of real traffic, and the bias is conservative.
 
 **Discharged on rental 40, and it produced this project's first champion.**
 

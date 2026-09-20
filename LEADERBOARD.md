@@ -27,10 +27,20 @@ searched tile — which measured **0.9920**. The tile is the only difference and
 second card is the first slot of the next rental. Recording it any other way would be
 carrying a number across sessions, which this file forbids.
 
+**That slot is registered**: `035-int4-head`, the champion unchanged at the heuristic tile,
+opening batch `007-compose-and-retile` (`src/deltaforge/batches.py`; the run plan is
+[`docs/superpowers/plans/2026-09-20-batch-007-compose-and-retile.md`](docs/superpowers/plans/2026-09-20-batch-007-compose-and-retile.md)).
+Nothing in this file moves until it has run.
+
 **The mechanism, stated before the measurement and confirmed by it.** The tied LM head is
 248320 x 2560 — **1271.40 MB/token, 14.80% of everything the compiled column moves, in one
-matmul.** Storing it at 4 bits with group-128 scales removes 943.7 MB/token, a 1.123x
-ceiling, and the kernel collected 70% of it.
+matmul.** Storing it at 4 bits removes **953.55 MB/token as the byte model counts it** —
+1271.40 becomes 317.85 of packed nibbles — for a **1.1249x** ceiling, and the kernel
+collected 70% of it. The kernel also reads 19.87 MB/token of fp32 group scales that
+`decode_bytes_per_token` does not count, so the true saving is 933.68 and the true ceiling
+**1.1220**; the difference is 0.26% of per-token bytes and it makes every achieved-bandwidth
+figure for a quantised candidate conservative rather than flattering. (The 943.7 MB/token
+this line used to carry assumed 2-byte scales and matched neither.)
 
 **Why here and not on the 248 projections two rentals lost on.** At BLOCK_N=64 the head
 launches **3880 programs** on a 170-SM card; `in_proj_a` is 32 channels wide and launches

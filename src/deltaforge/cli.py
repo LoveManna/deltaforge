@@ -145,7 +145,6 @@ def _load_models(args: argparse.Namespace) -> tuple[object, object, object]:
     import torch
 
     from .config import from_hf_config
-    from .kernels import REGISTRY
     from .model import apply_champions, build_model
     from .reference import ReferenceModel
 
@@ -161,9 +160,28 @@ def _load_models(args: argparse.Namespace) -> tuple[object, object, object]:
 
     candidate = ReferenceModel(config).to(device="cuda", dtype=torch.bfloat16).eval()
     candidate.load_state_dict(reference.state_dict(), assign=True)
-    apply_champions(candidate, REGISTRY)
+    apply_champions(candidate, _candidate_registry(args))
     _assert_parameters_are_shared(reference, candidate)
     return config, reference, candidate
+
+
+def _candidate_registry(args: argparse.Namespace):
+    """Which kernels the candidate column installs: `--install`, or the global champions.
+
+    `--install` exists for the `output_code` dump. Without it the dump renders whatever is
+    registered CHAMPION, which is one kernel — and the composition this project cannot
+    explain is two. Rental 38 dumped a candidate with no kernel in it at all and entry 5 of
+    `docs/HYPOTHESES.md` has been open ever since asking for the dump to be pointed at a
+    real slot; naming the kernels is how a step does that without being a batch.
+    """
+    from .batch import registry_for  # noqa: PLC0415
+    from .kernels import REGISTRY  # noqa: PLC0415
+
+    requested = [name.strip() for name in (getattr(args, "install", "") or "").split(",") if name.strip()]
+    if not requested:
+        return REGISTRY
+    print(f"[bench] installing {requested} instead of the registered champions")
+    return registry_for(requested, label="cli --install")
 
 
 def _assert_parameters_are_shared(reference, candidate) -> None:
@@ -624,6 +642,15 @@ def build_parser() -> argparse.ArgumentParser:
     correctness.set_defaults(func=cmd_correctness)
 
     bench = sub.add_parser("bench", parents=[common], help="run the interleaved benchmark (needs CUDA)")
+    bench.add_argument(
+        "--install",
+        default="",
+        help=(
+            "comma-separated kernel names for the candidate column, in place of whatever "
+            "the registry holds as champion. The dump step uses it to render the code "
+            "inductor generates for a composition rather than for one kernel."
+        ),
+    )
     bench.add_argument("--workload", choices=sorted(DEFAULT_WORKLOADS), default="headline")
     bench.add_argument(
         "--columns",

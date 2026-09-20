@@ -99,6 +99,13 @@ DF_BATCH_TIMEOUT="${DF_BATCH_TIMEOUT:-9600}"
 # its own: it must never be able to eat the batch's clock. Two cold `max-autotune`
 # compiles measured 268 s each on rental 35, so 1200 s is generous.
 DF_DUMP_TIMEOUT="${DF_DUMP_TIMEOUT:-1200}"
+
+# Which kernels the dump's candidate column installs. Empty means whatever the registry
+# holds as champion, which is one kernel -- and the number this project cannot explain is
+# a *composition*: `029` put the int4 head and the fused causal conv together and the conv
+# added 1.85 ms/token where it had saved 0.093 alone. A dump of that pair names the graph
+# it lands in, for the price of a step. `--dump-install tiled_int4_head,fused_causal_conv`.
+DF_DUMP_INSTALL="${DF_DUMP_INSTALL:-}"
 # Torch's fx-graph and autotune caches are enabled by default but write to
 # /tmp/torchinductor_<user> on a box that gets destroyed, so every rental this project has
 # ever run compiled cold -- and rental 22 spent ~40 minutes doing it. Point them somewhere
@@ -168,6 +175,7 @@ while [ $# -gt 0 ]; do
         --max-rate)          DF_PROVISION_ARGS="$DF_PROVISION_ARGS --max-rate $2"; shift ;;
         --image)             DF_PROVISION_ARGS="$DF_PROVISION_ARGS --image $2"; shift ;;
         --exclude-machines)  DF_PROVISION_ARGS="$DF_PROVISION_ARGS --exclude-machines $2"; shift ;;
+        --dump-install)      DF_DUMP_INSTALL="$2"; shift ;;
         --simulate-failure)  DF_SIMULATE_FAILURE="$2"; shift ;;
         --state-file)        DF_STATE_FILE="$2"; shift ;;
         -h|--help)           usage; exit 0 ;;
@@ -713,8 +721,8 @@ remote_sh "DELTAFORGE_WEIGHTS_DIR='$DF_WEIGHTS_DIR' python -m pytest -m gpu -q"
 # starts warm on the reference and on its identity slot.
 #
 # Guarded with `|| true`: a diagnostic that fails must cost the diagnostic, not the batch.
-df_log "dumping the code inductor generates (diagnostic; failures do not stop the run)"
-remote_sh "mkdir -p '$DF_REMOTE_DIR/results/diagnostics' && $DF_COMPILE_ENV TORCH_LOGS=output_code timeout ${DF_DUMP_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --rounds 1 --warmup-rounds 0 --output '$DF_REMOTE_DIR/results/diagnostics/inductor-dump-record.json' > '$DF_REMOTE_DIR/results/diagnostics/inductor-output-code.txt' 2>&1 || true"
+df_log "dumping the code inductor generates${DF_DUMP_INSTALL:+ for [$DF_DUMP_INSTALL]} (diagnostic; failures do not stop the run)"
+remote_sh "mkdir -p '$DF_REMOTE_DIR/results/diagnostics' && $DF_COMPILE_ENV TORCH_LOGS=output_code timeout ${DF_DUMP_TIMEOUT} python -m deltaforge.cli bench --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --rounds 1 --warmup-rounds 0${DF_DUMP_INSTALL:+ --install '$DF_DUMP_INSTALL'} --output '$DF_REMOTE_DIR/results/diagnostics/inductor-dump-record.json' > '$DF_REMOTE_DIR/results/diagnostics/inductor-output-code.txt' 2>&1 || true"
 
 if [ -n "$DF_BATCH" ]; then
     # Batch mode runs the gates and the benchmark per hypothesis inside one process, so
