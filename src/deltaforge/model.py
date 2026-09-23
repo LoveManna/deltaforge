@@ -351,6 +351,18 @@ def _install_tiled_int4_head_deep(model: ReferenceModel, entry: KernelEntry) -> 
     install_tiled_int4_head_deep(model, entry)
 
 
+def _install_tiled_int4_head_narrow(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.tiled_gemv import install_tiled_int4_head_narrow
+
+    install_tiled_int4_head_narrow(model, entry)
+
+
+def _install_inline_causal_conv(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.inline_causal_conv import install_inline_causal_conv  # noqa: PLC0415
+
+    install_inline_causal_conv(model, entry)
+
+
 def _install_static_decode_cache(model: ReferenceModel, entry: KernelEntry) -> None:
     from .kernels.static_cache import install_static_decode_cache  # noqa: PLC0415
 
@@ -373,3 +385,5 @@ register_installer("tiled_int4_mlp", _install_tiled_int4_mlp)
 register_installer("tiled_int4_wide", _install_tiled_int4_wide)
 register_installer("tiled_int4_head_wide", _install_tiled_int4_head_wide)
 register_installer("tiled_int4_head_deep", _install_tiled_int4_head_deep)
+register_installer("tiled_int4_head_narrow", _install_tiled_int4_head_narrow)
+register_installer("inline_causal_conv", _install_inline_causal_conv)

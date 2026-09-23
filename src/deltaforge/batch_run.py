@@ -43,13 +43,16 @@ from .batch import (
     scoped_registry,
     score_predictions,
 )
+from .card_baseline import card_report
 
 __all__ = [
     "BatchRunner",
     "SlotResult",
     "cudagraphs_during",
+    "device_name",
     "graphs_compiled_during",
     "recompile_limit_for",
+    "reference_gbps",
     "release_compiled_state",
     "run_batch",
 ]
@@ -806,6 +809,29 @@ def _no_new_graph_reading(result) -> str:
     return f"First round {first:.0f} ms against {median:.0f} ms median -- no compile happened."
 
 
+def device_name() -> str:
+    """What `torch.cuda.get_device_name()` says, or ``""`` where there is no card.
+
+    Suppressed rather than required: `run_batch` is driven by a fake runner in the CPU
+    tests, and a pre-flight that could raise would be a pre-flight that can fail a batch.
+    """
+    try:
+        import torch  # noqa: PLC0415
+
+        if torch.cuda.is_available():
+            return str(torch.cuda.get_device_name())
+    except Exception:  # noqa: BLE001 - a report is never worth an exception
+        return ""
+    return ""
+
+
+def reference_gbps(result: SlotResult) -> float | None:
+    """The `compiled` column's achieved bandwidth in a finished slot, if it declared bytes."""
+    achieved = (result.bench or {}).get("achieved_gbps") or {}
+    value = achieved.get(BASELINE_COLUMN)
+    return float(value) if value else None
+
+
 def _raise_recompile_limit(slots: int, log=print) -> None:
     """Give dynamo room for one candidate per slot, and say so in the log.
 
@@ -875,6 +901,12 @@ def run_batch(
         result = runner.run_slot(hypothesis, cap_s=budget.cap_for(index))
         results.append(result)
         ratios[hypothesis.slug] = result.median_ratio
+        if hypothesis.slug == batch.calibration_slug:
+            # Said here rather than in the writeup: rental 43's card ran the reference at
+            # 0.66 of rental 40's and flattened every effect in the batch, and the figure
+            # that would have said so was already in this slot. It reports and never
+            # decides — see `card_baseline`.
+            log(card_report(device_name(), reference_gbps(result)))
         if result.duration_s is not None and result.outcome != "not_run":
             budget.record(result.duration_s)
         log(

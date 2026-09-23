@@ -775,3 +775,57 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_int4_head_deep", _tiled_gemv.tiled_int4_head_deep_correctness_checks)
+
+
+# --------------------------------------------------------------------------------------
+# Batch 008 — the ingredients alone, and the barrier removed rather than moved
+# --------------------------------------------------------------------------------------
+#
+# Rental 43 established two things that decide this batch. The *card* moved every measured
+# effect to zero, so an ingredient's value has to be re-measured in the same process as any
+# composition that uses it. And `039`'s 0.8111 was traced to the conv being an **opaque
+# custom op**: inductor must materialise its inputs and outputs (59 allocations became 190)
+# and recomputes a producer it can no longer fuse across, 24 times per token.
+#
+# `inline_causal_conv` is the experiment that follows from the second: the same four taps,
+# written as torch operations rather than as one opaque call, so there is nothing for
+# inductor to fence. `tiled_int4_head_narrow` is the last untried tile direction on the
+# head — four points measured in the decode step, and every one that lost had fewer
+# programs than the one that won.
+
+from . import inline_causal_conv as _inline_causal_conv  # noqa: E402
+
+REGISTRY.register(
+    "inline_causal_conv",
+    impl=_inline_causal_conv.inline_causal_conv_step,
+    replaces="causal_conv",
+    hypothesis="045-inline-causal-conv",
+    notes=(
+        "The four-tap depthwise causal conv at seq_len 1 written as torch operations -- "
+        "four multiplies, a round, a silu and a shifted history -- instead of `F.conv1d`. "
+        "It removes the same cuDNN `extern_kernels.convolution` and the same `cat` that "
+        "`fused_causal_conv` removes, and unlike that kernel it is **not a fusion "
+        "barrier**: the expression is pointwise, so inductor may fuse it into the "
+        "neighbours it was stranded between. No Triton and no custom op, which is the "
+        "point -- a hand-written kernel wrapped in `torch.library.custom_op` re-erects the "
+        "barrier one call site later. Read against `fused_causal_conv` measured in the "
+        "same process: same arithmetic, same bars, different bill."
+    ),
+)
+register_checks("inline_causal_conv", _inline_causal_conv.inline_causal_conv_correctness_checks)
+
+REGISTRY.register(
+    "tiled_int4_head_narrow",
+    impl=_tiled_gemv.tiled_gemv_int4,
+    replaces="decode_step",
+    hypothesis="047-int4-head-narrow-tile",
+    notes=(
+        "The champion's kernel, site and arithmetic at BLOCK_N=32: 7760 programs instead of "
+        "3880, and 64 contiguous packed bytes per row read instead of 128. The three tiles "
+        "measured against the heuristic in the decode step -- 256 searched, 128 wide, and "
+        "the champion's width at five pipeline stages -- all lost, and all had fewer "
+        "programs than the winner or the same. Thinner is the one direction left, and a "
+        "loss here says the tile is not what holds this site at 656 GB/s."
+    ),
+)
+register_checks("tiled_int4_head_narrow", _tiled_gemv.tiled_int4_head_narrow_correctness_checks)

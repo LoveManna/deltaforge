@@ -31,6 +31,7 @@ __all__ = [
     "BATCH_005",
     "BATCH_006",
     "BATCH_007",
+    "BATCH_008",
     "get_batch",
 ]
 
@@ -1840,6 +1841,442 @@ BATCH_007 = Batch(
 )
 
 
+BATCH_008 = Batch(
+    batch_id="008-ingredients-and-barriers",
+    description=(
+        "Rental 43 ended with two facts and one admitted mistake, and this batch is built "
+        "out of all three. **The card moved every measured effect to zero** -- two RTX "
+        "5090s on the same memory clock, driver and torch ran the reference 1.61x apart, "
+        "and on the slow one the champion, the static cache and the composition all "
+        "measured nothing. **The conv regression was traced to the custom op rather than "
+        "to the conv**: an opaque op is a fusion barrier, so inductor materialised 190 "
+        "buffers where it had allocated 59 and recomputed a producer chain 24 times per "
+        "token. And the batch **composed a mechanism it had not re-measured**, so its "
+        "0.8111 cannot be read at all. "
+        "So: every ingredient runs alone, today, before anything composes it -- the head, "
+        "the conv, the cache, each on this card in this process. Then the experiment that "
+        "follows from the barrier: `045` computes the same four taps as torch operations "
+        "rather than as one opaque call, and `050` against `051` prices what the opacity "
+        "costs when it is composed with the champion. The head's last untried tile "
+        "direction and its two remaining encodings fill the cheap slots. "
+        "Eleven slots. Two predict a loss and one predicts nothing decisive, which is the "
+        "point: the barrier claim is falsifiable and the tile claim has a registered "
+        "consequence either way."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band or every other number in this "
+                "batch is void. It has measured 1.0009, 1.0018, 1.0024, 0.9913, 1.0008, "
+                "1.0053 and **1.0101** on the seven rentals that got this far, and the "
+                "last of those is the largest offset and by far the widest band recorded "
+                "-- on the rental where nothing else measured anything. **Read its sign "
+                "and its IQR before reading any other slot**: on rental 43 the identity "
+                "candidate removed 0.102 ms/token by installing nothing, which is more "
+                "than the champion removed. "
+                "This slot also now runs the card pre-flight: `card_baseline.card_report` "
+                "compares the `compiled` column's achieved bandwidth here against every "
+                "rental that has measured this GPU model, and says loudly if the card is "
+                "an outlier. Rental 43's 845 GB/s against rental 40's 1283 would have been "
+                "on the log at minute 27 instead of in the writeup. It reports and never "
+                "decides: a slow card still produces valid within-slot ratios."
+            ),
+        ),
+        Hypothesis(
+            slug="043-int4-head",
+            kernels=("tiled_int4_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion exactly as rentals 40 and 43 ran it: group-128 int4 on the "
+                "tied LM head alone, at the heuristic tile -- BLOCK_N 64, BLOCK_K 64, "
+                "SPLIT_K 1, 4 warps, 3 stages -- with the install-time tuner off. 1271.40 "
+                "MB/token of bf16 weight becomes 317.85 MB of packed nibbles plus 19.87 MB "
+                "of fp32 group scales, in one matmul that launches 3880 programs."
+            ),
+            prediction="win",
+            rationale=(
+                "**The incumbent, re-measured for the third time, and the reference every "
+                "other slot in this batch is read against.** It is not a new hypothesis "
+                "and it is not optional: `AGENT.md` section 6 forbids carrying a number "
+                "across sessions, and rental 43 showed why in the strongest possible form "
+                "-- the same kernel returned 1.0791 and 1.0161 on two cards, and on the "
+                "second it removed 0.097 ms/token against an identity slot that removed "
+                "0.102. Predicted **win, 1.02-1.09**, and the width of that range is the "
+                "card rather than the kernel: the 1.1249x ceiling is fixed arithmetic and "
+                "what a card collects against it is not. **The reading that matters is not "
+                "the ratio but the ratio minus identity's.** If the head again saves "
+                "nothing net of a slot that installs nothing, two of three cards say this "
+                "champion's margin is a property of rental 40, and `LEADERBOARD.md` has to "
+                "say so in the champion block rather than in a footnote. Bars are 022's "
+                "own, met to the digit on both rentals (0.9318, 0.01674 nats); a third "
+                "identical correctness result is also the evidence that the install is the "
+                "same install."
+            ),
+        ),
+        Hypothesis(
+            slug="044-fused-causal-conv",
+            kernels=("fused_causal_conv",),
+            category="A",
+            byte_share=0.00055,
+            replaces=("causal_conv",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=260 / 264,
+            kl_threshold=0.001,
+            weight_bits={},
+            mechanism=(
+                "025 unchanged: the `cat`, the cuDNN `extern_kernels.convolution`, the "
+                "`silu` and the `copy_` that advances the history, collapsed into one "
+                "Triton custom op per linear-attention layer. 72 of the step's 508 "
+                "launches become 24."
+            ),
+            prediction="win",
+            rationale=(
+                "**The ingredient batch 007 composed without measuring, which is the "
+                "mistake that batch's writeup names as its own.** `025` won at 1.0144 on "
+                "rental 40 and has not run since; `039` then composed it on rental 43 and "
+                "returned 0.8111, on a card where every other mechanism measured zero. "
+                "Those two facts cannot be separated without this slot, and it costs three "
+                "minutes. Predicted **win, 1.005-1.02**: the saving is 48 of 508 launches "
+                "plus the cuDNN dispatch premium, which is 0.08-0.24 ms of a 7.30 ms step "
+                "-- the same arithmetic 025 was registered against, and the low end of it "
+                "is inside the noise band. **On a slow card it shrinks**, because a fixed "
+                "dispatch saving is a smaller fraction of a longer step, so an "
+                "`inconclusive` here is not a refutation and the writeup must not read it "
+                "as one. It is also the control for 045: same arithmetic, same bars, one "
+                "opaque call against a fusible expression."
+            ),
+        ),
+        Hypothesis(
+            slug="045-inline-causal-conv",
+            kernels=("inline_causal_conv",),
+            category="A",
+            byte_share=0.00055,
+            replaces=("causal_conv",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=260 / 264,
+            kl_threshold=0.001,
+            weight_bits={},
+            mechanism=(
+                "The same four taps at seq_len 1, written as torch operations -- four "
+                "multiplies, a round to bf16, a silu, and a shifted history -- instead of "
+                "`F.conv1d`. The expression is pointwise, so inductor may fuse it into the "
+                "kernels it was stranded between, and **there is no opaque op for it to "
+                "fence against**."
+            ),
+            prediction="win",
+            rationale=(
+                "**The experiment that decides whether entry 8's new law is the whole "
+                "story.** Rental 43's dump of `039` showed the fused conv doing exactly "
+                "what it promised -- all 24 cuDNN calls gone, `triton_poi_*` 89 to 41, the "
+                "`cat` replaced, 24 fewer launches than the baseline -- while the step ran "
+                "**19% slower**, because `torch.ops.deltaforge.fused_causal_conv_step` is "
+                "a fusion barrier: 59 allocations became 190 and the linear-attention "
+                "state reduction over (1, 32, 128, 128) was recomputed twice per layer. "
+                "This slot removes the same cuDNN dispatch and the same `cat` **without "
+                "erecting the barrier**, which is the one variable separating it from 044. "
+                "Predicted **win, 1.005-1.03**, the same ceiling as 044 because it is the "
+                "same saving; what differs is the bill. Three readings, all findings: "
+                "**045 > 044** prices the opacity directly and makes the law quantitative; "
+                "**045 = 044** says the barrier costs nothing when nothing else is "
+                "installed and moves the whole effect into the composition, which 050 "
+                "against 051 then measures; **045 < 044** says inductor's own pointwise "
+                "schedule is worse here than one hand-written kernel, which would be the "
+                "first evidence in this project that a Triton body beats inductor on a "
+                "pointwise operation. Bars are 044's exactly, and this is the only "
+                "candidate in the repository whose numerics the CPU suite verifies rather "
+                "than assumes -- `inline_causal_conv_test` asserts bit-identity with "
+                "`GatedDeltaNet._causal_conv` at rtol=0, atol=0 in bf16."
+            ),
+        ),
+        Hypothesis(
+            slug="046-static-decode-cache",
+            kernels=("static_decode_cache",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_cache",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "`mark_static_address` on all 64 decode-cache tensors. Inductor reads "
+                "`static_input_idxs` twice: once for the cudagraph mutation check, which "
+                "has refused twice, and once in the launch path, where a static input "
+                "skips the per-call alignment test and the copy behind it -- 64 tensors on "
+                "each of 128 decode steps."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "**Two cards, two answers, and this is the tiebreak.** `034` won at 1.0196 "
+                "(IQR 0.00149) on rental 42 with the identity slot at 1.0053, so about "
+                "1.4% net; on rental 43 the same mechanism inside `036` contributed 722 "
+                "GB/s against the head's 717 -- zero, inside a 0.0133 IQR. The prediction "
+                "is **inconclusive** and it is a real prediction rather than a hedge: a "
+                "dispatch saving denominated in microseconds of CPU work should be *more* "
+                "visible on a slower card, not less, and the fact that it was not is the "
+                "one rental-43 result the card explanation does not obviously cover. "
+                "Predicted **0.995-1.02**, straddling the band on purpose. It also carries "
+                "the batch's only cudagraph counters: entry 8's actual hypothesis is 0 for "
+                "2 with `cudagraph_nodes: 0` both times, and a third zero on torch 2.11 "
+                "closes the version question that a laptop running 2.14 has already half "
+                "answered. **A win here is a win for the alignment check, not for CUDA "
+                "graphs**, and the record has to keep saying which."
+            ),
+        ),
+        Hypothesis(
+            slug="047-int4-head-narrow-tile",
+            kernels=("tiled_int4_head_narrow",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion's kernel, site and arithmetic at BLOCK_N=32 instead of 64: "
+                "7760 programs instead of 3880, and 64 contiguous packed bytes per row "
+                "read instead of 128."
+            ),
+            prediction="loss",
+            rationale=(
+                "**The last tile direction this site has, registered with a consequence "
+                "for either answer.** Four points have now been measured in the decode "
+                "step -- heuristic BLOCK_N 64 at 1.0791/1.0161, searched 256 at 0.9920, "
+                "pinned 128 at 0.9343, pinned 64-with-5-stages at 0.9502 -- and rental 43 "
+                "killed both of the ranked mechanisms: register pressure (037 held "
+                "per-thread pressure constant and still lost 0.83 ms/token) and latency "
+                "(038 deepened the pipeline, the axis that pays for a latency-bound loop, "
+                "and lost 0.63). What survives is the wave-count reading, that the head is "
+                "fast because it has programs. **Predicted `loss`**, at 0.97-1.01, because "
+                "the champion already runs 23 waves on 170 SMs -- far past the point where "
+                "more programs buy occupancy -- while halving the contiguous run per row "
+                "read costs coalescing that is not free at 656 GB/s. The prediction is "
+                "worth a slot precisely because of what it closes: if this loses, five "
+                "measured points disagree with the heuristic in both directions, **the "
+                "tile is not what holds this site below the baseline's byte rate**, and "
+                "`docs/HYPOTHESES.md` entry 9 stops spending slots on tiles and starts "
+                "spending them on a published int4 kernel as an unscored column. If it "
+                "wins, the wave-count theory is the survivor and BLOCK_N=16 is next. Bars "
+                "are 022's and must be met exactly: the geometry changes, the summation "
+                "order does not, so a different correctness number here is a tiling bug."
+            ),
+        ),
+        Hypothesis(
+            slug="048-int8-head",
+            kernels=("tiled_int8_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=256 / 264,
+            kl_threshold=0.003,
+            weight_bits={"head": 8},
+            mechanism=(
+                "The same site at 8 bits, per-channel scale: 635.7 MB/token instead of "
+                "1271.40, with one convert per byte instead of int4's nibble unpack. Ties "
+                "the baseline at 588 GB/s."
+            ),
+            prediction="win",
+            rationale=(
+                "**Registered on rental 40, defective there, fixed, and never measured "
+                "since -- so it is new code that has never run** (`AGENT.md` section 8 on "
+                "declined and defective slots). `023` returned 1.0373 with a layer-1 "
+                "relative error of 4511, because `_tiled_gemv_scaled_kernel` declared "
+                "`SCALE` and `HAS_SCALE` and read neither. The missing operation is one FMA "
+                "in an epilogue, so the *timing* was usable and the correctness was not; "
+                "this slot makes both usable at once. Predicted **win, 1.01-1.05**: it "
+                "moves 635.7 MB where the baseline moves 1271.40, and it achieved 847 GB/s "
+                "at this site against int4's 656 -- a higher byte rate on twice the bytes, "
+                "which is why it should win by less. **The ordering is the finding, not "
+                "the ratio.** int4 ahead of int8 says the kernel is bandwidth-bound here "
+                "and the nibble unpack is paid for; int8 ahead of int4 says it is still "
+                "issue-bound, which is what batch 003 measured on the crowded sites and "
+                "what rental 40 refuted on this one. Bars are 013 minus 012's measured "
+                "point -- about 0.0001 nats and roughly one flip of 264 -- widened to "
+                "256/264 and 0.003 for the per-channel scale."
+            ),
+        ),
+        Hypothesis(
+            slug="049-fp8-head",
+            kernels=("tiled_fp8_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=252 / 264,
+            kl_threshold=0.012,
+            weight_bits={"head": 8},
+            mechanism=(
+                "The same site and the same bit width as 048, stored e4m3. On sm_120 the "
+                "conversion happens inside the MMA pipeline rather than as an ALU "
+                "instruction on the critical path, which is the tax batch 003 measured at "
+                "**1.438x** for int8 against bf16 in the same kernel."
+            ),
+            prediction="win",
+            rationale=(
+                "**The third encoding at the one site where nothing else is binding, and "
+                "the only one of the three that has never compiled.** `024` died on "
+                "rental 40 because the kernel's masked load used `other=0`, which will not "
+                "cast to e4m3; that is fixed and `kernel_contract_test` now refuses the "
+                "shape of it on a CPU, but the fixed path has still never executed on a "
+                "card, so it runs after 048 and carries the batch's real error risk. "
+                "Predicted **win, 1.01-1.06**, bracketing 048: same bytes, and the whole "
+                "difference between the two slots is the conversion tax, isolated at a "
+                "site where the kernel is not grid-starved. **048 against 049 is the "
+                "measurement**; either one against the baseline is a byte saving anyone "
+                "would expect. Bars are looser than 048's -- e4m3 carries 3 mantissa bits "
+                "against int8's effective 7 -- and derived from batch 003's two measured "
+                "points (int8 0.0011 nats and 8/264 flips, int4 0.0919 and 38/264), not "
+                "from priors about fp8, because priors are what failed four working slots "
+                "in batch 003."
+            ),
+        ),
+        Hypothesis(
+            slug="050-int4-head-and-conv",
+            kernels=("tiled_int4_head", "fused_causal_conv"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion plus the Triton custom-op conv: 953.55 MB/token removed from "
+                "one matmul, and 48 of the step's 508 launches removed from 24 layers -- "
+                "at the cost of an opaque op inductor cannot fuse across."
+            ),
+            prediction="loss",
+            rationale=(
+                "**The third run of the largest unexplained number in this project, and "
+                "the first one whose ingredients are both measured in the same process.** "
+                "It returned 0.7937 on rental 42 at the tuned tile and 0.8111 on rental 43 "
+                "at the champion's, so the tile is not the cause; the dump named a "
+                "structural one. **Predicted `loss`, 0.78-0.85**, and the prediction is "
+                "the claim: if the fusion barrier is the mechanism, this regression is "
+                "structural and therefore card-independent, and a third measurement near "
+                "0.81 on a third card is what confirms that. A result near 1.09 -- the "
+                "naive sum of two measured savings -- would refute the barrier reading "
+                "outright and mean both prior numbers belonged to something neither dump "
+                "nor arithmetic has found. **This slot is not gated and runs before 051 on "
+                "purpose**: it is the control for the batch's payoff slot, and a "
+                "composition whose ingredients and whose alternative are all measured in "
+                "the same process is the thing batch 007 could not produce."
+            ),
+        ),
+        Hypothesis(
+            slug="051-int4-head-and-inline-conv",
+            kernels=("tiled_int4_head", "inline_causal_conv"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion plus the same four taps expressed as fusible torch "
+                "operations: the identical pair of savings as 050, with nothing in the "
+                "graph inductor has to fence against."
+            ),
+            prediction="win",
+            rationale=(
+                "**The batch's payoff slot, and it is one variable away from 050.** Same "
+                "site, same bytes, same launches removed, same bars -- the only difference "
+                "is whether the conv arrives as an opaque custom op or as an expression "
+                "inductor can schedule. Predicted **win, 1.03-1.10**: the champion's "
+                "measured saving plus the conv's, with none of the 131 extra allocations "
+                "and none of the 24 recomputed state reductions that the dump found in "
+                "050's graph. **051 minus 050 is the price of opacity**, measured rather "
+                "than argued, on a pair where every other variable is held fixed -- and it "
+                "is the number entry 8's law is currently missing, since 24 extra "
+                "reductions and 131 allocator calls do not add up to the +2.68 ms/token "
+                "that was measured. If 051 also lands near 0.81 the barrier explanation is "
+                "wrong and the conv simply does not compose with the head, which is a "
+                "finding this batch can state because 043, 044 and 045 are all on disk by "
+                "the time it runs. It is deliberately **not gated on 045**: a floor keyed "
+                "to an absolute ratio would decline the batch's most informative slot on "
+                "exactly the slow card that makes every absolute meaningless, which is how "
+                "rental 43 lost three of its nine."
+            ),
+        ),
+        Hypothesis(
+            slug="052-int4-head-inline-conv-cache",
+            kernels=("tiled_int4_head", "inline_causal_conv", "static_decode_cache"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("decode_step", "causal_conv", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="051-int4-head-and-inline-conv",
+                floor=1.00,
+                reason=(
+                    "this slot is 051 plus a mechanism 046 has already measured alone, so "
+                    "with 051 below 1.00 there is nothing here the batch does not hold: it "
+                    "would add a third install on top of a composition that lost, which is "
+                    "what batch 003 spent five slots doing. The floor is 1.00 rather than a "
+                    "champion-beating bar because on a slow card every absolute collapses "
+                    "toward it, and a floor that declines a slot for the card's reasons "
+                    "rather than the hypothesis's is the failure mode rental 43 recorded"
+                ),
+            ),
+            mechanism=(
+                "Three disjoint mechanisms at once: bytes inside one matmul, launches "
+                "inside 24 layers, and dispatch work outside every kernel -- with the conv "
+                "in the form that does not cost its neighbours."
+            ),
+            prediction="win",
+            rationale=(
+                "**The batch's arithmetic maximum, and the first three-way composition "
+                "this project could actually read.** Every one of its three pairs is "
+                "measured above it in the same process -- 043, 046, 051 alone, and 051 is "
+                "the head-and-conv pair -- so whatever it returns is a difference rather "
+                "than a number: a shortfall against 051 times 046 divided by 043 is the "
+                "interaction, isolated, with both halves on disk to subtract. Predicted "
+                "**win, 1.04-1.12**. The question it asks that nothing else here does: the "
+                "conv's saving is a dispatch saving and the static cache's is too, so if "
+                "052 minus 051 comes out below what 046 measured alone, **the two are "
+                "competing for the same microseconds** and the launch account this project "
+                "has kept since rental 38 is not additive. Either reading is a finding. It "
+                "runs last, with everything cheaper already on disk, and all three "
+                "installers are asserted to survive together on the CPU fixture -- two "
+                "replace the root class, keyed by base since batch 005, and the third "
+                "patches `GatedDeltaNet`."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -1848,6 +2285,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_005.batch_id: BATCH_005,
     BATCH_006.batch_id: BATCH_006,
     BATCH_007.batch_id: BATCH_007,
+    BATCH_008.batch_id: BATCH_008,
 }
 
 

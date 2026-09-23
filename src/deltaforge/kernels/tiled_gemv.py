@@ -1449,6 +1449,46 @@ def install_tiled_int4_head_deep(model, entry=None) -> None:
     _install_head(model, kind="int4", shape=HEAD_DEEP_SHAPE)
 
 
+# --------------------------------------------------------------------------------------
+# Batch 008 — the last tile direction this site has left
+# --------------------------------------------------------------------------------------
+#
+# Four points on the head have now been measured **in the decode step**, which is the one
+# selection method rental 42 did not discredit:
+#
+#     heuristic   BLOCK_N  64, 4 warps, 3 stages    3880 programs   1.0791 / 1.0161
+#     searched    BLOCK_N 256                        970 programs   0.9920
+#     wide        BLOCK_N 128, 8 warps, 3 stages    1940 programs   0.9343
+#     deep        BLOCK_N  64, 4 warps, 5 stages    3880 programs   0.9502
+#
+# The two pinned in advance on rental 43 were built to separate register pressure from
+# grid size, and both lost. `037` held per-thread pressure at the champion's and doubled
+# the width: worse. `038` kept the width and deepened the pipeline, which is the axis that
+# pays if the kernel is latency-bound: also worse. **So pressure is refuted and latency
+# with it, and every measured point that lost had fewer programs than the one that won.**
+#
+# What is left is the wave-count reading: the head is fast because it has programs, and
+# more of them is better until the contiguous run per program gets too short to coalesce.
+# BLOCK_N=32 doubles the grid to 7760 and halves that run from 128 packed bytes to 64.
+# This is the one direction nothing has tried, and it is the direction `_heuristic_shape`
+# already takes for every site with ``N <= 4096``.
+#
+# **If it loses too, the tile is not what holds this site at 656 GB/s**, four measured
+# points disagree with a fifth in both directions, and `docs/HYPOTHESES.md` entry 9 should
+# stop spending slots here. That is a registered consequence, not a hedge.
+
+#: The champion's tile with half the width: 7760 programs of 64 contiguous packed bytes
+#: per row read, against 3880 of 128.
+HEAD_NARROW_SHAPE: LaunchShape = (32, 64, 1, 4, DEFAULT_NUM_STAGES)
+
+
+def install_tiled_int4_head_narrow(model, entry=None) -> None:
+    """`install_tiled_int4_head` at `HEAD_NARROW_SHAPE`. Same site, same bytes, same math."""
+    if _guard(model, "_deltaforge_tiled_int4_head_narrow"):
+        return
+    _install_head(model, kind="int4", shape=HEAD_NARROW_SHAPE)
+
+
 def _installer_log():
     """Print the tuner's choices. They are the slot's finding as much as its ratio is."""
     return print
@@ -1669,6 +1709,11 @@ def tiled_int4_head_wide_correctness_checks(model, *, device="cuda", dtype=None,
 
 def tiled_int4_head_deep_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
     """The champion's probe at `HEAD_DEEP_SHAPE`. See `tiled_int4_head_wide_correctness_checks`."""
+    return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
+
+
+def tiled_int4_head_narrow_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """The champion's probe at `HEAD_NARROW_SHAPE`. See `tiled_int4_head_wide_correctness_checks`."""
     return tiled_int4_correctness_checks(model, device=device, dtype=dtype, seed=seed, sites="head")
 
 

@@ -519,6 +519,24 @@ add up to the measured +2.68 ms/token on that card. Next instruments, in order: 
 conv **alone** (`--dump-install fused_causal_conv`), then profile. This is the first
 question here that a launch census cannot answer.
 
+**Batch 008 registers the experiment the law implies, and it is a deletion rather than a
+kernel.** If an opaque op is the cost, then the same arithmetic written in operations
+inductor is *allowed to fuse across* should collect the saving and pay none of the bill.
+`045-inline-causal-conv` is the four-tap convolution at ``seq_len == 1`` as four torch
+multiplies, a round to bf16, a silu and a shifted history — no Triton and no custom op —
+and it runs beside `044`, which is `025` unchanged, with identical bars. Two pairs, one
+variable:
+
+| | the op | composed with the int4 head |
+|---|---|---|
+| Triton custom op | `044` | `050` |
+| fusible torch expression | `045` | `051` |
+
+**`051` minus `050` is the price of opacity, measured rather than argued.** `050` is
+predicted to *lose* — twice measured near 0.80, and the barrier reading says that is
+structural and therefore card-independent — which is what makes the pair falsifiable
+rather than a second attempt at the same win.
+
 **Watch for.** `cache_offset` reaches the graph as a symint, and `cudagraphify_impl` keys a
 recording on each distinct int — so a 128-token decode wants **128 recordings**, against a
 `cudagraph_unexpected_rerecord_limit` that is itself 128. If it does not engage, the slot
@@ -682,6 +700,14 @@ consequence stands: **the next point is BLOCK_N=32**, the wave-count theory — 
 programs, more of them — and it is now the only tile direction this entry has left. If
 that loses too, the tile is not what holds the head at 656 GB/s and this entry should stop
 spending slots on tiles.
+
+**Batch 008 registers that point as `047-int4-head-narrow-tile`, and registers a
+prediction of `loss` against it.** The champion already runs 23 waves on 170 SMs, far past
+where more programs buy occupancy, and BLOCK_N=32 halves the contiguous run per row read
+from 128 packed bytes to 64. The consequence is registered with the prediction: a fifth
+measured point that loses means the tile is not the variable, and this entry stops
+spending slots on tiles and starts spending them on a published int4 kernel as an unscored
+column — the instrument it has asked for since it was written.
 
 **And the champion's own site has an accounting bias worth knowing before reading its
 GB/s.** `decode_bytes_per_token` scales a region's bf16 bytes by `bits/16` and counts no

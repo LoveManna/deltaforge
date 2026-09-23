@@ -25,6 +25,7 @@ from .batches import (
     BATCH_005,
     BATCH_006,
     BATCH_007,
+    BATCH_008,
     BATCHES,
     get_batch,
 )
@@ -1019,5 +1020,205 @@ def test_the_007_bars_are_022_s_own_bars_everywhere():
 
 def test_007_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_007:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+# -- batch 008 ------------------------------------------------------------------------
+
+
+def test_batch_008_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_008) <= 12
+    assert not BATCH_008.is_calibration
+    assert BATCH_008.hypotheses[0].is_identity
+    assert BATCH_008.calibration_slug == "000-identity"
+    assert get_batch("008-ingredients-and-barriers") is BATCH_008
+
+
+def test_batch_008_names_registered_kernels_with_installers_and_checks():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_008:
+        for name in hyp.kernels:
+            assert REGISTRY.get(name) is not None, name
+            assert name in INSTALLERS, name
+            assert name in CHECK_BUILDERS, f"{name} has no layer-1 checks"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_008), ids=lambda h: h.slug)
+def test_every_008_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = {name: type(module) for name, module in model.named_modules()}
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    after = {name: type(module) for name, module in model.named_modules()}
+
+    if hypothesis.is_identity:
+        assert not applied and after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels), hypothesis.slug
+        assert after != before or type(model) is not before[""], hypothesis.slug
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_008), ids=lambda h: h.slug)
+def test_installing_a_008_hypothesis_is_idempotent(hypothesis, model):
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    once = {name: type(module) for name, module in model.named_modules()}
+
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    assert {name: type(module) for name, module in model.named_modules()} == once
+
+
+def test_every_ingredient_of_every_008_composition_is_measured_alone_first():
+    """The rule batch 007 wrote down after breaking it, asserted rather than remembered.
+
+    `039` composed the fused conv with the champion on a rental that never re-measured the
+    conv, so its 0.8111 cannot separate "this composition is bad" from "the conv is bad on
+    this card" — and rental 43 was a card where every mechanism went flat. A composition
+    slot is worth nothing unless each of its kernels was measured alone, in the same
+    process, earlier in the same batch.
+    """
+    order = [hyp.slug for hyp in BATCH_008]
+    alone = {hyp.kernels[0]: hyp.slug for hyp in BATCH_008 if len(hyp.kernels) == 1}
+
+    for hyp in BATCH_008:
+        if len(hyp.kernels) < 2:
+            continue
+        for name in hyp.kernels:
+            assert name in alone, f"{hyp.slug} composes {name}, which no slot measures alone"
+            assert order.index(alone[name]) < order.index(hyp.slug), (
+                f"{hyp.slug} runs before {alone[name]}, which measures its ingredient"
+            )
+
+
+def test_the_two_conv_slots_are_one_variable_apart():
+    """`044` and `045` are the batch's controlled pair: same arithmetic, same bars.
+
+    The whole claim is that an opaque custom op costs what inductor can no longer fuse
+    across it. That is only measurable if everything except the opacity is held fixed, so
+    a difference in what they replace, what bytes they attack or what they are gated on
+    would quietly turn the comparison into two unrelated numbers.
+    """
+    triton, inline = BATCH_008.get("044-fused-causal-conv"), BATCH_008.get("045-inline-causal-conv")
+
+    for field in ("category", "byte_share", "replaces", "top1_threshold", "kl_threshold"):
+        assert getattr(triton, field) == getattr(inline, field), field
+    assert triton.weight_bits == inline.weight_bits == {}
+    assert triton.requires is None and inline.requires is None
+
+    composed = BATCH_008.get("050-int4-head-and-conv"), BATCH_008.get("051-int4-head-and-inline-conv")
+    assert composed[0].byte_share == composed[1].byte_share
+    assert composed[0].replaces == composed[1].replaces
+    assert set(composed[0].kernels) ^ set(composed[1].kernels) == {
+        "fused_causal_conv",
+        "inline_causal_conv",
+    }
+
+
+def test_the_008_slots_that_re_measure_an_ingredient_are_not_gated():
+    """Nothing this batch reads other slots against may be declined.
+
+    A floor keyed to an absolute ratio declines slots for the *card's* reasons on exactly
+    the card where every absolute collapses — which is how rental 43 lost three of its
+    nine, including a composition that has now been registered twice and run never.
+    """
+    for hyp in BATCH_008:
+        if hyp.slug == "052-int4-head-inline-conv-cache":
+            continue
+        assert hyp.requires is None, hyp.slug
+
+
+def test_the_only_008_gate_is_the_three_way_and_it_names_its_reason():
+    hyp = BATCH_008.get("052-int4-head-inline-conv-cache")
+
+    assert hyp.requires is not None
+    assert hyp.requires.slug == "051-int4-head-and-inline-conv"
+    assert hyp.requires.floor == 1.00
+    assert len(hyp.requires.reason) > 60
+    # Below the incumbent on purpose: the floor asks "did this composition lose?", not
+    # "did it beat the champion?" — a bar at the champion would decline the slot on a slow
+    # card for reasons that have nothing to do with the hypothesis.
+    assert hyp.requires.floor < INCUMBENT
+
+
+def test_the_three_way_008_composition_keeps_all_three_installs(model):
+    from .kernels.inline_causal_conv import _delta_nets
+    from .kernels.tiled_gemv import TiledLMHead
+
+    apply_champions(model, scoped_registry(BATCH_008.get("052-int4-head-inline-conv-cache"), REGISTRY))
+
+    assert isinstance(model.tiled_lm_head, TiledLMHead), "the head install was discarded"
+    assert type(model).project_logits is not ReferenceModel.project_logits
+    assert getattr(model, "_deltaforge_static_cache", False), "the static-cache install was discarded"
+    assert type(model).new_cache is not ReferenceModel.new_cache
+    nets = _delta_nets(model)
+    assert nets, "the fixture has no linear-attention layer to patch"
+    assert all(type(net).__name__ != "GatedDeltaNet" for net in nets), "the conv install was discarded"
+
+
+def test_the_narrow_tile_is_pinned_and_does_not_leak_into_the_next_slot(model):
+    from .kernels.tiled_gemv import (
+        HEAD_NARROW_SHAPE,
+        _heuristic_shape,
+        _launch_shape,
+        head_shape_key,
+    )
+
+    apply_champions(model, scoped_registry(BATCH_008.get("047-int4-head-narrow-tile"), REGISTRY))
+    kind, n, k = head_shape_key(model.tiled_lm_head)
+    assert _launch_shape(n, k, kind) == HEAD_NARROW_SHAPE
+    assert HEAD_NARROW_SHAPE[0] == 32, "the one untried direction is thinner, not wider"
+
+    fresh = ReferenceModel(tiny_config())
+    apply_champions(fresh, scoped_registry(BATCH_008.get("043-int4-head"), REGISTRY))
+
+    assert _launch_shape(n, k, kind) == _heuristic_shape(n, k), "043 inherited 047's tile"
+
+
+def test_the_008_head_bars_are_022_s_own_and_the_encodings_loosen_with_their_error():
+    """One pair of bars per perturbation, each derived from something measured.
+
+    Every int4-head slot reproduces `022`'s 0.9318 and 0.01674 nats — the conv and the
+    cache are bit-identical and a pinned tile changes no arithmetic. The 8-bit slots
+    carry their own, from `013` minus `012` for int8 and bracketed between batch 003's two
+    measured points for e4m3, because priors are what failed four working slots there.
+    """
+    int4 = {(hyp.top1_threshold, hyp.kl_threshold) for hyp in BATCH_008 if hyp.weight_bits == {"head": 4}}
+    assert int4 == {(240 / 264, 0.06)}
+
+    assert BATCH_008.get("048-int8-head").kl_threshold < BATCH_008.get("049-fp8-head").kl_threshold
+    assert BATCH_008.get("048-int8-head").top1_threshold > BATCH_008.get("049-fp8-head").top1_threshold
+    for hyp in BATCH_008:
+        if hyp.correctness != "approximate":
+            continue
+        assert hyp.correctness_positions == 264, hyp.slug
+        flips = (1.0 - hyp.top1_threshold) * 264
+        assert abs(flips - round(flips)) < 1e-9, f"{hyp.slug}'s bar is not a whole token"
+
+
+def test_every_008_slot_is_gated_approximately_except_the_identity():
+    for hyp in BATCH_008:
+        assert (hyp.correctness == "exact") == hyp.is_identity
+        assert not hyp.historical_exact_gate
+
+
+def test_008_does_not_predict_a_win_everywhere():
+    """A batch that predicted wins everywhere would be hope with a schema.
+
+    Two slots predict a loss and one predicts nothing decisive, and each is falsifiable:
+    the narrow tile (four measured points say the heuristic is best), the custom-op
+    composition (twice measured near 0.80, and the barrier reading says that is
+    structural), and the static cache (two cards, two answers).
+    """
+    predictions = {hyp.slug: hyp.prediction for hyp in BATCH_008}
+
+    assert predictions["047-int4-head-narrow-tile"] == "loss"
+    assert predictions["050-int4-head-and-conv"] == "loss"
+    assert predictions["046-static-decode-cache"] == "inconclusive"
+    assert predictions["051-int4-head-and-inline-conv"] == "win"
+
+
+def test_008_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_008:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
