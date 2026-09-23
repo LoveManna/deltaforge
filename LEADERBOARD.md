@@ -2,41 +2,60 @@
 
 ## Champion
 
-**`045-inline-causal-conv` — the four-tap causal convolution written so inductor can fuse it.**
+**Two champions, and neither of them contains a line of Triton.**
 
-| | |
-|---|---|
-| Kernel | `inline_causal_conv` (`src/deltaforge/kernels/inline_causal_conv.py`) — **no Triton, no custom op** |
-| Replaces | `causal_conv` — `GatedDeltaNet._causal_conv` at `seq_len == 1`, and nothing else |
-| Median ratio vs `torch.compile(max-autotune)` | **1.0765** on rental 45 |
-| IQR of the scoring rounds | 0.0552 |
-| Correctness | **bit-identical**: layer 1 relative error `0.0`; layer 2 **264/264 agreement, 0.00000 nats** |
-| Last verified on | RTX 5090, **rental 45, 2026-09-23**, as `045-inline-causal-conv` |
-| Result record | [`008-ingredients-and-barriers/`](results/batches/008-ingredients-and-barriers/) |
+| | `045-inline-causal-conv` | `056-int4-head-torch-dequant` |
+|---|---|---|
+| Replaces | `causal_conv` | `decode_step` |
+| Kernel | `inline_causal_conv` | `int4_head_torch_dequant` |
+| Median ratio | **1.0765** (rental 45), **1.0650** (rental 46) | **1.0171** (rental 46) |
+| IQR | 0.0552; **0.0213** | **0.0130** |
+| Correctness | **bit-identical** — 264/264, 0.00000 nats | 0.9318 agreement, 0.01674 nats |
+| Result record | [`008`](results/batches/008-ingredients-and-barriers/) | [`009`](results/batches/009-visible-kernels/) |
 
-**The largest margin this project has measured against a reference timed the same day, and
-it was won by deleting a kernel rather than writing one.** The candidate column reached
-**1219 GB/s — 68% of a 5090's 1792 GB/s vendor peak** — against the reference's 1104 in the
-same slot.
+**Both were obtained by deleting a hand-written kernel rather than writing one, and each
+beat the Triton kernel it replaced in the same process on the same card.**
 
-**Its control is what makes it a finding.** `044-fused-causal-conv` is the identical
-arithmetic — same taps, same fp32 accumulation, same round to bf16, same silu, same shifted
-history, and the record proves it: *both* are bit-identical to the reference — wrapped in a
-`torch.library.custom_op`. Measured in the same process on the same card it returned
-**0.7854**.
+### `056` beat the champion it replaced by 3.2%, and the champion was ours
 
-| | how the four taps reach inductor | ratio | ms/token | candidate GB/s |
-|---|---|---:|---:|---:|
-| `044-fused-causal-conv` | one opaque custom op per layer | **0.7854** | 9.421 | 912 |
-| `045-inline-causal-conv` | four torch multiplies inductor may fuse | **1.0765** | **7.048** | **1219** |
+`054-int4-head` is `022` unchanged — the group-128 int4 GEMV that has held `decode_step`
+since rental 40. `056` is the same weights and the same function expressed as torch
+operations and handed to `max-autotune`. Layer 2 returned **0.9318 and 0.01674 nats** for
+both, digit for digit, as it has on every rental since 40.
 
-**One variable, 37%.** The `TORCH_LOGS=output_code` dump names it exactly: the inline
-candidate removes all 24 `extern_kernels.convolution` calls and adds *nothing* — the
-pointwise launch count is unchanged at 89, because inductor folded the four taps into
-kernels that already existed — and runs 297 reductions against the reference's 298. The
-custom op removed the same 24 calls and needed **321** reductions, recomputing the
-linear-attention state reduction once per layer because it could not fuse across an opaque
-call.
+| | how the dequantise-GEMV reaches inductor | ratio | IQR |
+|---|---|---:|---:|
+| `054-int4-head` | a `torch.library.custom_op` | **0.9851** | 0.0099 |
+| `056-int4-head-torch-dequant` | torch operations, no kernel of ours | **1.0171** | 0.0130 |
+
+**The generated code says why, and half of it was not predicted.** The candidate's final
+kernel is one `triton_red_fused___rshift____to_copy__unsafe_view_add_bitwise_and_cat_mean_mm_mul_pow_rsqrt_slice_sub_unsqueeze_view_43`
+— the entire grouped nibble unpack, the `mm`, the final RMSNorm and the residual add in one
+reduction — and there is **no weight-sized buffer anywhere in the graph**. The slot was
+registered as a predicted **loss** on the assumption that inductor would materialise the
+1271.40 MB/token bf16 weight. It does not. So the hand-written kernel loses twice over: it
+forfeits the RMSNorm fusion a custom op cannot keep, and the register-level nibble unpack
+that was its claim to necessity is something inductor emits inline anyway.
+
+**The shipped pair has not been benchmarked together.** `apply_champions` now installs
+`inline_causal_conv` beside `int4_head_torch_dequant`, and `058-conv-and-head` composed the
+conv with the *retired* kernel. That composition is the first slot of the next batch.
+
+### The retired int4 head, and what four rentals did to its number
+
+**`022-int4-head` — group-128 int4 on the tied LM head — is retired.**
+
+| | rental 40 | rental 43 | rental 45 | **rental 46** |
+|---|---:|---:|---:|---:|
+| reference achieved | **1282 GB/s** | 845 GB/s | 1197 GB/s | 1167 GB/s |
+| `000-identity` | 1.0008 | 1.0101 | 0.9972 | **1.0044** |
+| the int4 head | **1.0791** | 1.0161 | 1.0105 (inconc.) | **0.9851 (loss)** |
+| IQR | 0.00034 | 0.00407 | 0.0263 | **0.0099** |
+
+The kernel never changed and never got a correctness result other than 0.9318 / 0.01674.
+What changed is that the measurement got sharp enough to resolve it, and what it resolved
+to is a loss. **The 1.1249x byte ceiling is arithmetic and stands — it is now collected by
+inductor instead.**
 
 ### The previous champion, and what three rentals did to its number
 
@@ -570,6 +589,58 @@ which then failed to come home. `run_remote.sh` now refuses a push above
 `DF_CACHE_MAX_PUSH_MB`.
 
 Full account: [`results/batches/008-ingredients-and-barriers/README.md`](results/batches/008-ingredients-and-barriers/README.md).
+
+### Batch 009 — the compiler beat our kernel at the site we won on, 2026-09-23 (rental 46)
+
+RTX 5090, **machine 140734 — the same physical host as rental 45**, reference at 1214 GB/s,
+identity **1.0044 (IQR 0.0115)**, `calibrated: true`. Eight slots ran, one errored, two
+declined. **15 scoring rounds instead of 5.** Predictions scored **5 of 10**.
+
+| Slot | Outcome | Ratio | IQR | Δ ms/token | cand GB/s | Layer 2 | Predicted |
+|---|---|---:|---:|---:|---:|---|---|
+| `000-identity` | calibrated | 1.0044 | 0.0115 | −0.017 | 1217 | exact | `identity` ✅ |
+| `053-inline-causal-conv` | **`win`** | **1.0650** | 0.0213 | −0.442 | **1254** | 264/264, 0.0 | `win` ✅ |
+| `054-int4-head` | **`loss`** | **0.9851** | 0.0099 | +0.092 | 1025 | 0.9318, 0.01674 | `win` ❌ |
+| `055-int4-head-triton-op` | **`error`** | — | — | — | — | — | `win` ❌ |
+| `056-int4-head-torch-dequant` | **`win`** | **1.0171** | 0.0130 | −0.150 | 1034 | 0.9318, 0.01674 | **`loss` ❌** |
+| `057-static-decode-cache` | **`win`** | **1.0150** | 0.0123 | −0.094 | 1161 | 264/264, 0.0 | `win` ✅ |
+| `058-conv-and-head` | **`win`** | **1.0339** | 0.0072 | −0.246 | 1053 | 0.9318, 0.01674 | `win` ✅ |
+| `059-conv-and-head-triton-op` | `precondition_failed` | — | — | — | — | — | `win` (**untested**) |
+| `060-conv-head-cache` | **`win`** | **1.0318** | 0.0084 | −0.250 | 1053 | 0.9318, 0.01674 | `win` ✅ |
+| `061-int4-mlp-torch-dequant` | `precondition_failed` | — | — | — | — | — | `win` (**untested**) |
+
+**The headline is a miss.** `056` was registered as a predicted **loss** on the assumption
+that inductor would materialise the head's 1271.40 MB/token bf16 weight, and the dump shows
+it fusing the whole grouped unpack — `__rshift__`, `bitwise_and`, `sub` — into the same
+reduction kernel as the `mm` and the final RMSNorm, with **no weight-sized buffer anywhere**
+and **48 allocations against the reference's 59**. Our hand-written kernel lost to it by
+3.2% and is retired.
+
+**`055` errored, and the error is the record.** `torch.library.triton_op` did not trace our
+GEMV on torch 2.11: dynamo ran the body under `FakeTensorMode` and the launch reached
+`.data_ptr()` instead of being intercepted by `wrap_triton`. It cost 34 s and declined
+`059`. The CPU suite asserted the op was registered and **could not** assert it traces,
+because tracing needs Triton.
+
+**Dispatch savings do not add.** The static decode cache is **+1.5% alone** (`057`, its
+first resolved measurement in three attempts) and **+0.0% on top of the fused conv**: `058`
+and `060` return the same 7.251 ms/token from genuinely separate runs. Batch 008's apparent
+3% gain there was band noise — `051`'s IQR was 0.1511.
+
+**Fifteen rounds changed answers, not just error bars.** IQRs fell from 0.0074-0.1511 to
+0.0072-0.0213 and `inconclusive` slots from six of eleven to one of ten, on the same host
+drifting the same way. The int4 head's loss, the cache's win and the non-additivity are all
+conclusions batch 008 could not have reached.
+
+**`061` declined on a floor that tested the wrong proposition** — an absolute 1.02 where the
+question was "does the dequantisation fuse", which the dump answers yes and which `056`
+against `054` answers at +3.2%. It is unexecuted, not refuted, and it is 52.75% of
+per-token bytes.
+
+`DF_CACHE_MAX_PUSH_MB` fired on its first rental: fixed cost fell from ~72 minutes to
+**~22** on the same host. **79.00 billed minutes, $0.6446.**
+
+Full account: [`results/batches/009-visible-kernels/README.md`](results/batches/009-visible-kernels/README.md).
 
 ### Column definitions
 

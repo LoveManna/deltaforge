@@ -16,6 +16,22 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-23 (rental 46): the compiler beat our kernel at the one site we had ever won
+> on, and entry 1's ceiling is collectable — by inductor.** Three registrations of one
+> program ran in one process: the champion's `custom_op` (**0.9851, a loss**), the same
+> kernel behind `triton_op` (**errored — it does not trace on torch 2.11**), and the
+> dequantise-GEMV written in **torch with no kernel of ours at all** (**1.0171, a win**).
+> Same weights, same function, layer 2 identical to the digit on all of them. **The
+> hand-written int4 head is retired and the champion of `decode_step` now contains no
+> Triton.** The dump settles the mechanism and refutes the registered prediction: one
+> reduction kernel carries `__rshift__`, `bitwise_and`, the `mm`, the final RMSNorm and the
+> residual add together, and there is **no weight-sized buffer in the graph** — inductor
+> fuses a grouped dequantisation into a 248320-wide GEMV prologue, which this file had
+> assumed for nine batches it could not. Also: **dispatch savings do not add** (the static
+> cache is +1.5% alone and +0.0% on top of the fused conv), and **15 scoring rounds instead
+> of 5** took the worst IQR from 0.1511 to 0.0213 and changed three conclusions. See
+> `results/batches/009-visible-kernels/README.md`.
+
 > **2026-09-23 (rental 45): the cost of a custom op is 21% of the whole step, and it was
 > never the composition.** `044-fused-causal-conv` and `045-inline-causal-conv` compute
 > **the same function** — both bit-identical to the reference, layer 1 at relative error
@@ -227,6 +243,33 @@ bandwidth-bound, and batch 003's was not — as it removed bytes it got **slower
 once per K-iteration and the int8→fp32 conversion landed on an already-saturated issue port.
 An int8 GEMV needs **715 GB/s just to tie** the compiled baseline and ~1170 GB/s to win;
 batch 003's reached **141**. Entry 6 is the prerequisite for retrying this one.
+
+**Measured on rental 46, and this entry's central question is answered: the ceiling is
+collectable, and a hand-written kernel is not how.** `056-int4-head-torch-dequant` is the
+dequantise-GEMV in torch — unpack, group-scale, round to bf16, accumulate in fp32 — handed
+whole to `max-autotune`. It returned **1.0171 (IQR 0.0130)** where the hand-written kernel
+returned **0.9851 (IQR 0.0099)** in the same process, on the same weights, with layer 2
+identical (0.9318, 0.01674 nats).
+
+**And the `output_code` dump answers the question this entry has carried since rental 37**
+— *why does halving the weight stream not show up on the clock?* It does, when the program
+is written so the compiler can fuse it. The candidate's final kernel is
+
+```
+triton_red_fused___rshift____to_copy__unsafe_view_add_bitwise_and_cat_mean_mm_mul_pow_rsqrt_slice_sub_unsqueeze_view_43
+```
+
+— the grouped nibble unpack (`__rshift__`, `bitwise_and`, `sub`), the `mm`, the final
+RMSNorm (`mean`, `pow`, `rsqrt`) and the residual `add`, in **one** reduction kernel — and
+the graph holds **no weight-sized buffer at all**, allocating 48 buffers where the reference
+allocates 59. The materialisation story this entry spent two rentals ranking is dead in
+both directions: inductor does not materialise, and it does not need a hand-written kernel
+to avoid it.
+
+**What that leaves.** The 91.85% is still there and the ceilings are unchanged. The route
+to them is now `int4_head_torch_dequant`'s, applied to the MLP — `061`, 52.75% of per-token
+bytes at a 1.6545x ceiling, registered and **declined on a floor that tested the wrong
+proposition** (see the graveyard note below). It is the first slot of the next batch.
 
 **Measured on rental 45: the regime is settled, and the next obstacle is not arithmetic at
 all.** Three encodings ran at the tied head in one process — int4 **1.0105**, int8
@@ -612,7 +655,42 @@ dequantise-GEMV so inductor schedules it, or register it through `torch.library.
 rather than `custom_op`, and measure the pair. That is a registered, mechanistic,
 falsifiable next slot rather than another tile.
 
-**Batch 009 is registered against the corollary, as three registrations of one program.**
+**Rental 46 ran it and the corollary held, though not by the route it registered.**
+
+| | how the dequantise-GEMV reaches inductor | ratio | IQR |
+|---|---|---:|---:|
+| `054-int4-head` | a `torch.library.custom_op` | **0.9851** | 0.0099 |
+| `055-int4-head-triton-op` | the same kernel behind `torch.library.triton_op` | **errored** | — |
+| `056-int4-head-torch-dequant` | torch operations, no kernel of ours | **1.0171** | 0.0130 |
+
+**The barrier is real at the head too — the reference fuses the final RMSNorm into the
+lm_head matmul and a custom op cannot — but it is not the only cost.** The dump shows the
+winning candidate doing the grouped nibble unpack *inside* that same fused reduction, so
+the hand-written kernel forfeits a fusion **and** does by hand something inductor emits
+inline. That is why the margin (3.2%) exceeds what a pure barrier argument predicts for a
+single call site at the end of the model.
+
+**`055` is a recorded failure of the middle route, not of the idea.** `torch.library.triton_op`
+does not trace this kernel on torch 2.11: dynamo runs the body under `FakeTensorMode` to
+build the fake implementation and the launch reaches `.data_ptr()` rather than being
+intercepted by `wrap_triton` —
+
+```
+RuntimeError: Cannot access data pointer of Tensor (e.g. FakeTensor, FunctionalTensor).
+... it is likely that we are erroneously tracing into a custom kernel.
+```
+
+The CPU suite asserted the op was **registered** and could not assert that it **traces**,
+because tracing needs Triton and the test box has none. The cheap fix is a five-second
+`torch.compile` of each newly registered module inside the dump step that already runs.
+
+**And the law gains a second clause from `060`: dispatch savings do not add.** The static
+decode cache measured **+1.5% alone** and **+0.0% composed with the fused causal conv** —
+`058` and `060` returned the same 7.251 ms/token from separate runs. Both are dispatch
+savings, and they are competing for the same microseconds. Counting launches removed
+predicts neither the sign nor the magnitude.
+
+**Batch 009 was registered against the corollary, as three registrations of one program.**
 `054` is the champion unchanged; `055` is **the identical Triton kernel behind
 `torch.library.triton_op`**, so the launch enters the graph as a structured node instead of
 an opaque call; `056` is **no kernel at all** — the dequantise-GEMV in torch, handed whole
@@ -813,8 +891,16 @@ programs, more of them — and it is now the only tile direction this entry has 
 that loses too, the tile is not what holds the head at 656 GB/s and this entry should stop
 spending slots on tiles.
 
-**Rental 45 measured it and it lost: 0.9617, +0.374 ms/token, 954 GB/s against the
-heuristic's 1003.** Five points have now been measured in the decode step:
+**Rental 46 closed this entry, and not in its favour.** The site is still the right site
+— it is the one place a dequantise-GEMV has ever won here — but **the implementation that
+collects it is inductor's, not ours.** `054-int4-head` returned **0.9851** and
+`056-int4-head-torch-dequant` **1.0171** in the same process. The hand-written kernel is
+retired; see entry 1 for the generated code that explains it. Everything below about tiles
+stands as the record of how the question was closed, and no future slot should spend a
+minute on a tile for this kernel.
+
+**Rental 45 measured the last tile point and it lost: 0.9617, +0.374 ms/token, 954 GB/s
+against the heuristic's 1003.** Five points have now been measured in the decode step:
 
 | the head at group-128 int4 | `[BLOCK_N, BLOCK_K, SPLIT_K, warps, stages]` | rental | ratio |
 |---|---|---|---:|

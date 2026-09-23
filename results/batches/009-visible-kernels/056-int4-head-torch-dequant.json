@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "win",
+  "timestamp": "2026-09-23T18:57:56.329195+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "056-int4-head-torch-dequant",
+    "batch": "009-visible-kernels",
+    "statement": "The same program with no kernel of ours in it at all: unpack the nibbles, apply the group scales, round the scaled weight to bf16 because the kernel does, accumulate in fp32 -- the expression `tiled_int4_correctness_checks` already uses as the champion's reference -- handed whole to `max-autotune`.",
+    "prediction": "loss",
+    "rationale": "**The question this project has never answered: is the hand-written kernel necessary here, or merely sufficient?** `045` won by deleting a kernel, and the honest consequence is to ask the same of the one we are proudest of. Predicted **`loss`, 0.55-0.85**, on a bandwidth budget rather than a hunch: for this to win, inductor must fuse a *grouped* dequantisation into the prologue of a 248320-wide GEMV. If it instead materialises the bf16 weight -- 1271.40 MB/token, against a 96 MB L2 that cannot hold it -- the candidate moves that **plus** the 317.85 MB of packed nibbles it read to build it, and it cannot reach 1.0 however good the matmul is. **There is no middle outcome that is hard to read.** Entry 1's one datum for this shape is `010-int8-dequant-torch` at 0.9893 on rental 37, and it is not this experiment: that was int8 on all 248 layer projections, which batch 005 showed cannot separate a kernel from a site, and its bandwidth budget proved inductor did *not* materialise there. **A win here would be the largest result this project could produce and the most uncomfortable** -- it would mean the compiler collects the 1.1249x by itself and the champion's kernel earns nothing -- which is exactly why it is registered as a predicted loss before the rental. Bars are 054's, and the layer-2 numbers must come back identical (0.9318, 0.01674) because it is the same function; `visible_int4_head_test` asserts that equality on a CPU at rtol=0, atol=0.",
+    "category": "A",
+    "byte_share": 0.148,
+    "kernels": [
+      "int4_head_torch_dequant"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.10032351966947317,
+    "correctness": 11.258823714219034,
+    "compile_candidate_compiled": 0.00682822335511446,
+    "bench": 391.48201579228044
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "db36a3ff897a",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2910,
+      "memory": 13801,
+      "observed_at": "2026-09-23T18:57:56.548929+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        966.63623046875,
+        972.9711303710938,
+        956.1831665039062,
+        956.6845092773438,
+        966.267333984375,
+        961.1021728515625,
+        977.2685546875,
+        973.3322143554688,
+        955.26416015625,
+        965.7928466796875,
+        980.2551879882812,
+        960.6128540039062,
+        967.8331298828125,
+        972.9776000976562,
+        957.09619140625,
+        964.5709228515625,
+        961.1316528320312
+      ],
+      "candidate_compiled": [
+        82203.296875,
+        945.004638671875,
+        940.1312866210938,
+        946.9645385742188,
+        941.6371459960938,
+        938.4987182617188,
+        946.2526245117188,
+        942.3079223632812,
+        945.1677856445312,
+        955.4487915039062,
+        952.6610717773438,
+        944.9866943359375,
+        951.8225708007812,
+        945.9142456054688,
+        939.7272338867188,
+        952.947021484375,
+        945.4292602539062
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        956.1831665039062,
+        956.6845092773438,
+        966.267333984375,
+        961.1021728515625,
+        977.2685546875,
+        973.3322143554688,
+        955.26416015625,
+        965.7928466796875,
+        980.2551879882812,
+        960.6128540039062,
+        967.8331298828125,
+        972.9776000976562,
+        957.09619140625,
+        964.5709228515625,
+        961.1316528320312
+      ],
+      "candidate_compiled": [
+        940.1312866210938,
+        946.9645385742188,
+        941.6371459960938,
+        938.4987182617188,
+        946.2526245117188,
+        942.3079223632812,
+        945.1677856445312,
+        955.4487915039062,
+        952.6610717773438,
+        944.9866943359375,
+        951.8225708007812,
+        945.9142456054688,
+        939.7272338867188,
+        952.947021484375,
+        945.4292602539062
+      ]
+    },
+    "median_ms": {
+      "compiled": 964.5709228515625,
+      "candidate_compiled": 945.4292602539062
+    },
+    "achieved_gbps": {
+      "compiled": 1139.6141479014514,
+      "candidate_compiled": 1033.5880906346874
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.0170740832809684,
+        1.0102643449751136,
+        1.026156771844665,
+        1.0240846941503656,
+        1.0327776424311488,
+        1.0329237304026686,
+        1.0106820975757589,
+        1.0108263836510791,
+        1.0289653025912524,
+        1.0165358515221736,
+        1.016820949169719,
+        1.0286107906905075,
+        1.0184829777122593,
+        1.0121978463703905,
+        1.0166087440258702
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.0170740832809684
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.013016932321304076
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "056-int4-head-torch-dequant",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3161,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 94300,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9318181872367859,
+      "top1_interval": [
+        0.8948098967109219,
+        0.9564399469551654
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.016741720959544182,
+      "max_kl": 0.13749361038208008,
+      "num_positions": 264,
+      "top1_threshold": 0.9090909090909091,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

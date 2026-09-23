@@ -29,6 +29,7 @@ from dataclasses import dataclass
 __all__ = [
     "CARD_SPREAD_NOTE",
     "CLOCK_DRIFT_NOTE",
+    "ROUNDS_NOTE",
     "RECORDED_REFERENCE_GBPS",
     "ReferenceObservation",
     "card_report",
@@ -72,6 +73,12 @@ RECORDED_REFERENCE_GBPS: dict[str, tuple[ReferenceObservation, ...]] = {
             1197.0,
             "healthy at slot 0 and downclocked 2910 -> 2400 MHz by slot 4; see below",
         ),
+        ReferenceObservation(
+            46,
+            "2026-09-23",
+            1214.0,
+            "machine 140734 again -- the same host as rental 45, and it drifted the same way",
+        ),
     ),
 }
 
@@ -86,6 +93,15 @@ RECORDED_REFERENCE_GBPS: dict[str, tuple[ReferenceObservation, ...]] = {
 CLOCK_DRIFT_NOTE = (
     "Rental 45's SM clock fell 2910 -> 2400 MHz at slot 4. Ratios survive it because each "
     "slot times its own reference in the same interleaved rounds; resolution does not."
+)
+
+#: **And resolution is buyable.** Rental 46 rented the same host, drifted the same way, and
+#: ran 15 scoring rounds instead of 5: IQRs fell from 0.0074-0.1511 to 0.0072-0.0213 and
+#: one slot of ten came back `inconclusive` against six of eleven. Three of that batch's
+#: conclusions were unavailable at the old sample size. See `cli.BATCH_ROUNDS`.
+ROUNDS_NOTE = (
+    "A drifting card is a resolution problem before it is a measurement problem, and more "
+    "scoring rounds are the instrument: 5 -> 15 rounds took the worst IQR from 0.15 to 0.02."
 )
 
 #: How far below the best recorded observation counts as "this is a different card".

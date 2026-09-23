@@ -10,48 +10,74 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**The biggest win this project has measured came from deleting a kernel, not writing one —
-and the same arithmetic written two ways differs by 37%.**
+**Both of this project's champions were obtained by deleting a hand-written kernel, and the
+second of them beat the kernel it replaced by 3.2%.**
 
-On 2026-09-23 (rental 45) two candidates computed **the same function** — the four-tap
-causal convolution of the decode step — and the record proves it rather than asserting it:
-both are **bit-identical to the reference**, layer 1 at a relative error of `0.0` and layer
-2 at 264/264 agreement and 0.00000 nats. They differ in one thing, which is how the
-arithmetic reaches `torch.compile`:
+On 2026-09-23 (rental 46) three registrations of *one program* — the group-128 int4
+dequantise-GEMV on the tied LM head — ran in a single process on a single card. They
+compute the same function, and the record says so: layer 2 returned **0.9318 agreement and
+0.01674 nats** for every one of them, as it has on four rentals.
 
-| | how the four taps reach inductor | ratio | candidate GB/s |
+| | how the program reaches `torch.compile` | ratio | IQR |
 |---|---|---:|---:|
-| `044-fused-causal-conv` | one opaque `torch.library.custom_op` per layer | **0.7854** | 912 |
-| `045-inline-causal-conv` | four torch multiplies inductor may fuse | **1.0765** | **1219** |
+| `054-int4-head` | a hand-written Triton kernel behind `torch.library.custom_op` | **0.9851** | 0.0099 |
+| `055-int4-head-triton-op` | the same kernel behind `torch.library.triton_op` | **errored** | — |
+| `056-int4-head-torch-dequant` | torch operations, no kernel of ours at all | **1.0171** | 0.0130 |
 
-`045` is the current champion: **1.0765 against `torch.compile(mode="max-autotune")`**, on
-a harness that calibrated at 0.9972 in the same run, with the candidate column reaching
-**1219 GB/s — 68% of an RTX 5090's 1792 GB/s vendor peak.** The generated code says why:
-the inline version removes all 24 `extern_kernels.convolution` calls and adds *nothing* —
-the pointwise launch count is unchanged, because inductor folds the taps into kernels that
-already existed — while the custom op removes the same 24 calls and then recomputes a
-reduction it can no longer fuse across, once per layer, 24 times per token.
+**The generated code explains it, and refutes what we predicted.** The slot with no kernel
+was registered in advance as a predicted **loss**, on the argument that inductor would
+materialise the head's 1271.40 MB/token bf16 weight. It does not. Its final kernel is one
+reduction carrying `__rshift__`, `bitwise_and`, the `mm`, the final RMSNorm and the residual
+add *together* — the entire grouped nibble unpack fused into the matmul prologue — and the
+graph holds **no weight-sized buffer anywhere**, allocating 48 buffers where the reference
+allocates 59.
+
+So the hand-written kernel lost twice over: a custom op cannot keep the RMSNorm fusion the
+reference welds into the lm_head matmul, **and** the register-level unpack that was its
+whole claim to necessity is something the compiler emits inline. `tiled_int4_head` is
+retired. See [`results/batches/009-visible-kernels/`](results/batches/009-visible-kernels/).
+
+**The other champion has the same shape.** On 2026-09-23 (rental 45) `045-inline-causal-conv`
+— the four-tap causal convolution written as torch operations rather than as one opaque
+call — returned **1.0765**, against **0.7854** for the identical arithmetic wrapped in a
+custom op. Both were bit-identical to the reference (264/264, 0.00000 nats). It reproduced
+at **1.0650** on rental 46, with the candidate column reaching **1254 GB/s, 70% of an RTX
+5090's 1792 GB/s vendor peak.** One variable, 37%.
 
 **The finding is the mechanism, not the number: a custom op costs its own kernel plus
-everything the compiler can no longer fuse around it, and that bill is invisible at the
-call site.** It is also what settles a 20% regression two earlier rentals had blamed on
-composing two kernels. There was no composition effect — the conv loses 21% on its own.
+everything the compiler can no longer fuse around it, and that bill is invisible at the call
+site.** It is also what settled a 20% regression two rentals had blamed on composing two
+kernels — there was no composition effect; the conv lost 21% on its own.
 See [`results/batches/008-ingredients-and-barriers/`](results/batches/008-ingredients-and-barriers/).
 
-**A hand-written Triton kernel also beats the compiler, and its margin belongs to a
-card.** On 2026-09-19 (rental 40) `022-int4-head` — the **tied LM head**, 248320 x 2560,
-*14.80% of every byte the compiled column moves, in a single matmul*, stored at 4 bits with
-group-128 scales — returned **1.0791 at an interquartile spread of 0.00034**. The identical
-kernel on the identical site returned **1.0161** on rental 43 and **1.0105** on rental 45,
-the second of those on a healthy card running the reference at 1197 GB/s with the identity
-slot at −0.28%. Layer 2 came back at 0.9318 and 0.01674 nats on all three, so the kernel is
-not in question; **what does not reproduce is what a card collects against a fixed byte
-ceiling.** Two RTX 5090s reporting the same memory clock, driver and torch differed by
-1.61x on the baseline. This file will not quote a ratio without naming its rental.
+**Where that leaves the thesis.** The premise of this project is that a hand-written Triton
+kernel can beat what `torch.compile(mode="max-autotune")` generates, and the useful result
+was always going to be *where the compiler wins and where it cannot*. Nine batches in, the
+answer on this model's decode path is that the compiler wins wherever it can see the
+program — and that the way to beat it is to stop hiding things from it.
 
-`034-static-cache-cudagraphs` won on a third, unrelated mechanism (**1.0196**, rental 42),
-bit-identical — and it won *without* its stated mechanism firing, which the record says out
-loud because the slot carries a CUDA-graph node count beside its ratio.
+**The retired kernel, and the four rentals it took to settle it.** `022-int4-head` — the
+**tied LM head**, 248320 x 2560, *14.80% of every byte the compiled column moves, in a
+single matmul*, stored at 4 bits with group-128 scales — returned **1.0791 at an
+interquartile spread of 0.00034** on 2026-09-19 (rental 40), then **1.0161** (rental 43),
+**1.0105, inconclusive** (rental 45) and finally **0.9851, a loss** (rental 46), the last
+at an IQR of 0.0099 once the batch ran 15 scoring rounds instead of 5. The kernel never
+changed and never returned a correctness result other than 0.9318 / 0.01674. What changed
+is that the measurement got sharp enough to resolve it. **The site's 1.1249x byte ceiling
+is arithmetic and stands — it is collected by inductor now.**
+
+**The card is an uncontrolled variable and this file names the rental for every number.**
+Two RTX 5090s reporting the same memory clock, driver and torch differed by **1.61x** on
+the baseline, and one card lost 17% of its SM clock partway through a rental. Ratios
+survive that — every slot times its own reference in the same interleaved rounds — but
+absolute predictions and cross-rental comparisons do not.
+
+`034-static-cache-cudagraphs` won on a third, unrelated mechanism — **1.0196** (rental 42)
+and **1.0150** (rental 46), bit-identical — and it won *without* its stated mechanism
+firing, which the record says out loud because the slot carries a CUDA-graph node count
+beside its ratio. It is also worth **nothing** once the fused causal conv is installed:
+two dispatch savings compete for the same microseconds, so this project's launch accounting
+is not additive.
 
 **Rental 42 also refuted the obvious next step, which is the more useful half.** If the
 GEMV won on the head because the head has parallelism, a better *tile* should have unlocked

@@ -28,7 +28,7 @@ exposing the next problem in the chain:
 | 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **yes — rental 40 synced clean and its fixed cost fell from ~30 min to ~13** |
 | 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | `card_baseline.card_report` — the identity slot's achieved bandwidth against every rental that measured this GPU model, said in the run log at slot 0 | **partly — it reported correctly on rental 45 (1197 GB/s, "In family"), and it cannot see blocker 19** |
 | 19 | **A card can pass the pre-flight and then downclock mid-rental** | rental 45 | nothing — ratios survive it, resolution does not | **no.** SM clock fell 2910 → 2400 MHz at slot 4 and held; the reference drifted 7.17 → 7.92 ms/token and six of eleven slots came back `inconclusive` |
-| 20 | **The compile-cache push costs an order of magnitude more than the compile it saves** | rental 45 | `DF_CACHE_MAX_PUSH_MB` (512) refuses an oversized push and compiles cold instead | tests; the real fix (prune, or push concurrently with the checkpoint fetch) is not done |
+| 20 | **The compile-cache push costs an order of magnitude more than the compile it saves** | rental 45 | `DF_CACHE_MAX_PUSH_MB` (512) refuses an oversized push and compiles cold instead | **yes — rental 46, same host, fixed cost ~72 min → ~22** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -485,6 +485,7 @@ project have not been the loud ones.
 | 43 | 2026-09-20 | **batch 007: the champion is card-dependent** — blocker 18 | 42.67 min | $0.3287 |
 | 44 | 2026-09-23 | container started, **refused the account ssh key** — blocker 2 recurred on one host | 6.23 min | $0.0500 |
 | 45 | 2026-09-23 | **batch 008: eleven slots, a new champion at 1.0765, and a custom op priced at 21%** | 115.52 min | $0.9427 |
+| 46 | 2026-09-23 | **batch 009: the compiler beat our kernel at the head**; fixed cost ~22 min after the cache guard | 79.00 min | $0.6446 |
 
 Forty rentals, $6.706, **zero leaked instances** — every one destroyed cleanly by the
 trap, including two cancelled mid-flight with SIGTERM.

@@ -645,7 +645,7 @@ REGISTRY.register(
     "tiled_int4_head",
     impl=_tiled_gemv.tiled_gemv_int4,
     replaces="decode_step",
-    status=KernelStatus.CHAMPION,
+    status=KernelStatus.RETIRED,
     hypothesis="022-int4-head",
     notes=(
         "Group-128 int4 on the tied LM head and nothing else: 248320 x 2560, 14.80% of "
@@ -657,6 +657,15 @@ REGISTRY.register(
         "candidate in this project to beat torch.compile(max-autotune), and it collects "
         "70% of its 1.123x ceiling: the head site ran at ~654 GB/s where the same kernel "
         "family averaged 228-319 over all 248 layer projections."
+        " **RETIRED on rental 46 (2026-09-23), beaten by `int4_head_torch_dequant` --"
+        " the same weights and the same function with no kernel of ours in it at all.**"
+        " It measured **0.9851** there against that slot's **1.0171**, in the same process,"
+        " with layer 2 identical to the digit (0.9318, 0.01674 nats). Four measurements:"
+        " 1.0791 (rental 40), 1.0161 (43), 1.0105 inconclusive (45), **0.9851 loss (46)**,"
+        " the last at an IQR of 0.0099 on a card whose reference ran at 1167 GB/s. The"
+        " dump names both reasons: a custom op cannot keep the final RMSNorm fused into"
+        " the lm_head matmul, and the nibble unpack it was written for is something"
+        " inductor emits inline anyway."
     ),
 )
 register_checks("tiled_int4_head", _tiled_gemv.tiled_int4_head_correctness_checks)
@@ -890,6 +899,7 @@ REGISTRY.register(
     "int4_head_torch_dequant",
     impl=_visible_int4_head.torch_dequant_gemv_int4,
     replaces="decode_step",
+    status=KernelStatus.CHAMPION,
     hypothesis="056-int4-head-torch-dequant",
     notes=(
         "The same program with no kernel of ours in it at all: unpack the nibbles, apply "
@@ -902,7 +912,15 @@ REGISTRY.register(
         "separate a kernel from a site. A bandwidth budget reads the result either way: "
         "materialising the 1271.40 MB/token bf16 weight puts the slot below 1.0 whatever "
         "the matmul does, and fusing the unpack into the prologue collects the same "
-        "1.1249x ceiling the champion collects."
+        "1.1249x ceiling the champion collects. "
+        "**CHAMPION as of rental 46 (2026-09-23): median ratio 1.0171, IQR 0.0130**, "
+        "against the hand-written kernel's 0.9851 in the same process, with layer 2 "
+        "identical (0.9318 agreement, 0.01674 nats) because it is the same function. "
+        "**It fuses**: the dump shows one reduction kernel carrying `__rshift__`, "
+        "`bitwise_and`, `mm`, `mean` and `rsqrt` together -- the whole grouped unpack and "
+        "the final RMSNorm inside the matmul -- and **no weight-sized buffer anywhere in "
+        "the graph**, against a registered prediction that it would materialise 1271.40 "
+        "MB/token. The candidate allocates 48 buffers where the reference allocates 59."
     ),
 )
 register_checks("int4_head_torch_dequant", _visible_int4_head.int4_head_torch_dequant_correctness_checks)

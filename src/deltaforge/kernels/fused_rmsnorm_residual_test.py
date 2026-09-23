@@ -65,12 +65,15 @@ def test_only_kernels_that_won_ship_as_champions():
     to ``eager`` — the *identity champion* a first GPU session calibrates on, at zero
     kernel-writing risk.
 
-    `022-int4-head` ended that on 2026-09-19 (1.0791, IQR 0.00034), and
-    `045-inline-causal-conv` joined it on 2026-09-23: median ratio **1.0765**, IQR 0.0552,
-    **bit-identical to the reference** — layer 1 at a relative error of 0.0 and layer 2 at
-    264/264 agreement and 0.00000 nats. They claim different operations, which is why both
-    ship: the registry allows one champion per replaceable op, and `052` measured the pair
-    composed at 1.0747.
+    `022-int4-head` ended that on 2026-09-19 (1.0791, IQR 0.00034) and was itself beaten
+    on rental 46 by `056-int4-head-torch-dequant` — the same weights and the same function
+    with **no kernel of ours in it at all** — which measured 1.0171 against its 0.9851 in
+    the same process. `045-inline-causal-conv` took `causal_conv` on rental 45 at 1.0765,
+    bit-identical to the reference, and reproduced at 1.0650 on rental 46.
+
+    **Both champions were obtained by deleting a kernel rather than writing one**, and
+    they claim different operations, which is why both ship: the registry allows one
+    champion per replaceable op.
 
     The calibration argument is untouched, because a batch's identity slot has never come
     from this registry — it is `Hypothesis(kernels=())`, and `scoped_registry` builds an
@@ -79,10 +82,12 @@ def test_only_kernels_that_won_ship_as_champions():
     champions = REGISTRY.champions()
 
     assert set(champions) == {"decode_step", "causal_conv"}
-    assert champions["decode_step"].name == "tiled_int4_head"
+    assert champions["decode_step"].name == "int4_head_torch_dequant"
     assert champions["causal_conv"].name == "inline_causal_conv"
-    assert "tiled_int4_head" in INSTALLERS
+    assert "int4_head_torch_dequant" in INSTALLERS
     assert "inline_causal_conv" in INSTALLERS
+    # Neither champion contains a line of Triton, which is the finding rather than a quirk.
+    assert REGISTRY.get("tiled_int4_head").status is KernelStatus.RETIRED
 
 
 def test_the_retired_conv_is_kept_registered_beside_the_one_that_beat_it():

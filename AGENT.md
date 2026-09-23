@@ -248,8 +248,24 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Forty-four instances created, forty-four destroyed, $8.498 lifetime, zero leaked. The
-champion is now a kernel this project deleted rather than wrote.**
+**Forty-five instances created, forty-five destroyed, $9.143 lifetime, zero leaked. Both
+champions are kernels this project deleted rather than wrote.**
+
+**Rental 46 (2026-09-23): the compiler beat our hand-written kernel at the one site we had
+ever won on.** Three registrations of one program ran in one process — the champion's
+`torch.library.custom_op` (**0.9851, a loss**), the same kernel behind `triton_op`
+(**errored: it does not trace on torch 2.11**), and the dequantise-GEMV written in **torch
+with no kernel of ours in it** (**1.0171, a win**). Same weights, same function, layer 2
+identical to the digit. **`tiled_int4_head` is retired and `int4_head_torch_dequant` is
+champion of `decode_step`.** The dump refutes the registered prediction outright: one
+reduction kernel carries `__rshift__`, `bitwise_and`, the `mm`, the final RMSNorm and the
+residual add together, and **no weight-sized buffer exists in the graph** — inductor fuses
+a grouped dequantisation into a 248320-wide GEMV prologue, which this repository assumed
+for nine batches it could not. See §8, and `results/batches/009-visible-kernels/`.
+
+**The shipped pair has never been benchmarked.** `apply_champions` now installs
+`inline_causal_conv` beside `int4_head_torch_dequant`; `058` composed the conv with the
+*retired* kernel. Measure that pair before anything else.
 
 **Rental 45 (2026-09-23) produced the largest margin ever measured here against a
 same-day reference, and it contains no Triton at all.** `045-inline-causal-conv` writes the
@@ -666,6 +682,54 @@ thing. A plausibility guard (`IMPLAUSIBLE_GBPS`) now refuses a measurement imply
 bandwidth than exists — and note that it would **not** have caught this one, because 1639
 GB/s is possible on paper. An impossible number can be refused by arithmetic; an
 unrepresentative one cannot.
+
+**The hand-written kernel can lose to the compiler on the same program, and at the head it
+did.** `054-int4-head` (a `custom_op`) measured **0.9851** and `056-int4-head-torch-dequant`
+— the identical function written as torch operations — measured **1.0171**, same process,
+same weights, layer 2 identical. Two costs compound, and only the first was predicted: the
+custom op forfeits the RMSNorm fusion the reference welds into the lm_head matmul, **and**
+the register-level nibble unpack it exists for is something inductor emits inline anyway.
+The dump is unambiguous — one reduction kernel carrying `__rshift__`, `bitwise_and`, `mm`,
+`mean`, `rsqrt`, and **no weight-sized buffer in the graph** against a registered prediction
+that 1271.40 MB/token would be materialised.
+
+**So the question to ask of any kernel in this repository is no longer "is it fast?" but
+"would inductor write this if I expressed it as torch?"** Both champions here answer that
+by not being kernels.
+
+**Dispatch savings do not add.** `057-static-decode-cache` measured **+1.5% alone** and
+**+0.0% composed with the fused causal conv** — `058` and `060` returned the same 7.251
+ms/token from separate runs, with round-0 compiles of 186 s and 54 s to prove they were
+separate. Both mechanisms remove CPU-side dispatch work and they compete for the same
+microseconds. Batch 008 reported the cache adding 3% there, inside a band of **0.1511**;
+at rental 46's bands it is zero. **A launch census predicts neither the sign nor the size.**
+
+**Resolution is buyable, and it changes answers rather than error bars.** A batch runs
+`cli.BATCH_ROUNDS` = 17 rounds (15 scoring) rather than 7. On the same host drifting the
+same way, IQRs fell from 0.0074-0.1511 to 0.0072-0.0213 and `inconclusive` slots from six
+of eleven to one of ten. **Three of batch 009's findings were unavailable at five rounds.**
+Budget a batch round at **~18 s**, not the ~2 s its `median_ms` suggests: `run_interleaved`
+excludes `setup` from the timed region and the 2048-token prefill is setup, so most of a
+round's wall clock is invisible to the number the bench reports.
+
+**A registration the CPU suite can see is not a registration that traces.** `055` asserted
+on a laptop that `torch.ops.deltaforge.tiled_gemv_int4_visible` existed — it did — and died
+on the box at trace time, because `torch.library.triton_op` runs the body under
+`FakeTensorMode` to build its fake implementation and our Triton launch reached
+`.data_ptr()` instead of being intercepted by `wrap_triton`. Tracing needs Triton, so no
+CPU test could have caught it. **The cheap fix is to `torch.compile` each newly registered
+module for one step inside the dump step that already runs**, before the batch spends a
+slot on it.
+
+**A precondition must name the proposition its slot depends on.** `061-int4-mlp-torch-dequant`
+— 52.75% of per-token bytes, the largest prize in the backlog — declined because its
+ingredient returned **1.0171 against a floor of 1.02**. The floor's stated purpose was "has
+the compiler shown it can fuse a grouped dequantisation at all", which the dump answers yes
+and which `056` against `054` answers at **+3.2%**. The floor was well-resolved and about
+the wrong quantity. Batch 003's bar was finer than its statistic; this one measured
+something else entirely. **Where the proposition is a comparison, the floor belongs on the
+comparison** — and `batch.Precondition` can only express "slug ≥ float", which is now a
+known limitation rather than an accident.
 
 **The cost of an opaque custom op is 21% of the whole decode step, and the fix is to stop
 writing one.** `044-fused-causal-conv` and `045-inline-causal-conv` compute **the same

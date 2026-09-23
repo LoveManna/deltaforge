@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "win",
+  "timestamp": "2026-09-23T18:41:47.280525+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "053-inline-causal-conv",
+    "batch": "009-visible-kernels",
+    "statement": "The champion: the four-tap depthwise causal conv at seq_len 1 written as torch operations -- four multiplies, a round to bf16, a silu and a shifted history -- instead of `F.conv1d`. Inductor folds it into the kernels either side and all 24 cuDNN calls disappear.",
+    "prediction": "win",
+    "rationale": "**The incumbent, re-measured, and the slot everything behind it is read against.** `AGENT.md` section 6 forbids carrying a number across sessions, and rental 45 is the rental that showed what happens when a composition's ingredient is not re-measured: three rentals attributed a 20% loss to an interaction that did not exist. Predicted **win, 1.03-1.09**. Rental 45 measured 1.0765 with an IQR of 0.0552 on a card that downclocked mid-batch; the same 15-round protocol that shrinks the identity band should shrink this one, and the honest expectation is that the **median moves less than the band does**. Below 1.02 would say the 1.0765 had the card in it, which is exactly the claim rental 45 could not test on its own. Bars are **tightened from 045's**: it measured 264/264 and 0.00000 nats, and `inline_causal_conv_test` asserts bit-identity with the reference at rtol=0, atol=0 on a CPU, so anything other than exact agreement here is a bug rather than a dtype.",
+    "category": "A",
+    "byte_share": 0.00055,
+    "kernels": [
+      "inline_causal_conv"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.09086508676409721,
+    "correctness": 10.54676266387105,
+    "compile_candidate_compiled": 0.006316373124718666,
+    "bench": 502.25183989852667
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "db36a3ff897a",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2910,
+      "memory": 13801,
+      "observed_at": "2026-09-23T18:41:47.544285+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        929.2423095703125,
+        941.2833862304688,
+        943.8397216796875,
+        930.8541259765625,
+        940.8716430664062,
+        931.4557495117188,
+        929.9229125976562,
+        938.2288208007812,
+        934.613037109375,
+        931.2805786132812,
+        928.5813598632812,
+        938.3331909179688,
+        931.5838012695312,
+        927.1670532226562,
+        935.6151123046875,
+        933.3594360351562,
+        933.016845703125
+      ],
+      "candidate_compiled": [
+        193146.296875,
+        881.472900390625,
+        877.1871337890625,
+        871.1697387695312,
+        909.43212890625,
+        874.41845703125,
+        887.3955078125,
+        882.1030883789062,
+        909.3115234375,
+        890.5647583007812,
+        916.0967407226562,
+        875.734375,
+        871.3168334960938,
+        876.4468994140625,
+        876.215576171875,
+        875.0675659179688,
+        876.0733642578125
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        943.8397216796875,
+        930.8541259765625,
+        940.8716430664062,
+        931.4557495117188,
+        929.9229125976562,
+        938.2288208007812,
+        934.613037109375,
+        931.2805786132812,
+        928.5813598632812,
+        938.3331909179688,
+        931.5838012695312,
+        927.1670532226562,
+        935.6151123046875,
+        933.3594360351562,
+        933.016845703125
+      ],
+      "candidate_compiled": [
+        877.1871337890625,
+        871.1697387695312,
+        909.43212890625,
+        874.41845703125,
+        887.3955078125,
+        882.1030883789062,
+        909.3115234375,
+        890.5647583007812,
+        916.0967407226562,
+        875.734375,
+        871.3168334960938,
+        876.4468994140625,
+        876.215576171875,
+        875.0675659179688,
+        876.0733642578125
+      ]
+    },
+    "median_ms": {
+      "compiled": 933.016845703125,
+      "candidate_compiled": 876.4468994140625
+    },
+    "achieved_gbps": {
+      "compiled": 1178.1552234543092,
+      "candidate_compiled": 1254.198823763176
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.0759844568201942,
+        1.0685106295029616,
+        1.0345704898264017,
+        1.0652288295401686,
+        1.047923845016964,
+        1.0636271804977133,
+        1.0278249126066574,
+        1.0457191012029117,
+        1.0136280575900496,
+        1.0714815104956554,
+        1.0691676844249878,
+        1.0578701959496943,
+        1.067791006857382,
+        1.0666141363107633,
+        1.064998530680765
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.064998530680765
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.021329345070233874
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "053-inline-causal-conv",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=1]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3840,
+        "total_elements": 32768,
+        "note": "headline decode step: batch 1, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=32]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 120601,
+        "total_elements": 1048576,
+        "note": "secondary decode step: batch 32, one token; output and the advanced history are both compared"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 1.0,
+      "top1_interval": [
+        0.9856577137186275,
+        1.0
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "num_positions": 264,
+      "top1_threshold": 1.0,
+      "kl_threshold": 1e-06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

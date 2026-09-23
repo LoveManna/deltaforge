@@ -433,6 +433,56 @@ kernel* pays it too, and on a cold-for-this-graph cache it is nearer 200 s than 
 slots ran in 39 minutes, and `SlotBudget` never had to stop one. The binding constraint on
 batch size is not the clock — it is the fixed cost in front of it.
 
+## Measured costs, rental 46 (2026-09-23) — batch 009, eight slots run, one errored, two declined
+
+RTX 5090 at $0.4896/hr on **machine 140734, the same physical host as rental 45**, with
+**15 scoring rounds instead of 5** and the compile-cache push refused by its new ceiling.
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **79.00 minutes, $0.6446** |
+| Fixed cost before slot 0 | **~22 minutes** (rental 45, same host: ~72) |
+| — the compile-cache push | **skipped**: 2236 MB over the 512 MB ceiling |
+| Eight slots run | **364-514 s each** (batch 008: 129-335 s) |
+| Slot that errored at trace time | **34 s** |
+| Two declined slots | 0 s |
+| Round 0 of a candidate compiling cold | **186 s** |
+| Round 0 of a candidate reusing most of a graph | **54 s** |
+| Peak memory | 14.5 GiB of 31.36 |
+
+**`DF_CACHE_MAX_PUSH_MB` paid for itself on its first rental.** Fixed cost fell from ~72
+minutes to ~22 on the same host and the same image, by trading a 33-minute 2.2 GB upload
+for ~3.5 minutes of cold compiling. The ceiling is a stopgap; pruning the cache or pushing
+it concurrently with the checkpoint fetch is still the right fix.
+
+### A benchmark round costs ~18 s, not ~2 s, and the estimate that said otherwise was 9x low
+
+`cli.BATCH_ROUNDS` was raised from 7 to 17 on the arithmetic that "a round is ~2 s of wall
+clock for both columns" — read off the ~900 ms median each column spends **inside the timed
+region**. Measured on the box, consecutive rounds are **~18 s apart**.
+
+The gap is `run_interleaved`'s `setup`, which is excluded from every timed region by design
+and is where the 2048-token prefill runs. So ten extra rounds cost **~180 s a slot**, not
+20, and about 25 minutes across a ten-slot batch.
+
+**It was worth it and the arithmetic should still have been right.** Budget a batch round
+at **~18 s**, and remember that the number the bench reports as `median_ms` is the timed
+region alone — it is not what a round costs the rental.
+
+### What 15 scoring rounds bought
+
+| | rental 45 (5 scoring rounds) | **rental 46 (15)** |
+|---|---|---|
+| IQR range across slots | 0.0074 – **0.1511** | 0.0072 – **0.0213** |
+| identity IQR | 0.0193 | **0.0115** |
+| `inconclusive` slots | **6 of 11** | **1 of 10** |
+
+Same host, same mid-rental downclock. **Three of batch 009's conclusions were unavailable at
+the old sample size**: that the int4 head loses (0.9851 ± 0.0099 against rental 45's 1.0105
+± 0.0263), that the static cache wins (1.0150 ± 0.0123, after two unresolvable attempts),
+and that the cache adds nothing to the fused conv — a difference batch 008 reported as +3%
+inside a band of 0.1511.
+
 ## What a prediction scorecard looks like when the premise is wrong
 
 Batch 006 scored **1 of 4**. Every slot predicted `win`, and `docs/BATCHES.md` has said
