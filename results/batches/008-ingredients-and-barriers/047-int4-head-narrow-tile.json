@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "inconclusive",
+  "timestamp": "2026-09-23T16:57:40.110444+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "047-int4-head-narrow-tile",
+    "batch": "008-ingredients-and-barriers",
+    "statement": "The champion's kernel, site and arithmetic at BLOCK_N=32 instead of 64: 7760 programs instead of 3880, and 64 contiguous packed bytes per row read instead of 128.",
+    "prediction": "loss",
+    "rationale": "**The last tile direction this site has, registered with a consequence for either answer.** Four points have now been measured in the decode step -- heuristic BLOCK_N 64 at 1.0791/1.0161, searched 256 at 0.9920, pinned 128 at 0.9343, pinned 64-with-5-stages at 0.9502 -- and rental 43 killed both of the ranked mechanisms: register pressure (037 held per-thread pressure constant and still lost 0.83 ms/token) and latency (038 deepened the pipeline, the axis that pays for a latency-bound loop, and lost 0.63). What survives is the wave-count reading, that the head is fast because it has programs. **Predicted `loss`**, at 0.97-1.01, because the champion already runs 23 waves on 170 SMs -- far past the point where more programs buy occupancy -- while halving the contiguous run per row read costs coalescing that is not free at 656 GB/s. The prediction is worth a slot precisely because of what it closes: if this loses, five measured points disagree with the heuristic in both directions, **the tile is not what holds this site below the baseline's byte rate**, and `docs/HYPOTHESES.md` entry 9 stops spending slots on tiles and starts spending them on a published int4 kernel as an unscored column. If it wins, the wave-count theory is the survivor and BLOCK_N=16 is next. Bars are 022's and must be met exactly: the geometry changes, the summation order does not, so a different correctness number here is a tiling bug.",
+    "category": "B",
+    "byte_share": 0.148,
+    "kernels": [
+      "tiled_int4_head_narrow"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.11909379903227091,
+    "correctness": 11.878931703977287,
+    "compile_candidate_compiled": 0.008197413757443428,
+    "bench": 129.02573257498443
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "4bfb7c08fd18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2452,
+      "memory": 13801,
+      "observed_at": "2026-09-23T16:57:40.354735+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        968.3727416992188,
+        968.5948486328125,
+        972.7379760742188,
+        967.6530151367188,
+        1013.3936157226562,
+        976.3540649414062,
+        999.5546264648438
+      ],
+      "candidate_compiled": [
+        1041.1204833984375,
+        1002.6365356445312,
+        1056.91455078125,
+        1101.105224609375,
+        1024.2034912109375,
+        1015.2572021484375,
+        995.1459350585938
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        972.7379760742188,
+        967.6530151367188,
+        1013.3936157226562,
+        976.3540649414062,
+        999.5546264648438
+      ],
+      "candidate_compiled": [
+        1056.91455078125,
+        1101.105224609375,
+        1024.2034912109375,
+        1015.2572021484375,
+        995.1459350585938
+      ]
+    },
+    "median_ms": {
+      "compiled": 976.3540649414062,
+      "candidate_compiled": 1024.2034912109375
+    },
+    "achieved_gbps": {
+      "compiled": 1125.8606993170745,
+      "candidate_compiled": 954.0920650257247
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.9203563101247781,
+        0.8788015836361149,
+        0.9894455783630454,
+        0.9616814959552059,
+        1.0044301958646804
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.9616814959552059
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.06908926823826722
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "047-int4-head-narrow-tile",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.015625,
+    "worst_max_rel_err": 0.0078125,
+    "layer1_kernel_checks": [
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3161,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 94300,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9318181872367859,
+      "top1_interval": [
+        0.8948098967109219,
+        0.9564399469551654
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.016741156578063965,
+      "max_kl": 0.13749362528324127,
+      "num_positions": 264,
+      "top1_threshold": 0.9090909090909091,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-23T16:46:28.083950+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "044-fused-causal-conv",
+    "batch": "008-ingredients-and-barriers",
+    "statement": "025 unchanged: the `cat`, the cuDNN `extern_kernels.convolution`, the `silu` and the `copy_` that advances the history, collapsed into one Triton custom op per linear-attention layer. 72 of the step's 508 launches become 24.",
+    "prediction": "win",
+    "rationale": "**The ingredient batch 007 composed without measuring, which is the mistake that batch's writeup names as its own.** `025` won at 1.0144 on rental 40 and has not run since; `039` then composed it on rental 43 and returned 0.8111, on a card where every other mechanism measured zero. Those two facts cannot be separated without this slot, and it costs three minutes. Predicted **win, 1.005-1.02**: the saving is 48 of 508 launches plus the cuDNN dispatch premium, which is 0.08-0.24 ms of a 7.30 ms step -- the same arithmetic 025 was registered against, and the low end of it is inside the noise band. **On a slow card it shrinks**, because a fixed dispatch saving is a smaller fraction of a longer step, so an `inconclusive` here is not a refutation and the writeup must not read it as one. It is also the control for 045: same arithmetic, same bars, one opaque call against a fusible expression.",
+    "category": "A",
+    "byte_share": 0.00055,
+    "kernels": [
+      "fused_causal_conv"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.09491933975368738,
+    "correctness": 10.960515841841698,
+    "compile_candidate_compiled": 0.010343893431127071,
+    "bench": 179.398900273256
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "4bfb7c08fd18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2910,
+      "memory": 13801,
+      "observed_at": "2026-09-23T16:46:28.352269+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        978.7547607421875,
+        964.0350952148438,
+        959.8804321289062,
+        947.1171875,
+        960.199462890625,
+        1026.435546875,
+        969.246826171875
+      ],
+      "candidate_compiled": [
+        48894.3984375,
+        1264.359375,
+        1229.757080078125,
+        1205.911376953125,
+        1236.8795166015625,
+        1186.36376953125,
+        1174.5921630859375
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        959.8804321289062,
+        947.1171875,
+        960.199462890625,
+        1026.435546875,
+        969.246826171875
+      ],
+      "candidate_compiled": [
+        1229.757080078125,
+        1205.911376953125,
+        1236.8795166015625,
+        1186.36376953125,
+        1174.5921630859375
+      ]
+    },
+    "median_ms": {
+      "compiled": 960.199462890625,
+      "candidate_compiled": 1205.911376953125
+    },
+    "achieved_gbps": {
+      "compiled": 1144.8024215997846,
+      "candidate_compiled": 911.5418357801333
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.7805447495922742,
+        0.7853953496093564,
+        0.7763079992858635,
+        0.8651946167241436,
+        0.8251773310196702
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.7853953496093564
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.04463258142739601
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "044-fused-causal-conv",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "fused_causal_conv.step[C=8192 batch=1]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3840,
+        "total_elements": 32768,
+        "note": "headline decode step: batch 1, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "fused_causal_conv.step[C=8192 batch=32]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 120601,
+        "total_elements": 1048576,
+        "note": "secondary decode step: batch 32, one token; output and the advanced history are both compared"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 1.0,
+      "top1_interval": [
+        0.9856577137186275,
+        1.0
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "num_positions": 264,
+      "top1_threshold": 0.9848484848484849,
+      "kl_threshold": 0.001,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

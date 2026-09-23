@@ -391,6 +391,48 @@ Rental 42 put it at 197.7 and 199.2 s and this file said "budget ~200 s". That i
 **63-70 s warm, ~200 s cold**; budget the cold number, because the cache key includes the
 card and the market decides which card.
 
+## Measured costs, rental 45 (2026-09-23) — batch 008, eleven slots, all of them run
+
+RTX 5090 at $0.4896/hr. **The largest batch this project has run, and the worst ratio of
+fixed cost to science it has recorded.**
+
+| | Measured |
+|---|---|
+| Whole rental, provisioning to destroy | **115.52 minutes, $0.9427** |
+| Fixed cost before slot 0 | **~72 minutes** |
+| — of which the compile-cache **push** | **~33 minutes for 2.2 GB** |
+| — of which the container image pull | ~25 minutes |
+| — of which the composition dump | ~6 minutes |
+| Eleven slots, total | **~39 minutes** |
+| Slot 0 — identity | 183 s (bench 166 s, correctness 16.3 s) |
+| Slots that compiled a new candidate graph | 189-197 s typical, **321-335 s** for two |
+| Slot that reused a cached graph (`047`, pinned tile) | **141 s** |
+| The approximate correctness gate | 10.5-11.9 s |
+| Peak memory | 14.5 GiB allocated of 31.36 |
+
+**Seventy-two minutes of fixed cost to buy thirty-nine of measurement, and most of the
+excess has a name.** The compile cache for this card has grown to **2.2 GB**, and pushing
+it took about 33 billed minutes at ~1.05 MB/s of home uplink — to save a warm reference
+compile worth **268 s cold against 57 s warm, about 3.5 minutes**. The teardown pull then
+timed out at `DF_CACHE_PULL_TIMEOUT` and the rental banked nothing for it.
+
+**The cache's cost scales with history and its saving does not.** A warm compile saves the
+same ~3.5 minutes whether the directory holds 200 MB or 2.2 GB, because inductor only reads
+the entries this run needs. So the transport is now bounded: `run_remote.sh` refuses a push
+above `DF_CACHE_MAX_PUSH_MB` (default 512) and says why, failing toward a **cold compile**,
+which costs minutes, rather than a stalled upload, which costs tens of them. The real fix
+is pruning the cache or pushing it concurrently with the 9.32 GB checkpoint fetch, and
+neither is done.
+
+**Two slots cost 321-335 s rather than ~190**, both of them candidates that had never
+compiled on this card in any form — `045`'s first warmup round took **194.8 s** and `049`'s
+was similar. That is the root-class-recompile line of rental 43 in a new costume: a *new
+kernel* pays it too, and on a cold-for-this-graph cache it is nearer 200 s than 70.
+
+**Eleven slots fit comfortably.** The batch's floor of 7 and ceiling of 12 held: eleven
+slots ran in 39 minutes, and `SlotBudget` never had to stop one. The binding constraint on
+batch size is not the clock — it is the fixed cost in front of it.
+
 ## What a prediction scorecard looks like when the premise is wrong
 
 Batch 006 scored **1 of 4**. Every slot predicted `win`, and `docs/BATCHES.md` has said

@@ -2433,3 +2433,62 @@ def test_the_dump_cannot_take_the_rental_with_it():
     line = next(line for line in script.splitlines() if "TORCH_LOGS=output_code" in line)
 
     assert "|| true" in line
+
+
+def test_an_oversized_compile_cache_is_not_pushed(workdir):
+    """Rental 45 spent 33 of its 115 billed minutes pushing 2.2 GB to save ~3.5.
+
+    The cache is keyed by GPU and toolchain and grows with every rental that writes to it,
+    so its cost scales with history while its saving does not: a warm reference compile is
+    268 s cold against 57 s warm however large the directory is. The guard fails toward a
+    cold compile, which costs minutes, rather than toward a stalled upload, which costs
+    tens of them.
+    """
+    cache = workdir / "cache" / "compile" / "dryrun-cache-key"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "big.bin").write_bytes(b"\0" * (3 * 1024 * 1024))
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "cachesize",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        env={**os.environ, "DF_LOCAL_CACHE": str(workdir / "cache" / "compile"), "DF_CACHE_MAX_PUSH_MB": "1"},
+    )
+
+    assert "not sending the" in result.stderr
+    assert "compiles cold, deliberately" in result.stderr
+    assert "would rsync" not in result.stderr.split("not sending the")[1].split("\n")[0]
+
+
+def test_a_cache_under_the_ceiling_is_still_pushed(workdir):
+    """The guard is a ceiling, not a retirement: ~200 MB caches are what it worked well for."""
+    cache = workdir / "cache" / "compile" / "dryrun-cache-key"
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / "small.bin").write_bytes(b"\0" * 1024)
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "cachesmall",
+        "--batch",
+        "001-calibration",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+        env={
+            **os.environ,
+            "DF_LOCAL_CACHE": str(workdir / "cache" / "compile"),
+            "DF_CACHE_MAX_PUSH_MB": "512",
+        },
+    )
+
+    assert "not sending the" not in result.stderr

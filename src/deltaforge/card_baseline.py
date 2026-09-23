@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 __all__ = [
     "CARD_SPREAD_NOTE",
+    "CLOCK_DRIFT_NOTE",
     "RECORDED_REFERENCE_GBPS",
     "ReferenceObservation",
     "card_report",
@@ -65,8 +66,27 @@ RECORDED_REFERENCE_GBPS: dict[str, tuple[ReferenceObservation, ...]] = {
             845.3,
             "HiveOS host, machine 9105, reliability 0.9808; every measured effect went to zero",
         ),
+        ReferenceObservation(
+            45,
+            "2026-09-23",
+            1197.0,
+            "healthy at slot 0 and downclocked 2910 -> 2400 MHz by slot 4; see below",
+        ),
     ),
 }
+
+#: **A pre-flight tests the card you were given, not the card you will still have.**
+#: Rental 45 reported 1197 GB/s here and passed, then lost 17% of its SM clock at slot 4
+#: and held the lower clock for the rest of the batch -- the reference column drifting
+#: from 7.17 to 7.92 ms/token inside one rental. Interleaved rounds divide that out of
+#: every ratio, so no slot is void; what it costs is *resolution*, and six of eleven slots
+#: came back `inconclusive` at IQRs of 0.019-0.151 against rental 40's 0.00034. This
+#: module cannot see that coming and should not pretend to. The instrument that answers it
+#: is more scoring rounds when the IQR is wide.
+CLOCK_DRIFT_NOTE = (
+    "Rental 45's SM clock fell 2910 -> 2400 MHz at slot 4. Ratios survive it because each "
+    "slot times its own reference in the same interleaved rounds; resolution does not."
+)
 
 #: How far below the best recorded observation counts as "this is a different card".
 #: Rental 43 sat at 0.66 of rental 40 and rental 42 at 0.95, so the line goes between

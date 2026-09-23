@@ -68,4 +68,4 @@ def test_every_report_says_a_slow_card_does_not_void_a_ratio():
 def test_the_recorded_observations_are_the_rentals_the_writeups_name():
     seen = {o.rental: o.gbps for o in RECORDED_REFERENCE_GBPS[RTX_5090]}
 
-    assert seen == {40: 1282.6, 42: 1223.2, 43: 845.3}
+    assert seen == {40: 1282.6, 42: 1223.2, 43: 845.3, 45: 1197.0}

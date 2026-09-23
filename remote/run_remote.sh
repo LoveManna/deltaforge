@@ -691,14 +691,38 @@ df_log "compile cache key: $DF_CACHE_KEY"
 if [ "$DF_DRY_RUN" != "1" ]; then
     df_log "compile workers: $(remote_capture 'nproc' | tr -d '\r' | tail -1) cores reported by the box"
 fi
-# The direction is sync.sh's first positional argument, so flags come after it.
-CACHE_FLAGS=""
-[ "$DF_DRY_RUN" = "1" ] && CACHE_FLAGS="--dry-run"
-# shellcheck disable=SC2086
-sh "$DF_REPO_ROOT/remote/sync.sh" cache-up $CACHE_FLAGS \
-    --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
-    --remote-dir "$DF_REMOTE_CACHE" --cache-key "$DF_CACHE_KEY" || \
-    df_warn "could not send the compile cache up; this rental compiles cold"
+# A cache that costs more to send than the compile it saves is not an optimisation.
+#
+# Rental 45 measured both halves. The push was **2.2 GB and took ~33 minutes** at about
+# 1.05 MB/s of home uplink, against a warm reference compile worth **268 s cold -> 57 s
+# warm, about 3.5 minutes** -- and the teardown pull then timed out, so the rental paid
+# the upload and banked nothing. 28% of a 115-minute rental went to it.
+#
+# So the push is now bounded by the only quantity that predicts its cost, which is size.
+# The ceiling is deliberately generous against the ~200 MB caches this worked well for and
+# refuses the 2.2 GB one that did not. The right fix is pruning the cache or pushing it
+# concurrently with the 9.32 GB checkpoint fetch; this is the guard until then, and it
+# fails toward a **cold compile**, which costs minutes, rather than toward a stalled
+# upload, which costs tens of them.
+DF_CACHE_MAX_PUSH_MB="${DF_CACHE_MAX_PUSH_MB:-512}"
+df_cache_push_size_mb() {
+    _dir="$DF_LOCAL_CACHE/$DF_CACHE_KEY"
+    [ -d "$_dir" ] || { printf '0'; return; }
+    du -sm "$_dir" 2>/dev/null | awk 'NR==1 { printf "%d", $1 }'
+}
+DF_CACHE_SIZE_MB=$(df_cache_push_size_mb)
+if [ "${DF_CACHE_SIZE_MB:-0}" -gt "$DF_CACHE_MAX_PUSH_MB" ]; then
+    df_warn "not sending the ${DF_CACHE_SIZE_MB} MB compile cache up: over the ${DF_CACHE_MAX_PUSH_MB} MB ceiling (DF_CACHE_MAX_PUSH_MB). Rental 45 spent 33 billed minutes pushing 2.2 GB to save ~3.5 minutes of compiling. This rental compiles cold, deliberately."
+else
+    # The direction is sync.sh's first positional argument, so flags come after it.
+    CACHE_FLAGS=""
+    [ "$DF_DRY_RUN" = "1" ] && CACHE_FLAGS="--dry-run"
+    # shellcheck disable=SC2086
+    sh "$DF_REPO_ROOT/remote/sync.sh" cache-up $CACHE_FLAGS \
+        --host "$DF_SSH_HOST" --port "${DF_SSH_PORT:-22}" \
+        --remote-dir "$DF_REMOTE_CACHE" --cache-key "$DF_CACHE_KEY" || \
+        df_warn "could not send the compile cache up; this rental compiles cold"
+fi
 remote_sh "python -m deltaforge.cli fetch-weights --model '$DF_MODEL' --dest '$DF_WEIGHTS_DIR'"
 
 # The GPU-marked tests skip themselves on a CPU machine, so this is the first place they

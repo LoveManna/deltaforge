@@ -16,6 +16,21 @@ it wins or loses.
 > measured now, and each will be amended from a predicted null to a measured one. See
 > `docs/BATCHES.md`.
 
+> **2026-09-23 (rental 45): the cost of a custom op is 21% of the whole step, and it was
+> never the composition.** `044-fused-causal-conv` and `045-inline-causal-conv` compute
+> **the same function** — both bit-identical to the reference, layer 1 at relative error
+> `0.0` and layer 2 at 264/264 and 0.00000 nats — and differ only in whether the four taps
+> reach inductor as an opaque `torch.library.custom_op` or as torch operations it may fuse.
+> They measured **0.7854 and 1.0765** in the same process. **One variable, 37%**, and
+> `045` is the new champion at the largest margin this project has recorded against a
+> same-day reference, on a candidate column reaching **1219 GB/s, 68% of vendor peak**.
+> The conv loses 21% **alone**, so `029`'s 0.7937 and `039`'s 0.8111 were never a
+> composition effect — entry 8's second paragraph below is now wrong and is corrected
+> there. Also: **int4 > int8 > fp8** at the head, which refutes entry 7; **BLOCK_N=32
+> lost** at 0.9617, which closes entry 9's tile question; and the int4 head returned
+> **1.0105 on a healthy 1197 GB/s card**, so its 7.91% belongs to rental 40. See
+> `results/batches/008-ingredients-and-barriers/README.md`.
+
 > **2026-09-20 (rental 43): the champion is card-dependent, and a custom op costs more
 > than its own kernel.** `035` re-measured `022` unchanged and got **1.0161** where rental
 > 40 got 1.0791 — on a card running the reference at **800 GB/s against 1282**, where the
@@ -212,6 +227,17 @@ bandwidth-bound, and batch 003's was not — as it removed bytes it got **slower
 once per K-iteration and the int8→fp32 conversion landed on an already-saturated issue port.
 An int8 GEMV needs **715 GB/s just to tie** the compiled baseline and ~1170 GB/s to win;
 batch 003's reached **141**. Entry 6 is the prerequisite for retrying this one.
+
+**Measured on rental 45: the regime is settled, and the next obstacle is not arithmetic at
+all.** Three encodings ran at the tied head in one process — int4 **1.0105**, int8
+**0.9865**, fp8 **0.9562** — and int4 ahead of int8 on time while moving half the bytes is
+what a bandwidth-bound site looks like. So representation is doing exactly what this entry
+always claimed. What the same rental found is that the kernel collecting it,
+`tiled_gemv_int4`, is a `torch.library.custom_op` and therefore a **fusion barrier** — the
+thing that cost the causal conv 21% of the whole step (entry 8). **This entry's remaining
+83% is now behind a scheduling question rather than a tiling one**, and the experiment is
+the same one that produced `045`: express the dequantise-GEMV so inductor can fuse across
+it, and measure the pair.
 
 **Watch for.**
 * **The `output_code` dump is still mandatory and has still never been done.** See entry 5.
@@ -448,6 +474,31 @@ quantisers and their gates are on `batch/003-int8-weight-only` and tested on a C
 cost nothing to re-run once a GEMV exists that can collect a byte saving. **The prediction
 stands unregistered-against — it was not tested, so it is not wrong.**
 
+**Measured on rental 45, and the mechanism is refuted.** `049-fp8-head` compiled and ran
+correctly for the first time — `024` had died on an `other=0` that will not cast to e4m3 —
+and at the tied head, against int8 moving identical bytes at the same site with the same
+tile and the same kernel structure:
+
+| | ratio | IQR | layer 2 | candidate GB/s |
+|---|---:|---:|---|---:|
+| `048` int8, per-channel | **0.9865** | 0.0342 | 0.9811, 0.00040 nats | 1062 |
+| `049` fp8, e4m3 | **0.9562** | **0.0105** | 0.9659, 0.00158 nats | 989 |
+
+**fp8 is 3.1% slower than int8**, at the tightest interquartile spread in the batch. The
+entire claim of this entry was that e4m3 converts *inside* the MMA pipeline on sm_120 where
+int8→fp32 is an ALU instruction on the critical path, so the same bytes should cost less
+time. They cost more. Batch 003's 1.438x int8-against-bf16 tax was real; **this entry's
+explanation of where it comes from is not**, at least not on this kernel and this card.
+
+The accuracy prediction was good and the method held for the third batch running: bars
+derived from batch 003's measured int8 (0.0011 nats) and int4 (0.0919) points bracketed
+both results — 0.00040 and 0.00158 — and passed two working kernels that priors would have
+failed.
+
+**This entry is closed as a mechanism.** What is left of it is a byte saving already
+available at int4, which beats both 8-bit encodings on time (1.0105) precisely because the
+site is bandwidth-bound — see entry 9.
+
 **Watch for.** e4m3 carries 3 mantissa bits against int8's effective 7 at per-channel scale,
 so expect accuracy between batch 003's int8 (0.0011 nats, 8/264 flips) and its int4 (0.0919
 nats, 38/264). **Derive the gate from those two measured points, not from priors** — batch
@@ -519,7 +570,49 @@ add up to the measured +2.68 ms/token on that card. Next instruments, in order: 
 conv **alone** (`--dump-install fused_causal_conv`), then profile. This is the first
 question here that a launch census cannot answer.
 
-**Batch 008 registers the experiment the law implies, and it is a deletion rather than a
+**Rental 45 ran it, and the answer is that the barrier was the entire cost — plus the
+correction that it was never about composing anything.**
+
+| | how the four taps reach inductor | ratio | ms/token | candidate GB/s |
+|---|---|---:|---:|---:|
+| `044-fused-causal-conv` | one opaque `torch.library.custom_op` per layer | **0.7854** | 9.421 | 912 |
+| `045-inline-causal-conv` | four torch multiplies inductor may fuse | **1.0765** | **7.048** | **1219** |
+
+Both are **bit-identical to the reference** — layer 1 relative error `0.0`, layer 2 264/264
+agreement and 0.00000 nats — so the 37% between them is scheduling and nothing else. The
+dump of the inline candidate says exactly what changed: all 24 `extern_kernels.convolution`
+calls gone, the pointwise launch count **unchanged at 89** because inductor folded the taps
+into kernels that already existed, and **297 reductions against the reference's 298** where
+the custom op had needed 321.
+
+**Two things this file said are now wrong and are corrected here rather than left standing.**
+
+1. **The regression was not a composition effect.** `044` alone measured 0.7854 and `050`
+   composed with the int4 head measured 0.7963 — +0.011 apart, inside both IQRs. Rentals 42
+   and 43 attributed a 20% loss to an interaction between two installers; there is no
+   interaction. The conv was simply slow, and three rentals went by without the
+   three-minute slot that would have said so, because no batch measured the ingredient
+   before composing it.
+2. **The allocation count was correlated, not causal.** Rental 43 reported 59 → 190
+   allocations beside the loss and ranked it as a suspect. The winning inline candidate
+   allocates **232**. The duplicated reduction was the mechanism and only the duplicated
+   reduction.
+
+**What survives, sharpened: a custom op costs its own kernel plus everything inductor can
+no longer fuse across it, and here that second term is 21% of the entire decode step.**
+Counting the launches you removed still proves nothing — `045` removed 25 launches and won;
+`044` removed 24 and lost 21%.
+
+**The consequence, and it is the most valuable hypothesis this file now holds.**
+`tiled_gemv_int4` — the champion of `decode_step` — is *itself* a `torch.library.custom_op`,
+and it appears in the candidate graph as four dispatches inductor cannot fuse across. The
+head is 14.80% of per-token bytes and has never been measured in a form the scheduler can
+see into. **The same experiment that produced `045` applies to it**: express the
+dequantise-GEMV so inductor schedules it, or register it through `torch.library.triton_op`
+rather than `custom_op`, and measure the pair. That is a registered, mechanistic,
+falsifiable next slot rather than another tile.
+
+**Batch 008 registered the experiment the law implied, and it was a deletion rather than a
 kernel.** If an opaque op is the cost, then the same arithmetic written in operations
 inductor is *allowed to fuse across* should collect the saving and pay none of the bill.
 `045-inline-causal-conv` is the four-tap convolution at ``seq_len == 1`` as four torch
@@ -701,7 +794,33 @@ programs, more of them — and it is now the only tile direction this entry has 
 that loses too, the tile is not what holds the head at 656 GB/s and this entry should stop
 spending slots on tiles.
 
-**Batch 008 registers that point as `047-int4-head-narrow-tile`, and registers a
+**Rental 45 measured it and it lost: 0.9617, +0.374 ms/token, 954 GB/s against the
+heuristic's 1003.** Five points have now been measured in the decode step:
+
+| the head at group-128 int4 | `[BLOCK_N, BLOCK_K, SPLIT_K, warps, stages]` | rental | ratio |
+|---|---|---|---:|
+| heuristic | `[64, 64, 1, 4, 3]` | 40 / 43 / 45 | **1.0791** / 1.0161 / 1.0105 |
+| searched by micro-benchmark | `[256, …]` | 42 | 0.9920 |
+| wide, pinned | `[128, 64, 1, 8, 3]` | 43 | 0.9343 |
+| deep, pinned | `[64, 64, 1, 4, 5]` | 43 | 0.9502 |
+| **narrow, pinned** | `[32, 64, 1, 4, 3]` | **45** | **0.9617** |
+
+**The tile question is closed and the registered consequence takes effect: this entry stops
+spending slots on tiles.** Register pressure, latency and wave count have each been tested
+by a pin registered in advance and each has lost. The next instrument here is the one this
+entry has asked for since it was written — **a published int4 kernel (Marlin, machete) as
+an unscored column** — which answers whether *any* hand-written kernel is fast on this
+shape. The other live direction is not a tile at all: see entry 8 on `tiled_gemv_int4`
+being a custom op, which has never been measured in a form inductor can fuse across.
+
+**And the champion does not reproduce on a healthy card.** `043-int4-head` returned
+**1.0105 (IQR 0.0263, `inconclusive`)** on a rental whose reference ran at 1197 GB/s and
+whose identity slot carried **−0.28%**. Rental 43's 1.0161 could be blamed on an 800 GB/s
+card; this one cannot. Two of three cards put this kernel at ~1%, and the 7.91% belongs to
+rental 40. Layer 2 was 0.9318 and 0.01674 nats on all three, so the kernel is not in
+question — the site's value is.
+
+**Batch 008 had registered that point as `047-int4-head-narrow-tile`, with a
 prediction of `loss` against it.** The champion already runs 23 waves on 170 SMs, far past
 where more programs buy occupancy, and BLOCK_N=32 halves the contiguous run per row read
 from 128 packed bytes to 64. The consequence is registered with the prediction: a fifth

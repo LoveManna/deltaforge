@@ -1,0 +1,258 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "inconclusive",
+  "timestamp": "2026-09-23T17:12:58.531027+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "051-int4-head-and-inline-conv",
+    "batch": "008-ingredients-and-barriers",
+    "statement": "The champion plus the same four taps expressed as fusible torch operations: the identical pair of savings as 050, with nothing in the graph inductor has to fence against.",
+    "prediction": "win",
+    "rationale": "**The batch's payoff slot, and it is one variable away from 050.** Same site, same bytes, same launches removed, same bars -- the only difference is whether the conv arrives as an opaque custom op or as an expression inductor can schedule. Predicted **win, 1.03-1.10**: the champion's measured saving plus the conv's, with none of the 131 extra allocations and none of the 24 recomputed state reductions that the dump found in 050's graph. **051 minus 050 is the price of opacity**, measured rather than argued, on a pair where every other variable is held fixed -- and it is the number entry 8's law is currently missing, since 24 extra reductions and 131 allocator calls do not add up to the +2.68 ms/token that was measured. If 051 also lands near 0.81 the barrier explanation is wrong and the conv simply does not compose with the head, which is a finding this batch can state because 043, 044 and 045 are all on disk by the time it runs. It is deliberately **not gated on 045**: a floor keyed to an absolute ratio would decline the batch's most informative slot on exactly the slow card that makes every absolute meaningless, which is how rental 43 lost three of its nine.",
+    "category": "B",
+    "byte_share": 0.1486,
+    "kernels": [
+      "tiled_int4_head",
+      "inline_causal_conv"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.11058134492486715,
+    "correctness": 10.924168757162988,
+    "compile_candidate_compiled": 0.007785633206367493,
+    "bench": 178.08428313024342
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "4bfb7c08fd18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2400,
+      "memory": 13801,
+      "observed_at": "2026-09-23T17:12:58.785739+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        938.7168579101562,
+        957.02783203125,
+        1109.7513427734375,
+        968.8187255859375,
+        944.0215454101562,
+        960.328857421875,
+        1179.448486328125
+      ],
+      "candidate_compiled": [
+        48730.31640625,
+        926.1044921875,
+        943.7020263671875,
+        927.6838989257812,
+        921.1434326171875,
+        984.6859130859375,
+        949.2340087890625
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        1109.7513427734375,
+        968.8187255859375,
+        944.0215454101562,
+        960.328857421875,
+        1179.448486328125
+      ],
+      "candidate_compiled": [
+        943.7020263671875,
+        927.6838989257812,
+        921.1434326171875,
+        984.6859130859375,
+        949.2340087890625
+      ]
+    },
+    "median_ms": {
+      "compiled": 968.8187255859375,
+      "candidate_compiled": 943.7020263671875
+    },
+    "achieved_gbps": {
+      "compiled": 1134.6174896353134,
+      "candidate_compiled": 1035.479840705338
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.17595523986047,
+        1.0443414256815158,
+        1.0248366453940474,
+        0.9752641371828615,
+        1.2425265797553409
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.0443414256815158
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.15111859446642262
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "051-int4-head-and-inline-conv",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.015625,
+    "worst_max_rel_err": 0.0078125,
+    "layer1_kernel_checks": [
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=1]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3840,
+        "total_elements": 32768,
+        "note": "headline decode step: batch 1, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=32]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 120601,
+        "total_elements": 1048576,
+        "note": "secondary decode step: batch 32, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0078125,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3161,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "tiled_gemv.tiled_gemv_int4[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.015625,
+        "max_rel_err": 0.0078125,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 94300,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9318181872367859,
+      "top1_interval": [
+        0.8948098967109219,
+        0.9564399469551654
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.016741156578063965,
+      "max_kl": 0.13749362528324127,
+      "num_positions": 264,
+      "top1_threshold": 0.9090909090909091,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

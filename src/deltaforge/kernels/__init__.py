@@ -619,12 +619,24 @@ REGISTRY.register(
     "fused_causal_conv",
     impl=_fused_causal_conv.fused_causal_conv_step,
     replaces="causal_conv",
+    status=KernelStatus.RETIRED,
     hypothesis="025-fused-causal-conv",
     notes=(
         "cat + extern cuDNN convolution + cache copy_ -- 72 of the decode step's 508 "
         "launches, moving 0.05% of its bytes -- collapsed into one Triton kernel per "
         "linear-attention layer. Inductor cannot fuse across `extern_kernels.convolution`, "
-        "so the producer and the consumer are stranded either side of it by construction."
+        "so the producer and the consumer are stranded either side of it by construction. "
+        "**RETIRED on rental 45 (2026-09-23), beaten by `inline_causal_conv` at the same "
+        "site computing the same bits.** It measured **0.7854 alone** there, against 1.0765 "
+        "for the identical arithmetic written as fusible torch operations -- and 0.7963 "
+        "composed with the int4 head, which is what settles that rentals 42 and 43 were "
+        "never measuring a composition effect. The kernel does what it claims; the cost is "
+        "that `torch.library.custom_op` is opaque, so inductor recomputes the "
+        "linear-attention state reduction it can no longer fuse across, 24 times per token. "
+        "Its rental-40 win of 1.0144 stands as a recorded measurement that two later "
+        "rentals contradict, and nothing has explained it. Kept registered because a "
+        "retired kernel beside its graveyard entry is what stops the next session "
+        "re-running it."
     ),
 )
 register_checks("fused_causal_conv", _fused_causal_conv.fused_causal_conv_correctness_checks)
@@ -799,6 +811,7 @@ REGISTRY.register(
     "inline_causal_conv",
     impl=_inline_causal_conv.inline_causal_conv_step,
     replaces="causal_conv",
+    status=KernelStatus.CHAMPION,
     hypothesis="045-inline-causal-conv",
     notes=(
         "The four-tap depthwise causal conv at seq_len 1 written as torch operations -- "
@@ -809,7 +822,15 @@ REGISTRY.register(
         "neighbours it was stranded between. No Triton and no custom op, which is the "
         "point -- a hand-written kernel wrapped in `torch.library.custom_op` re-erects the "
         "barrier one call site later. Read against `fused_causal_conv` measured in the "
-        "same process: same arithmetic, same bars, different bill."
+        "same process: same arithmetic, same bars, different bill. "
+        "**CHAMPION as of rental 45 (2026-09-23): median ratio 1.0765, IQR 0.0552, "
+        "bit-identical to the reference -- layer 1 at a relative error of 0.0 and layer 2 "
+        "at 264/264 agreement and 0.00000 nats.** Its control, `fused_causal_conv`, "
+        "measured 0.7854 in the same process on the same card, so the 37% between them is "
+        "scheduling and nothing else. The dump of this candidate shows why: all 24 cuDNN "
+        "calls gone, the pointwise launch count *unchanged* at 89 because inductor folded "
+        "the four taps into kernels that already existed, and 297 reductions against the "
+        "reference's 298 -- where the custom op had needed 321."
     ),
 )
 register_checks("inline_causal_conv", _inline_causal_conv.inline_causal_conv_correctness_checks)

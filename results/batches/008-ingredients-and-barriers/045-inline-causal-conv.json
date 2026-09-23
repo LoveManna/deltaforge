@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "win",
+  "timestamp": "2026-09-23T16:52:05.261385+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "045-inline-causal-conv",
+    "batch": "008-ingredients-and-barriers",
+    "statement": "The same four taps at seq_len 1, written as torch operations -- four multiplies, a round to bf16, a silu, and a shifted history -- instead of `F.conv1d`. The expression is pointwise, so inductor may fuse it into the kernels it was stranded between, and **there is no opaque op for it to fence against**.",
+    "prediction": "win",
+    "rationale": "**The experiment that decides whether entry 8's new law is the whole story.** Rental 43's dump of `039` showed the fused conv doing exactly what it promised -- all 24 cuDNN calls gone, `triton_poi_*` 89 to 41, the `cat` replaced, 24 fewer launches than the baseline -- while the step ran **19% slower**, because `torch.ops.deltaforge.fused_causal_conv_step` is a fusion barrier: 59 allocations became 190 and the linear-attention state reduction over (1, 32, 128, 128) was recomputed twice per layer. This slot removes the same cuDNN dispatch and the same `cat` **without erecting the barrier**, which is the one variable separating it from 044. Predicted **win, 1.005-1.03**, the same ceiling as 044 because it is the same saving; what differs is the bill. Three readings, all findings: **045 > 044** prices the opacity directly and makes the law quantitative; **045 = 044** says the barrier costs nothing when nothing else is installed and moves the whole effect into the composition, which 050 against 051 then measures; **045 < 044** says inductor's own pointwise schedule is worse here than one hand-written kernel, which would be the first evidence in this project that a Triton body beats inductor on a pointwise operation. Bars are 044's exactly, and this is the only candidate in the repository whose numerics the CPU suite verifies rather than assumes -- `inline_causal_conv_test` asserts bit-identity with `GatedDeltaNet._causal_conv` at rtol=0, atol=0 in bf16.",
+    "category": "A",
+    "byte_share": 0.00055,
+    "kernels": [
+      "inline_causal_conv"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128
+  },
+  "phases": {
+    "candidate_build": 0.09898434951901436,
+    "correctness": 10.508655929937959,
+    "compile_candidate_compiled": 0.008667873218655586,
+    "bench": 324.1854858659208
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "4bfb7c08fd18",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.173.02",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2850,
+      "memory": 13801,
+      "observed_at": "2026-09-23T16:52:05.469450+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0"
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 7,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        999.1383666992188,
+        981.322265625,
+        995.2545166015625,
+        1054.1219482421875,
+        956.166748046875,
+        947.1952514648438,
+        1006.011474609375
+      ],
+      "candidate_compiled": [
+        194798.421875,
+        960.861083984375,
+        924.51611328125,
+        905.9391479492188,
+        902.0704956054688,
+        899.6819458007812,
+        902.0861206054688
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        995.2545166015625,
+        1054.1219482421875,
+        956.166748046875,
+        947.1952514648438,
+        1006.011474609375
+      ],
+      "candidate_compiled": [
+        924.51611328125,
+        905.9391479492188,
+        902.0704956054688,
+        899.6819458007812,
+        902.0861206054688
+      ]
+    },
+    "median_ms": {
+      "compiled": 995.2545166015625,
+      "candidate_compiled": 902.0861206054688
+    },
+    "achieved_gbps": {
+      "compiled": 1104.4799616579546,
+      "candidate_compiled": 1218.5518047857836
+    },
+    "ratios": {
+      "candidate_compiled": [
+        1.0765139755858348,
+        1.1635681608730688,
+        1.0599689854672576,
+        1.0528112249954868,
+        1.1152055791903248
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 1.0765139755858348
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.05523659372306722
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "045-inline-causal-conv",
+      "prediction": "win",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=1]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3840,
+        "total_elements": 32768,
+        "note": "headline decode step: batch 1, one token; output and the advanced history are both compared"
+      },
+      {
+        "name": "inline_causal_conv.step[C=8192 batch=32]",
+        "replaces": "causal_conv",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          8192,
+          1
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 120601,
+        "total_elements": 1048576,
+        "note": "secondary decode step: batch 32, one token; output and the advanced history are both compared"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 1.0,
+      "top1_interval": [
+        0.9856577137186275,
+        1.0
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.0,
+      "max_kl": 0.0,
+      "num_positions": 264,
+      "top1_threshold": 0.9848484848484849,
+      "kl_threshold": 0.001,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

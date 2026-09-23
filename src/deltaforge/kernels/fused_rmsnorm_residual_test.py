@@ -57,7 +57,7 @@ def test_the_kernel_is_registered_retired_and_still_installable():
     assert "fused_rmsnorm_residual" in INSTALLERS
 
 
-def test_exactly_one_champion_ships_and_it_is_the_one_that_won():
+def test_only_kernels_that_won_ship_as_champions():
     """Until rental 40 this asserted the registry was empty, and that was right.
 
     For thirty-nine rentals nothing had beaten `torch.compile(max-autotune)`, so shipping
@@ -65,17 +65,40 @@ def test_exactly_one_champion_ships_and_it_is_the_one_that_won():
     to ``eager`` — the *identity champion* a first GPU session calibrates on, at zero
     kernel-writing risk.
 
-    `022-int4-head` ended that on 2026-09-19: median ratio **1.0791**, IQR 0.00034, layer 1
-    at one bf16 ULP, layer 2 at 0.9318 agreement and 0.01674 nats. The calibration argument
-    is untouched, because a batch's identity slot has never come from this registry — it is
-    `Hypothesis(kernels=())`, and `scoped_registry` builds an empty registry for it whatever
-    is champion here.
+    `022-int4-head` ended that on 2026-09-19 (1.0791, IQR 0.00034), and
+    `045-inline-causal-conv` joined it on 2026-09-23: median ratio **1.0765**, IQR 0.0552,
+    **bit-identical to the reference** — layer 1 at a relative error of 0.0 and layer 2 at
+    264/264 agreement and 0.00000 nats. They claim different operations, which is why both
+    ship: the registry allows one champion per replaceable op, and `052` measured the pair
+    composed at 1.0747.
+
+    The calibration argument is untouched, because a batch's identity slot has never come
+    from this registry — it is `Hypothesis(kernels=())`, and `scoped_registry` builds an
+    empty registry for it whatever is champion here.
     """
     champions = REGISTRY.champions()
 
-    assert set(champions) == {"decode_step"}
+    assert set(champions) == {"decode_step", "causal_conv"}
     assert champions["decode_step"].name == "tiled_int4_head"
+    assert champions["causal_conv"].name == "inline_causal_conv"
     assert "tiled_int4_head" in INSTALLERS
+    assert "inline_causal_conv" in INSTALLERS
+
+
+def test_the_retired_conv_is_kept_registered_beside_the_one_that_beat_it():
+    """`fused_causal_conv` computes the same bits as the champion and lost by 37%.
+
+    Rental 45 ran them in the same process: 0.7854 against 1.0765, both bit-identical to
+    the reference, differing only in whether the four taps reach inductor as an opaque
+    `torch.library.custom_op` or as torch operations it may fuse. It stays registered on
+    purpose — a retired kernel beside its graveyard entry is what stops a later session
+    re-running a dead end.
+    """
+    entry = REGISTRY.get("fused_causal_conv")
+
+    assert entry.status is KernelStatus.RETIRED
+    assert entry.replaces == "causal_conv"
+    assert "fused_causal_conv" in INSTALLERS
 
 
 # -- installation ---------------------------------------------------------------------

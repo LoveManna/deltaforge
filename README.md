@@ -10,26 +10,48 @@ sessions compound instead of rediscovering the same dead ends.
 
 ## Headline result
 
-**A hand-written Triton kernel beats the compiler — by 7.91% on one card and 1.61% on
-another — and we can say where, why, and how much of that is the card.**
+**The biggest win this project has measured came from deleting a kernel, not writing one —
+and the same arithmetic written two ways differs by 37%.**
 
-On 2026-09-19 (rental 40) `022-int4-head` returned a median ratio of **1.0791 with an
-interquartile spread of 0.00034**, on a harness that calibrated at 1.0008 in the same run.
-On 2026-09-20 (rental 43) the identical kernel on the identical site returned **1.0161**,
-on a card that ran the reference at **800 GB/s against rental 40's 1282** — where the
-identity slot itself carried +1.01% and the head removed 0.097 ms/token against identity's
-0.102. **On that card it saved nothing.** Two RTX 5090s reporting the same memory clock,
-driver and torch differed by 1.61x on the baseline. The win is real and reproduced; its
-*magnitude* is a property of the hardware as much as of the kernel, and this file will not
-quote one without naming its rental. See
-[`results/batches/007-compose-and-retile/`](results/batches/007-compose-and-retile/).
-It stores the **tied LM head** — 248320 x 2560, *14.80% of every byte the compiled column
-moves, in a single matmul* — at 4 bits with group-128 scales, and collects 70% of the
-1.123x that arithmetic allows. A second kernel won in the same batch on an unrelated
-mechanism: `025-fused-causal-conv`, **1.0144**, bit-identical to the reference. A third
-won on 2026-09-20 (rental 42): `034-static-cache-cudagraphs`, **1.0196**, also
-bit-identical — and it won *without* its stated mechanism firing, which the record says
-out loud because the slot carries a CUDA-graph node count beside its ratio.
+On 2026-09-23 (rental 45) two candidates computed **the same function** — the four-tap
+causal convolution of the decode step — and the record proves it rather than asserting it:
+both are **bit-identical to the reference**, layer 1 at a relative error of `0.0` and layer
+2 at 264/264 agreement and 0.00000 nats. They differ in one thing, which is how the
+arithmetic reaches `torch.compile`:
+
+| | how the four taps reach inductor | ratio | candidate GB/s |
+|---|---|---:|---:|
+| `044-fused-causal-conv` | one opaque `torch.library.custom_op` per layer | **0.7854** | 912 |
+| `045-inline-causal-conv` | four torch multiplies inductor may fuse | **1.0765** | **1219** |
+
+`045` is the current champion: **1.0765 against `torch.compile(mode="max-autotune")`**, on
+a harness that calibrated at 0.9972 in the same run, with the candidate column reaching
+**1219 GB/s — 68% of an RTX 5090's 1792 GB/s vendor peak.** The generated code says why:
+the inline version removes all 24 `extern_kernels.convolution` calls and adds *nothing* —
+the pointwise launch count is unchanged, because inductor folds the taps into kernels that
+already existed — while the custom op removes the same 24 calls and then recomputes a
+reduction it can no longer fuse across, once per layer, 24 times per token.
+
+**The finding is the mechanism, not the number: a custom op costs its own kernel plus
+everything the compiler can no longer fuse around it, and that bill is invisible at the
+call site.** It is also what settles a 20% regression two earlier rentals had blamed on
+composing two kernels. There was no composition effect — the conv loses 21% on its own.
+See [`results/batches/008-ingredients-and-barriers/`](results/batches/008-ingredients-and-barriers/).
+
+**A hand-written Triton kernel also beats the compiler, and its margin belongs to a
+card.** On 2026-09-19 (rental 40) `022-int4-head` — the **tied LM head**, 248320 x 2560,
+*14.80% of every byte the compiled column moves, in a single matmul*, stored at 4 bits with
+group-128 scales — returned **1.0791 at an interquartile spread of 0.00034**. The identical
+kernel on the identical site returned **1.0161** on rental 43 and **1.0105** on rental 45,
+the second of those on a healthy card running the reference at 1197 GB/s with the identity
+slot at −0.28%. Layer 2 came back at 0.9318 and 0.01674 nats on all three, so the kernel is
+not in question; **what does not reproduce is what a card collects against a fixed byte
+ceiling.** Two RTX 5090s reporting the same memory clock, driver and torch differed by
+1.61x on the baseline. This file will not quote a ratio without naming its rental.
+
+`034-static-cache-cudagraphs` won on a third, unrelated mechanism (**1.0196**, rental 42),
+bit-identical — and it won *without* its stated mechanism firing, which the record says out
+loud because the slot carries a CUDA-graph node count beside its ratio.
 
 **Rental 42 also refuted the obvious next step, which is the more useful half.** If the
 GEMV won on the head because the head has parallelism, a better *tile* should have unlocked
@@ -39,8 +61,9 @@ slower** (656 → 282 GB/s, 1.0791 → 0.9920) while the MLP came back at **67 G
 noise of the 65 measured two rentals earlier at a different tile in a different kernel.
 The layer projections are not a tiling problem. **Rental 43 then pinned two more tiles on
 the head in advance — BLOCK_N 128 at 8 warps, and `num_stages` 5 — and both lost (0.9343
-and 0.9502).** Four measured points now, and the heuristic tile nobody chose on purpose is
-the best of them. See
+and 0.9502); rental 45 pinned the last untried direction, BLOCK_N 32, and it lost too
+(0.9617).** Five measured points now, four deliberate attempts, and the heuristic tile
+nobody chose on purpose is the best of them. **The tile question is closed.** See
 [`results/batches/006-tile-and-sites/`](results/batches/006-tile-and-sites/) and
 [`results/batches/007-compose-and-retile/`](results/batches/007-compose-and-retile/).
 

@@ -26,7 +26,9 @@ exposing the next problem in the chain:
 | 15 | `reset_cudagraph_trees` between slots tears down the reference columns | rental 34 | stop resetting the trees; the pool it reclaimed was unmeasurable | yes — rental 35 ran all nine slots |
 | 16 | Dynamo's `recompile_limit` (8) silently makes a batch time **eager** candidates | rental 35 | `recompile_limit_for`, plus `graphs_compiled` in every slot record | **yes** — rental 37 |
 | 17 | The repo sync ships the 1.4 GB compile cache, and has no retry when that drops | rental 39 | `--exclude=cache`, plus `df_retry` and `rsync --partial` | **yes — rental 40 synced clean and its fixed cost fell from ~30 min to ~13** |
-| 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | nothing yet — the identity slot's achieved bandwidth is the instrument, unused | **no — diagnosed nowhere, mitigated nowhere** |
+| 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | `card_baseline.card_report` — the identity slot's achieved bandwidth against every rental that measured this GPU model, said in the run log at slot 0 | **partly — it reported correctly on rental 45 (1197 GB/s, "In family"), and it cannot see blocker 19** |
+| 19 | **A card can pass the pre-flight and then downclock mid-rental** | rental 45 | nothing — ratios survive it, resolution does not | **no.** SM clock fell 2910 → 2400 MHz at slot 4 and held; the reference drifted 7.17 → 7.92 ms/token and six of eleven slots came back `inconclusive` |
+| 20 | **The compile-cache push costs an order of magnitude more than the compile it saves** | rental 45 | `DF_CACHE_MAX_PUSH_MB` (512) refuses an oversized push and compiles cold instead | tests; the real fix (prune, or push concurrently with the checkpoint fetch) is not done |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -334,7 +336,13 @@ you happened to imagine is not a guard.
    the pull was anonymous. If it did and the pull still stalls, `--image` something on
    `ghcr.io` or `nvcr.io`; that path is proven to work.
 3. **`refused the ssh key`:** the image honours neither `PUBLIC_KEY` nor `authorized_keys`.
-   Pick a different image rather than fighting it.
+   **Rental 44 (2026-09-23) shows this advice was half right.** It hit exactly this error
+   on `vastai/base-image:cuda-12.9-mini-py312-2026-08-28` — the image rentals 34-43 all
+   used successfully — so on that evidence it is the **host**, not the image. Excluding
+   machine 148117 and relaunching got a working box on the first try, and the batch ran.
+   So: exclude the machine and retry *first*; change the image only if a second host
+   refuses the same way. The refusal cost 6.23 minutes and $0.0500, which is the cheapest
+   diagnostic in this table.
 4. Record the machine id in `--exclude-machines` so the offer search does not hand you the
    same host again. This is for a host that *rents and then misbehaves* — a dead ask is
    handled automatically now (blocker 10).
@@ -472,6 +480,11 @@ project have not been the loud ones.
 | 38 | 2026-09-17 | **batch 004: two slots, five declined**; the `output_code` dump ran | 39.65 min | $0.2883 |
 | 39 | 2026-09-19 | ssh dropped mid-repo-sync, before torch — blocker 17 | 3.53 min | $0.0257 |
 | 40 | 2026-09-19 | **batch 005: the project's first two wins**, 1.0791 and 1.0144 | 32.32 min | $0.2350 |
+| 41 | 2026-09-19 | RTX 4090 advertising exactly 12.8 — CUDA `Error 804`, blocker 11 three for three | 5.13 min | $0.0337 |
+| 42 | 2026-09-19 | **batch 006: the tile is not the difference**; `034` won at 1.0196 | 50.82 min | $0.4373 |
+| 43 | 2026-09-20 | **batch 007: the champion is card-dependent** — blocker 18 | 42.67 min | $0.3287 |
+| 44 | 2026-09-23 | container started, **refused the account ssh key** — blocker 2 recurred on one host | 6.23 min | $0.0500 |
+| 45 | 2026-09-23 | **batch 008: eleven slots, a new champion at 1.0765, and a custom op priced at 21%** | 115.52 min | $0.9427 |
 
 Forty rentals, $6.706, **zero leaked instances** — every one destroyed cleanly by the
 trap, including two cancelled mid-flight with SIGTERM.

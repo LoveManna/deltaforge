@@ -2,49 +2,66 @@
 
 ## Champion
 
-**`022-int4-head` — group-128 int4 on the tied LM head.**
+**`045-inline-causal-conv` — the four-tap causal convolution written so inductor can fuse it.**
 
 | | |
 |---|---|
-| Kernel | `tiled_int4_head` (`src/deltaforge/kernels/tiled_gemv.py`) |
-| Replaces | `decode_step` — `ReferenceModel.project_logits`, and nothing else |
-| Median ratio vs `torch.compile(max-autotune)` | **1.0791** on rental 40 — and **1.0161** on rental 43 |
-| IQR of the scoring rounds | 0.00034 (rental 40); 0.00407 (rental 43) |
-| Correctness | layer 1 one bf16 ULP (7.8e-3); layer 2 top-1 0.9318, mean KL 0.01674 nats — identical on both |
-| Last verified on | RTX 5090, **rental 43, 2026-09-20**, as `035-int4-head` |
-| Result record | [`005-launch-and-head/`](results/batches/005-launch-and-head/), [`007-compose-and-retile/`](results/batches/007-compose-and-retile/) |
+| Kernel | `inline_causal_conv` (`src/deltaforge/kernels/inline_causal_conv.py`) — **no Triton, no custom op** |
+| Replaces | `causal_conv` — `GatedDeltaNet._causal_conv` at `seq_len == 1`, and nothing else |
+| Median ratio vs `torch.compile(max-autotune)` | **1.0765** on rental 45 |
+| IQR of the scoring rounds | 0.0552 |
+| Correctness | **bit-identical**: layer 1 relative error `0.0`; layer 2 **264/264 agreement, 0.00000 nats** |
+| Last verified on | RTX 5090, **rental 45, 2026-09-23**, as `045-inline-causal-conv` |
+| Result record | [`008-ingredients-and-barriers/`](results/batches/008-ingredients-and-barriers/) |
 
-**A hand-written Triton kernel has beaten what `torch.compile(mode="max-autotune")`
-generates on the decode path of Qwen3.5-4B** — by 7.91%, at an interquartile spread of
-0.03%, on a harness that calibrated at 1.0008 in the same run. Two other candidates have
-won since, on mechanisms that share nothing with it: `025-fused-causal-conv` at **1.0144**
-and `034-static-cache-cudagraphs` at **1.0196**, both bit-identical to the reference.
+**The largest margin this project has measured against a reference timed the same day, and
+it was won by deleting a kernel rather than writing one.** The candidate column reached
+**1219 GB/s — 68% of a 5090's 1792 GB/s vendor peak** — against the reference's 1104 in the
+same slot.
 
-**It has now been re-measured, and the 7.91% is card-dependent.** `035-int4-head` on
-rental 43 is `022` unchanged — same kernel, same single site, same heuristic tile, tuner
-off, `launch_shapes` empty — and it returned **1.0161**. The kernel is not in question:
-layer 2 came back at 0.9318 and 0.01674 nats, digit for digit what rental 40 recorded.
-What differs is the card.
+**Its control is what makes it a finding.** `044-fused-causal-conv` is the identical
+arithmetic — same taps, same fp32 accumulation, same round to bf16, same silu, same shifted
+history, and the record proves it: *both* are bit-identical to the reference — wrapped in a
+`torch.library.custom_op`. Measured in the same process on the same card it returned
+**0.7854**.
 
-| | rental 40 | **rental 43** |
-|---|---:|---:|
-| reference | 6.70 ms/token, **1282 GB/s** | 10.73 ms/token, **800 GB/s** |
-| `000-identity` | 1.0008 (IQR 0.00034) | **1.0101 (IQR 0.01093)** |
-| `022` / `035` | **1.0791** | **1.0161** |
-| ms/token the head removed | **0.493** | **0.097** |
+| | how the four taps reach inductor | ratio | ms/token | candidate GB/s |
+|---|---|---:|---:|---:|
+| `044-fused-causal-conv` | one opaque custom op per layer | **0.7854** | 9.421 | 912 |
+| `045-inline-causal-conv` | four torch multiplies inductor may fuse | **1.0765** | **7.048** | **1219** |
 
-**And on rental 43 the head removed nothing at all.** The identity slot — which installs
-no kernel — removed **0.102 ms/token**, and the head-plus-static-cache slot removed
-**0.107**. Three different candidates, one number: the head's saving on that card is
-**0.00 ± 0.11 ms/token**, and `035`'s `win` verdict is the candidate column's systematic
-advantage, which is exactly what the identity champion is for.
+**One variable, 37%.** The `TORCH_LOGS=output_code` dump names it exactly: the inline
+candidate removes all 24 `extern_kernels.convolution` calls and adds *nothing* — the
+pointwise launch count is unchanged at 89, because inductor folded the four taps into
+kernels that already existed — and runs 297 reductions against the reference's 298. The
+custom op removed the same 24 calls and needed **321** reductions, recomputing the
+linear-attention state reduction once per layer because it could not fuse across an opaque
+call.
 
-So the champion stands — it is the best-measured candidate here and it has won on both
-cards it has run on — but **its magnitude belongs to rental 40's hardware as much as to
-the kernel.** Two RTX 5090s reporting the same 13801 MHz memory clock, the same driver and
-the same torch differed by **1.61x** on the reference. Until that is understood, a single
-rental's ratio is not a property of a kernel, and this file will not present one as though
-it were. See [`results/batches/007-compose-and-retile/README.md`](results/batches/007-compose-and-retile/README.md) §1.
+### The previous champion, and what three rentals did to its number
+
+**`022-int4-head` — group-128 int4 on the tied LM head — remains champion of `decode_step`,
+and its 7.91% belongs to rental 40.**
+
+| | rental 40 | rental 43 | **rental 45** |
+|---|---:|---:|---:|
+| reference achieved | **1282 GB/s** | 845 GB/s | **1197 GB/s** |
+| `000-identity` | 1.0008 (IQR 0.00034) | 1.0101 (IQR 0.01093) | **0.9972 (IQR 0.0193)** |
+| the int4 head | **1.0791** | 1.0161 | **1.0105** (`inconclusive`) |
+| ms/token removed | **0.493** | 0.097 | **0.055** |
+
+Rental 43's 1.0161 had an explanation — an 800 GB/s card. **Rental 45 does not.** The
+reference ran at 1197 GB/s, the identity slot carried a *negative* 0.28% offset, and the
+head still came back at 1.0105 with an IQR of 0.0263, which does not resolve it from 1.00.
+The kernel is not in question: layer 2 returned **0.9318 and 0.01674 nats** on all three
+rentals, digit for digit. The **1.1249x byte ceiling is arithmetic and stands**; what does
+not reproduce is what a card collects against it.
+
+Two other candidates have won on mechanisms that share nothing with either:
+`034-static-cache-cudagraphs` at **1.0196** (rental 42; re-measured 1.0214 `inconclusive`
+on rental 45) and `025-fused-causal-conv` at **1.0144** (rental 40) — the second of which
+**two later rentals contradict**, at 0.7854 alone and 0.7963 composed, and it is now
+retired. Nothing has explained rental 40's number and this file does not pretend otherwise.
 
 **The mechanism, stated before the measurement and confirmed by it.** The tied LM head is
 248320 x 2560 — **1271.40 MB/token, 14.80% of everything the compiled column moves, in one
@@ -491,6 +508,68 @@ both slots legitimately reused `035`'s compiled graph. Their candidate round 0 r
 0.01674 nats. `0` means *no new graph*, not *no compile*.
 
 Full account: [`results/batches/007-compose-and-retile/README.md`](results/batches/007-compose-and-retile/README.md).
+
+### Batch 008 — the barrier was the whole cost, and it was never the composition, 2026-09-23 (rental 45)
+
+RTX 5090, machine 140734, reference at **1197 GB/s**, identity **0.9972 (IQR 0.0193)**,
+`calibrated: true`. **All eleven slots ran** — nothing declined, nothing errored.
+Predictions scored **5 of 11**.
+
+| Slot | Outcome | Ratio | IQR | Δ ms/token | cand GB/s | Layer 2 | Predicted |
+|---|---|---:|---:|---:|---:|---|---|
+| `000-identity` | calibrated | 0.9972 | 0.0193 | +0.001 | 1197 | exact | `identity` ✅ |
+| `043-int4-head` | `inconclusive` | 1.0105 | 0.0263 | −0.055 | 1003 | 0.9318, 0.01674 | `win` ❌ |
+| `044-fused-causal-conv` | **`loss`** | **0.7854** | 0.0446 | +1.919 | 912 | **264/264, 0.0** | `win` ❌ |
+| `045-inline-causal-conv` | **`win`** | **1.0765** | 0.0552 | **−0.727** | **1219** | **264/264, 0.0** | `win` ✅ |
+| `046-static-decode-cache` | `inconclusive` | 1.0214 | 0.0406 | −0.165 | 1181 | 264/264, 0.0 | `inconclusive` ✅ |
+| `047-int4-head-narrow-tile` | `inconclusive` | 0.9617 | 0.0691 | +0.374 | 954 | 0.9318, 0.01674 | `loss` ❌ |
+| `048-int8-head` | `inconclusive` | 0.9865 | 0.0342 | +0.010 | 1062 | 0.9811, 0.00040 | `win` ❌ |
+| `049-fp8-head` | **`loss`** | 0.9562 | 0.0105 | +0.486 | 989 | 0.9659, 0.00158 | `win` ❌ |
+| `050-int4-head-and-conv` | **`loss`** | 0.7963 | 0.0074 | +1.884 | 820 | 0.9318, 0.01674 | `loss` ✅ |
+| `051-int4-head-and-inline-conv` | `inconclusive` | 1.0443 | **0.1511** | −0.196 | 1035 | 0.9318, 0.01674 | `win` ❌ |
+| `052-int4-head-inline-conv-cache` | **`win`** | **1.0747** | 0.0127 | −0.569 | 1039 | 0.9318, 0.01674 | `win` ✅ |
+
+**The headline is the controlled pair.** `044` and `045` compute the same function and the
+record proves it — both bit-identical to the reference at layer 1 relative error `0.0` and
+layer 2 264/264, 0.00000 nats. They differ only in whether the four taps reach inductor as
+an opaque `torch.library.custom_op` or as torch operations it may fuse. **0.7854 against
+1.0765: one variable, 37%.**
+
+**And the composition effect three rentals reasoned about does not exist.** The conv loses
+21% *alone*; composed with the int4 head it loses 20%. `050` minus `044` is +0.011, inside
+both IQRs. `029`'s 0.7937 and `039`'s 0.8111 were the conv, not the pair, and the
+three-minute slot that settles it is the ingredient measured before the composition.
+
+**The allocation count was a red herring.** Rental 43 ranked 59 → 190 allocations as a
+suspect beside a 19% loss. This candidate allocates **232 and wins**. The mechanism is the
+duplicated reduction and only that: 298 reductions in the reference, 297 in the inline
+candidate, **321** with the custom op.
+
+**Three encodings at the head, and the ordering kills a registered mechanism.** int4
+1.0105 > int8 0.9865 > fp8 **0.9562**. Both 8-bit kernels ran correctly for the first time
+(`023` shipped with a dropped scale, `024` never compiled). int4 ahead of int8 confirms the
+site is bandwidth-bound; **fp8 behind int8 refutes the e4m3-in-the-MMA-pipeline argument
+outright**, at the tightest IQR in the batch.
+
+**The tile question is closed.** `047` pinned BLOCK_N=32 — the last untried direction, and
+registered in advance as a predicted `loss` — and returned 0.9617. Five points measured in
+the decode step; the heuristic nobody chose on purpose is the best of them.
+
+**The card downclocked mid-rental**, 2910 → 2400 MHz at slot 4, and the reference column
+drifted 7.17 → 7.92 ms/token inside one rental. Interleaved rounds divide that out of every
+ratio, so no slot is void — but IQRs ran 0.0074 to 0.1511 against rental 40's 0.00034, and
+six slots landed `inconclusive` on effects that are probably real. `051` is the worst case
+and is legible: its candidate rounds are tight (921-985 ms) and its *reference* rounds carry
+1110 and 1179 ms outliers; `052` ran the same candidate three minutes later against a clean
+reference and returned 1.0747 at an IQR of 0.0127.
+
+Two launches: rental 44 (machine 148117) refused the account ssh key at minute 6 for
+$0.0500. Rental 45 billed **115.52 minutes, $0.9427** — of which **~72 were fixed cost**,
+including **~33 minutes pushing a 2.2 GB compile cache** to save ~3.5 minutes of compiling,
+which then failed to come home. `run_remote.sh` now refuses a push above
+`DF_CACHE_MAX_PUSH_MB`.
+
+Full account: [`results/batches/008-ingredients-and-barriers/README.md`](results/batches/008-ingredients-and-barriers/README.md).
 
 ### Column definitions
 

@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "baseline",
   "outcome": "baseline",
-  "timestamp": "2026-09-20T22:12:36.816048+00:00",
+  "timestamp": "2026-09-23T16:35:54.317681+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": null,
   "workload": {
@@ -18,20 +18,20 @@
   },
   "environment": {
     "python_version": "3.12.3",
-    "platform": "Linux-6.10.0-hiveos-x86_64-with-glibc2.39",
-    "hostname": "49cb0f189fd6",
+    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
+    "hostname": "4bfb7c08fd18",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
     "cuda_version": "12.8",
     "gpu_name": "NVIDIA GeForce RTX 5090",
     "gpu_count": 1,
-    "driver_version": "580.159.04",
+    "driver_version": "580.173.02",
     "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2880,
+      "sm": 2910,
       "memory": 13801,
-      "observed_at": "2026-09-20T22:12:36.896338+00:00"
+      "observed_at": "2026-09-23T16:35:54.563295+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0"
@@ -46,32 +46,32 @@
     "baseline": "compiled",
     "timings_ms": {
       "compiled": [
-        44688.30859375
+        36783.68359375
       ],
       "candidate_compiled": [
-        82903.5234375
+        201288.546875
       ]
     },
     "scoring_timings_ms": {
       "compiled": [
-        44688.30859375
+        36783.68359375
       ],
       "candidate_compiled": [
-        82903.5234375
+        201288.546875
       ]
     },
     "median_ms": {
-      "compiled": 44688.30859375,
-      "candidate_compiled": 82903.5234375
+      "compiled": 36783.68359375,
+      "candidate_compiled": 201288.546875
     },
     "achieved_gbps": {},
     "ratios": {
       "candidate_compiled": [
-        0.5390399194244138
+        0.18274106582225283
       ]
     },
     "median_ratio": {
-      "candidate_compiled": 0.5390399194244138
+      "candidate_compiled": 0.18274106582225283
     },
     "iqr_ratio": {
       "candidate_compiled": 0.0

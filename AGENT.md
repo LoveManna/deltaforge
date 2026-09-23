@@ -248,10 +248,27 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Forty-two instances created, forty-two destroyed, $7.506 lifetime, zero leaked. There
-is a champion, and its margin depends on the card.** Batch 005 (2026-09-19) produced this
+**Forty-four instances created, forty-four destroyed, $8.498 lifetime, zero leaked. The
+champion is now a kernel this project deleted rather than wrote.**
+
+**Rental 45 (2026-09-23) produced the largest margin ever measured here against a
+same-day reference, and it contains no Triton at all.** `045-inline-causal-conv` writes the
+four-tap causal convolution as torch operations inductor can fuse and returned **1.0765**,
+bit-identical to the reference (264/264, 0.00000 nats), on a candidate column reaching
+**1219 GB/s — 68% of vendor peak**. Its control, `044-fused-causal-conv`, is the *same
+arithmetic* wrapped in a `torch.library.custom_op` and returned **0.7854** in the same
+process. **One variable, 37%** — and it also means the conv regression rentals 42 and 43
+blamed on composition was never a composition effect: the conv loses 21% alone. See §8.
+
+**And batch 008 re-measured the incumbent on a healthy card: 1.0105, `inconclusive`.**
+The reference ran at 1197 GB/s and the identity slot at **−0.28%**, so rental 43's excuse
+does not apply. Two of three cards put the int4 head at ~1%; the 7.91% belongs to rental
+40, and `LEADERBOARD.md` says so in the champion block. The 1.1249x byte ceiling is
+arithmetic and stands.
+
+Batch 005 (2026-09-19) produced this
 project's first two wins: `022-int4-head` at **1.0791, IQR 0.00034** — group-128 int4 on
-the tied LM head alone — and `025-fused-causal-conv` at **1.0144**. Batch 006 (2026-09-20)
+the tied LM head alone — and `025-fused-causal-conv` at **1.0144** — a number **two later rentals contradict**, at 0.7854 alone and 0.7963 composed, and which nothing has explained; that kernel is now retired in favour of `045`. Batch 006 (2026-09-20)
 added a third, `034-static-cache-cudagraphs` at **1.0196**, and refuted its own premise:
 see §8 on the tuner.
 
@@ -270,6 +287,13 @@ installed on all 248 layer projections at once; batch 005 installed on one site.
 kernel family achieves 228-319 GB/s averaged over the projections and **656 GB/s on the
 head**, which launches 3880 programs where `in_proj_a` launches four. Before concluding
 anything about a kernel, check whether the sites you measured it on could fill the card.
+
+**The tile question is closed, and five measured points closed it.** Batch 008's
+`047-int4-head-narrow-tile` pinned BLOCK_N=32 — the wave-count theory, the last direction
+left after rental 43 killed register pressure and latency — registered in advance as a
+predicted `loss`, and it lost at **0.9617**. The heuristic nobody chose on purpose is the
+best of five points measured in the decode step. **Stop spending slots on tiles here**; the
+live direction is §8's observation that `tiled_gemv_int4` is itself a custom op.
 
 **But the tile is not the difference, and batch 006 spent a rental establishing it.** The
 obvious next step from that paragraph — the layer projections are starved, so give them a
@@ -643,15 +667,71 @@ bandwidth than exists — and note that it would **not** have caught this one, b
 GB/s is possible on paper. An impossible number can be refused by arithmetic; an
 unrepresentative one cannot.
 
-**Two kernels that each win alone can lose badly together, and nothing predicts it.**
-`022-int4-head` won at 1.0791 and `025-fused-causal-conv` at 1.0144, on mechanisms that
-share nothing — one removes bytes from a matmul, the other removes launches from 24
-layers. Composed on rental 42 they returned **0.7937**: the head cost +0.064 ms/token and
-the conv, unmodified since the rental it won on, added **~1.85 ms/token**. Both installers
-had passed alone; `027` was built to test the pair on rental 40 and its precondition
-declined it, so this was the first execution. Before assuming a composition is the product
-of its parts, **measure it** — and order it where a surprise still informs the rest of the
-batch.
+**The cost of an opaque custom op is 21% of the whole decode step, and the fix is to stop
+writing one.** `044-fused-causal-conv` and `045-inline-causal-conv` compute **the same
+function** — the record proves it rather than asserting it: both are bit-identical to the
+reference, layer 1 at relative error `0.0` and layer 2 at 264/264 and 0.00000 nats. One
+arrives as a `torch.library.custom_op`; the other as four torch multiplies. They measured
+**0.7854 and 1.0765** in one process on one card. The dump says exactly what differs: the
+inline candidate removes all 24 `extern_kernels.convolution` calls and adds **nothing** —
+the pointwise launch count is unchanged at 89, because inductor folded the taps into
+kernels that already existed — and runs **297 reductions against the reference's 298**,
+where the custom op needed **321**.
+
+So before wrapping a kernel in a custom op, ask whether the operation is *pointwise enough
+that inductor would simply fuse it* — and if it is, write the torch and let it. The
+corollary is uncomfortable and is the next thing worth a slot: **`tiled_gemv_int4`, the
+champion of `decode_step`, is itself a custom op**, and has never been measured in a form
+the scheduler can see into.
+
+**And the allocation count is not the mechanism.** Rental 43 ranked 59 → 190 allocations
+beside a 19% loss. The winning inline candidate allocates **232**. It was correlated; the
+duplicated reduction was causal.
+
+**"They do not compose" is a claim that needs the ingredients measured, and three rentals
+made it without them.** Rentals 42 and 43 attributed a 20% loss to an interaction between
+the int4 head and the fused conv, and batch 007's writeup called it the largest unexplained
+number in the project. **There is no interaction.** The conv alone measures 0.7854 and the
+pair 0.7963 — +0.011 apart, inside both IQRs. The three-minute slot that settles it is the
+ingredient, placed *before* the composition. `batches_test` now asserts that structurally:
+every kernel in a composed slot must be measured alone, earlier in the same batch.
+
+**A card can pass the pre-flight and then downclock.** Rental 45's SM clock fell **2910 →
+2400 MHz at slot 4** and stayed there; the memory clock never moved and the reference
+column drifted **7.17 → 7.92 ms/token inside one rental**. Interleaved rounds divide that
+out of every ratio, so no slot is void — what it costs is **resolution**. IQRs ran 0.0074
+to 0.1511 against rental 40's 0.00034, and **six of eleven slots came back `inconclusive`
+on effects that are probably real**. `card_baseline.card_report` cannot catch this: a
+pre-flight tests the card you were given, not the card you will still have in forty
+minutes. The instrument that answers it is more scoring rounds when the IQR is wide.
+
+**Read an `inconclusive` as "this rental could not resolve it", never as "this is zero".**
+`051` is the worked example: its candidate rounds are tight (921-985 ms) and its
+*reference* rounds carry 1110 and 1179 ms outliers, which is what produced an IQR of
+0.1511. `052` ran the same candidate three minutes later against a clean reference and
+returned **1.0747 at an IQR of 0.0127**.
+
+**The compile cache now costs more than it saves, and its cost grows while its saving does
+not.** Rental 45 spent **~33 of its 115 billed minutes pushing 2.2 GB** at ~1.05 MB/s to
+buy a warm compile worth **268 s cold → 57 s warm**, and the teardown pull then timed out
+so nothing came home. A warm compile saves the same 3.5 minutes whether the directory holds
+200 MB or 2.2 GB. `run_remote.sh` now refuses a push above `DF_CACHE_MAX_PUSH_MB` (512).
+**Watch the fixed cost, not only the slot count**: 72 minutes of fixed cost bought 39
+minutes of measurement on that rental, the worst ratio recorded here.
+
+**~~Two kernels that each win alone can lose badly together~~ — RETRACTED on rental 45.
+They never did, and the reason it looked that way is that nobody measured the ingredient.**
+`029` (rental 42, 0.7937) and `039` (rental 43, 0.8111) composed the int4 head with the
+fused causal conv, and two writeups reasoned about how the two installers interfere. Batch
+008 measured the conv **alone** on the same card in the same process: **0.7854**, against
+**0.7963** for the pair — +0.011 apart, inside both IQRs. **The conv simply loses 21% on
+its own**, the head adds nothing to that and subtracts nothing from it, and there is no
+interaction to explain. The surviving instruction is the one below about ingredients, and
+it is now asserted rather than remembered:
+`batches_test.test_every_ingredient_of_every_008_composition_is_measured_alone_first`
+requires every kernel in a composed slot to have a single-kernel slot earlier in the same
+batch. Measure a composition, never infer it — and **measure its parts first, in the same
+process**, or the composition's number is not attributable to the composition.
 
 **`graphs_compiled: 0` does not mean the candidate ran eager.** The counter is a delta on
 dynamo's `unique_graphs`, so a **guard-passing cache hit scores zero** — and after a slot
@@ -675,6 +755,10 @@ separate "this composition is bad" from "the conv is bad on this card", on a ren
 every other mechanism measured zero. Both numbers were equally one rental old; only one was
 under suspicion, and suspicion is not the criterion. **If a slot composes N mechanisms, the
 batch needs all N measured alone that day, or the composition's number means nothing.**
+
+**Batch 008 enforced it and it paid immediately**: the conv alone measured 0.7854, which
+retracted a composition effect three rentals had been reasoning about, and cost one
+three-minute slot placed before the composition instead of after it.
 
 **Install-time state in a module global outlives the slot that set it.** `scoped_registry`
 exists because the kernel registry is process-wide and a batch runs every slot in one
