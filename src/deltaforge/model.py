@@ -357,6 +357,24 @@ def _install_tiled_int4_head_narrow(model: ReferenceModel, entry: KernelEntry) -
     install_tiled_int4_head_narrow(model, entry)
 
 
+def _install_int4_head_triton_op(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_head_triton_op  # noqa: PLC0415
+
+    install_int4_head_triton_op(model, entry)
+
+
+def _install_int4_head_torch_dequant(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_head_torch_dequant  # noqa: PLC0415
+
+    install_int4_head_torch_dequant(model, entry)
+
+
+def _install_int4_mlp_torch_dequant(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_mlp_torch_dequant  # noqa: PLC0415
+
+    install_int4_mlp_torch_dequant(model, entry)
+
+
 def _install_inline_causal_conv(model: ReferenceModel, entry: KernelEntry) -> None:
     from .kernels.inline_causal_conv import install_inline_causal_conv  # noqa: PLC0415
 
@@ -387,3 +405,6 @@ register_installer("tiled_int4_head_wide", _install_tiled_int4_head_wide)
 register_installer("tiled_int4_head_deep", _install_tiled_int4_head_deep)
 register_installer("tiled_int4_head_narrow", _install_tiled_int4_head_narrow)
 register_installer("inline_causal_conv", _install_inline_causal_conv)
+register_installer("int4_head_triton_op", _install_int4_head_triton_op)
+register_installer("int4_head_torch_dequant", _install_int4_head_torch_dequant)
+register_installer("int4_mlp_torch_dequant", _install_int4_mlp_torch_dequant)

@@ -26,6 +26,7 @@ from .batches import (
     BATCH_006,
     BATCH_007,
     BATCH_008,
+    BATCH_009,
     BATCHES,
     get_batch,
 )
@@ -1220,5 +1221,151 @@ def test_008_does_not_predict_a_win_everywhere():
 
 def test_008_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_008:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+# -- batch 009 ------------------------------------------------------------------------
+
+
+def test_batch_009_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_009) <= 12
+    assert not BATCH_009.is_calibration
+    assert BATCH_009.hypotheses[0].is_identity
+    assert BATCH_009.calibration_slug == "000-identity"
+    assert get_batch("009-visible-kernels") is BATCH_009
+
+
+def test_batch_009_names_registered_kernels_with_installers_and_checks():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_009:
+        for name in hyp.kernels:
+            assert REGISTRY.get(name) is not None, name
+            assert name in INSTALLERS, name
+            assert name in CHECK_BUILDERS, f"{name} has no layer-1 checks"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_009), ids=lambda h: h.slug)
+def test_every_009_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = {name: type(module) for name, module in model.named_modules()}
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    after = {name: type(module) for name, module in model.named_modules()}
+
+    if hypothesis.is_identity:
+        assert not applied and after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels), hypothesis.slug
+        assert after != before or type(model) is not before[""], hypothesis.slug
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_009), ids=lambda h: h.slug)
+def test_installing_a_009_hypothesis_is_idempotent(hypothesis, model):
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    once = {name: type(module) for name, module in model.named_modules()}
+
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    assert {name: type(module) for name, module in model.named_modules()} == once
+
+
+def test_every_ingredient_of_every_009_composition_is_measured_alone_first():
+    """The rule rental 45 proved the value of, enforced a second time.
+
+    Batch 008's `044` alone retracted a composition effect three rentals had reasoned
+    about. Nothing here may compose a kernel the batch has not measured on its own,
+    earlier, in the same process.
+    """
+    order = [hyp.slug for hyp in BATCH_009]
+    alone = {hyp.kernels[0]: hyp.slug for hyp in BATCH_009 if len(hyp.kernels) == 1}
+
+    for hyp in BATCH_009:
+        if len(hyp.kernels) < 2:
+            continue
+        for name in hyp.kernels:
+            assert name in alone, f"{hyp.slug} composes {name}, which no slot measures alone"
+            assert order.index(alone[name]) < order.index(hyp.slug), (
+                f"{hyp.slug} runs before {alone[name]}, which measures its ingredient"
+            )
+
+
+def test_the_three_head_registrations_are_one_program_under_three_authors():
+    """`054`, `055` and `056` compute the same function and must be gated identically.
+
+    That is the whole design: one program, registered as an opaque custom op, as a visible
+    `triton_op`, and as no op at all. A difference in what they replace, what bytes they
+    claim or what bars they carry would turn a controlled comparison into three unrelated
+    numbers — which is the mistake `044` against `045` was built to avoid.
+    """
+    heads = [
+        BATCH_009.get(s) for s in ("054-int4-head", "055-int4-head-triton-op", "056-int4-head-torch-dequant")
+    ]
+
+    for field in ("byte_share", "replaces", "top1_threshold", "kl_threshold", "correctness_positions"):
+        assert len({getattr(h, field) for h in heads}) == 1, field
+    assert all(h.weight_bits == {"head": 4} for h in heads)
+    assert all(h.requires is None for h in heads), "a control that can be declined is not a control"
+    # 022's own bars, met to the digit on rentals 40, 43 and 45.
+    assert heads[0].top1_threshold == 240 / 264 and heads[0].kl_threshold == 0.06
+
+
+def test_the_batch_predicts_the_uncomfortable_answer_for_the_kernel_free_slot():
+    """`056` is registered as a loss *before* the rental, and that is the point.
+
+    A win there would mean the compiler collects the head's 1.1249x by itself and the
+    champion's kernel earns nothing. Registering the comfortable prediction and then
+    discovering the other would be a prediction written after the number.
+    """
+    assert BATCH_009.get("056-int4-head-torch-dequant").prediction == "loss"
+    assert BATCH_009.get("055-int4-head-triton-op").prediction == "win"
+    assert BATCH_009.get("061-int4-mlp-torch-dequant").requires.slug == "056-int4-head-torch-dequant"
+
+
+def test_the_009_gates_name_the_slot_whose_answer_they_depend_on():
+    gates = {
+        "059-conv-and-head-triton-op": ("055-int4-head-triton-op", 1.00),
+        "060-conv-head-cache": ("058-conv-and-head", 1.00),
+        "061-int4-mlp-torch-dequant": ("056-int4-head-torch-dequant", 1.02),
+    }
+    for slug, (required, floor) in gates.items():
+        hyp = BATCH_009.get(slug)
+        assert hyp.requires is not None, slug
+        assert hyp.requires.slug == required, slug
+        assert hyp.requires.floor == floor, slug
+        assert len(hyp.requires.reason) > 60, f"{slug}'s floor has a number and no reason"
+    ungated = [h.slug for h in BATCH_009 if h.requires is None]
+    assert set(ungated) == {
+        "000-identity",
+        "053-inline-causal-conv",
+        "054-int4-head",
+        "055-int4-head-triton-op",
+        "056-int4-head-torch-dequant",
+        "057-static-decode-cache",
+        "058-conv-and-head",
+    }
+
+
+def test_the_bit_identical_slots_carry_bit_identical_bars():
+    """`045` and `034` both measured 264/264 and 0.0 nats, so their bars are now that.
+
+    A bar derived from something this repository has measured is the method that has
+    passed three batches of working kernels; a bar looser than the measurement is a gate
+    that cannot catch the bug it exists for.
+    """
+    for slug in ("053-inline-causal-conv", "057-static-decode-cache"):
+        hyp = BATCH_009.get(slug)
+        assert hyp.top1_threshold == 1.0, slug
+        assert hyp.kl_threshold == 1e-06, slug
+
+
+def test_every_009_slot_is_gated_approximately_except_the_identity():
+    for hyp in BATCH_009:
+        assert (hyp.correctness == "exact") == hyp.is_identity
+        assert not hyp.historical_exact_gate
+
+
+def test_009_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_009:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"

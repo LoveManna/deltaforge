@@ -277,6 +277,12 @@ SCORING_COLUMNS = ("compiled", "candidate_compiled")
 #:
 #: `--columns all` asks for the full set when a result is confusing enough to be worth the
 #: memory and the compile, or when a hypothesis is itself about launch overhead.
+#: Benchmark rounds a *batch* runs, against `BenchConfig`'s default of 7 for a single
+#: hypothesis. Two are discarded as warmup, so this is **15 scoring rounds**. See the
+#: comment on ``--rounds`` in `build_parser`: rental 45 lost six slots to a band it could
+#: have narrowed for 20 seconds each.
+BATCH_ROUNDS = 17
+
 DEFAULT_COLUMNS = SCORING_COLUMNS
 
 
@@ -687,7 +693,15 @@ def build_parser() -> argparse.ArgumentParser:
             "whole batch; each candidate column costs one compilation per hypothesis."
         ),
     )
-    batch.add_argument("--rounds", type=int, default=7)
+    # 17 rather than the single-hypothesis default of 7, because rental 45 showed what 5
+    # scoring rounds buy on a card that drifts. Its SM clock fell 2910 -> 2400 MHz mid-batch,
+    # the reference column moved 7.17 -> 7.92 ms/token, and **six of eleven slots came back
+    # `inconclusive` at IQRs of 0.019-0.151** -- on effects that are probably real. A round
+    # is ~2 s of wall clock for both columns against slots that cost 130-330 s, so tripling
+    # the sample costs about 20 s a slot and 4 minutes a batch. That is the cheapest
+    # resolution this project can buy, and `SlotBudget` already prices slots generously
+    # enough to absorb it.
+    batch.add_argument("--rounds", type=int, default=BATCH_ROUNDS)
     batch.add_argument("--warmup-rounds", type=int, default=2)
     batch.add_argument(
         "--max-new-tokens",

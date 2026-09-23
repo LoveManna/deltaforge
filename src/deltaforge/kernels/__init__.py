@@ -850,3 +850,76 @@ REGISTRY.register(
     ),
 )
 register_checks("tiled_int4_head_narrow", _tiled_gemv.tiled_int4_head_narrow_correctness_checks)
+
+
+# --------------------------------------------------------------------------------------
+# Batch 009 — the barrier one level up, and the question of whether we need a kernel at all
+# --------------------------------------------------------------------------------------
+#
+# Rental 45 priced opacity on the causal conv: the same arithmetic as an opaque custom op
+# and as fusible torch operations measured 0.7854 and 1.0765. `tiled_gemv_int4` -- the
+# champion of `decode_step` -- is a `torch.library.custom_op` too, and the dump shows the
+# reference fusing the final RMSNorm *into* the lm_head matmul where the candidate cannot.
+#
+# So the same experiment runs one level up, with three registrations of one program: the
+# champion unchanged, the identical kernel behind `triton_op` so inductor can see it, and
+# no kernel at all.
+
+from . import visible_int4_head as _visible_int4_head  # noqa: E402
+
+REGISTRY.register(
+    "int4_head_triton_op",
+    impl=_visible_int4_head.tiled_gemv_int4_visible,
+    replaces="decode_step",
+    hypothesis="055-int4-head-triton-op",
+    notes=(
+        "The champion's Triton kernel, byte for byte, registered through "
+        "`torch.library.triton_op` instead of `torch.library.custom_op`. The launch enters "
+        "the graph as a structured node whose inputs, outputs and mutation semantics "
+        "inductor knows, rather than an opaque call it must fence against and materialise "
+        "around. Same tile, same arithmetic, same summation order, same class swap, same "
+        "quantised weights -- **the registration is the only variable**, which is what "
+        "`044` against `045` showed is the way to price this. Expected to be smaller than "
+        "the conv's 37%: the conv sat inside 24 layers between a fused producer and a "
+        "fused consumer, and the head is one call site at the end of the model."
+    ),
+)
+register_checks("int4_head_triton_op", _visible_int4_head.int4_head_triton_op_correctness_checks)
+
+REGISTRY.register(
+    "int4_head_torch_dequant",
+    impl=_visible_int4_head.torch_dequant_gemv_int4,
+    replaces="decode_step",
+    hypothesis="056-int4-head-torch-dequant",
+    notes=(
+        "The same program with no kernel of ours in it at all: unpack the nibbles, apply "
+        "the group scales, round to bf16 because the kernel does, accumulate in fp32 -- "
+        "the expression `tiled_int4_correctness_checks` already uses as the champion's "
+        "reference -- handed whole to `max-autotune`. It asks whether the hand-written "
+        "kernel is **necessary** at this site or merely sufficient, which nothing here has "
+        "established. Entry 1's `010-int8-dequant-torch` measured 0.9893 for this shape on "
+        "all 248 layer projections, and batch 005 later showed that measurement cannot "
+        "separate a kernel from a site. A bandwidth budget reads the result either way: "
+        "materialising the 1271.40 MB/token bf16 weight puts the slot below 1.0 whatever "
+        "the matmul does, and fusing the unpack into the prologue collects the same "
+        "1.1249x ceiling the champion collects."
+    ),
+)
+register_checks("int4_head_torch_dequant", _visible_int4_head.int4_head_torch_dequant_correctness_checks)
+
+REGISTRY.register(
+    "int4_mlp_torch_dequant",
+    impl=_visible_int4_head.torch_dequant_gemv_int4,
+    replaces="decode_step",
+    hypothesis="061-int4-mlp-torch-dequant",
+    notes=(
+        "The same compiler-generated dequantise-GEMV on the 96 MLP projections: **52.75% "
+        "of per-token bytes, a 1.6545x ceiling, the largest homogeneous block in the "
+        "model.** Three hand-written kernels have failed there at ~66 GB/s and rental 45 "
+        "closed the tile question, so the open possibility is that the code we should be "
+        "running at those sites is inductor's own. Gated on the head slot, because this is "
+        "the same question asked of a bigger prize and it is only worth asking once the "
+        "cheap version has shown the compiler can fuse a grouped dequantisation at all."
+    ),
+)
+register_checks("int4_mlp_torch_dequant", _visible_int4_head.int4_mlp_torch_dequant_correctness_checks)

@@ -612,6 +612,25 @@ dequantise-GEMV so inductor schedules it, or register it through `torch.library.
 rather than `custom_op`, and measure the pair. That is a registered, mechanistic,
 falsifiable next slot rather than another tile.
 
+**Batch 009 is registered against the corollary, as three registrations of one program.**
+`054` is the champion unchanged; `055` is **the identical Triton kernel behind
+`torch.library.triton_op`**, so the launch enters the graph as a structured node instead of
+an opaque call; `056` is **no kernel at all** — the dequantise-GEMV in torch, handed whole
+to `max-autotune`. Same tile, same arithmetic, same class swap, same quantised weights:
+the registration is the only variable, exactly as it was for `044` against `045`.
+
+The predicted margin is **smaller than the conv's 37%, and the mechanism says why**: the
+conv sat inside 24 layers between a fused producer and a fused consumer, and the head is
+one call site at the end of the model. `055 = 054` would therefore be a *useful* result —
+it would bound the law to sites with fusion to lose, and stop the next batch rewriting
+every kernel in the repository.
+
+**`056` is registered as a predicted `loss`, and a win there would be the largest and most
+uncomfortable result this project could produce**: it would mean the compiler collects the
+head's 1.1249x by itself and the champion's kernel earns nothing. Its gated sequel `061`
+asks the same of the MLP — 52.75% of per-token bytes, where three hand-written kernels have
+failed at ~66 GB/s and the tile question is now closed.
+
 **Batch 008 registered the experiment the law implied, and it was a deletion rather than a
 kernel.** If an opaque op is the cost, then the same arithmetic written in operations
 inductor is *allowed to fuse across* should collect the saving and pay none of the bill.

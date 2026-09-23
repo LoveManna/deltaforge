@@ -32,6 +32,7 @@ __all__ = [
     "BATCH_006",
     "BATCH_007",
     "BATCH_008",
+    "BATCH_009",
     "get_batch",
 ]
 
@@ -2277,6 +2278,409 @@ BATCH_008 = Batch(
 )
 
 
+BATCH_009 = Batch(
+    batch_id="009-visible-kernels",
+    description=(
+        "Rental 45 priced opacity and the number was enormous. `044-fused-causal-conv` and "
+        "`045-inline-causal-conv` compute **the same function** -- both bit-identical to "
+        "the reference -- and returned **0.7854 and 1.0765**, differing only in whether "
+        "the arithmetic reached inductor as a `torch.library.custom_op` it must fence "
+        "against or as operations it could schedule. "
+        "**`tiled_gemv_int4`, the champion of `decode_step`, is a custom op too.** The dump "
+        "shows the reference fusing the final RMSNorm *into* the lm_head matmul where our "
+        "candidate cannot, so the head has real fusion to lose and nothing has measured "
+        "what losing it costs. This batch runs the same experiment one level up, as three "
+        "registrations of one program: the champion unchanged, the identical Triton kernel "
+        "behind `torch.library.triton_op` so inductor can see it, and **no kernel at all** "
+        "-- the dequantise-GEMV written in torch and handed whole to `max-autotune`. "
+        "That third slot asks the question this project has never answered: is the "
+        "hand-written kernel **necessary** here, or merely sufficient? Its gated sequel "
+        "takes the same answer to the MLP, which is 52.75% of per-token bytes. "
+        "Every ingredient runs alone before anything composes it, and the batch runs "
+        "**15 scoring rounds instead of 5** -- rental 45 lost six slots to a band it could "
+        "have narrowed for twenty seconds each."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the measured ratio is "
+                "the harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band or every other number in this "
+                "batch is void. It has measured 1.0009, 1.0018, 1.0024, 0.9913, 1.0008, "
+                "1.0053, 1.0101 and **0.9972** on the eight rentals that got this far. "
+                "**Two things to read here before anything else.** Its *sign*: rental 43 "
+                "carried +1.01% and rental 45 carried −0.28%, and a slot's margin means "
+                "nothing until that is subtracted. And its *IQR*, which this batch is "
+                "trying to shrink: 15 scoring rounds instead of 5, because rental 45's "
+                "identity band was 0.0193 and six slots landed `inconclusive` inside "
+                "bands of 0.019-0.151. If the identity IQR does not fall below ~0.01 "
+                "here, more rounds are not the instrument and the next batch needs a "
+                "different one. The card pre-flight also runs off this slot."
+            ),
+        ),
+        Hypothesis(
+            slug="053-inline-causal-conv",
+            kernels=("inline_causal_conv",),
+            category="A",
+            byte_share=0.00055,
+            replaces=("causal_conv",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "The champion: the four-tap depthwise causal conv at seq_len 1 written as "
+                "torch operations -- four multiplies, a round to bf16, a silu and a "
+                "shifted history -- instead of `F.conv1d`. Inductor folds it into the "
+                "kernels either side and all 24 cuDNN calls disappear."
+            ),
+            prediction="win",
+            rationale=(
+                "**The incumbent, re-measured, and the slot everything behind it is read "
+                "against.** `AGENT.md` section 6 forbids carrying a number across "
+                "sessions, and rental 45 is the rental that showed what happens when a "
+                "composition's ingredient is not re-measured: three rentals attributed a "
+                "20% loss to an interaction that did not exist. Predicted **win, "
+                "1.03-1.09**. Rental 45 measured 1.0765 with an IQR of 0.0552 on a card "
+                "that downclocked mid-batch; the same 15-round protocol that shrinks the "
+                "identity band should shrink this one, and the honest expectation is that "
+                "the **median moves less than the band does**. Below 1.02 would say the "
+                "1.0765 had the card in it, which is exactly the claim rental 45 could "
+                "not test on its own. Bars are **tightened from 045's**: it measured "
+                "264/264 and 0.00000 nats, and `inline_causal_conv_test` asserts "
+                "bit-identity with the reference at rtol=0, atol=0 on a CPU, so anything "
+                "other than exact agreement here is a bug rather than a dtype."
+            ),
+        ),
+        Hypothesis(
+            slug="054-int4-head",
+            kernels=("tiled_int4_head",),
+            category="B",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion of `decode_step`, unchanged: group-128 int4 on the tied LM "
+                "head, heuristic tile, tuner off, installed through "
+                "`torch.library.custom_op`. 1271.40 MB/token of bf16 weight becomes 317.85 "
+                "of packed nibbles plus 19.87 of fp32 group scales."
+            ),
+            prediction="win",
+            rationale=(
+                "**The control for the two slots behind it, and the fourth measurement of "
+                "a kernel whose headline number nobody can reproduce.** It returned "
+                "1.0791 (rental 40), 1.0161 (43) and **1.0105 at an IQR of 0.0263** (45) "
+                "-- the last on a healthy 1197 GB/s card with the identity slot at "
+                "−0.28%, so net of calibration it saved about 1.3% and could not be "
+                "resolved from zero. Predicted **win, 1.00-1.03**, and the point of the "
+                "slot is **resolution rather than magnitude**: at 15 scoring rounds a real "
+                "1.3% should clear its own band for the first time. Below 1.00 is the "
+                "interesting outcome and would mean the 1.1249x byte ceiling is not being "
+                "collected at all on modern cards. Bars are 022's own, met to the digit on "
+                "three rentals (0.9318, 0.01674 nats) -- and **055 and 056 must reproduce "
+                "them exactly**, because all three compute the same function and differ "
+                "only in who writes the code."
+            ),
+        ),
+        Hypothesis(
+            slug="055-int4-head-triton-op",
+            kernels=("int4_head_triton_op",),
+            category="A",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion's Triton kernel, byte for byte, registered through "
+                "`torch.library.triton_op` instead of `custom_op`: the launch enters the "
+                "graph as a structured node whose inputs, outputs and mutation semantics "
+                "inductor knows, rather than an opaque call it must fence against. Same "
+                "tile, same arithmetic, same summation order, same class swap, same "
+                "quantised weights."
+            ),
+            prediction="win",
+            rationale=(
+                "**The experiment rental 45 pointed at, one level up, with one variable.** "
+                "The conv pair measured the price of opacity at **37%** on a mechanism "
+                "whose kernel was never in doubt; this asks the same of the head, where "
+                "the dump shows the reference fusing the final RMSNorm *into* the lm_head "
+                "matmul (`triton_red_fused_..._mm_..._slice_t_view_43`) and the candidate "
+                "unable to. Predicted **win, 1.02-1.06 — above 054, and by less than the "
+                "conv's margin**, and the mechanism says why: the conv sat inside 24 "
+                "layers between a fused producer and a fused consumer and was worth 24 "
+                "call sites, where the head is **one** call site at the end of the model "
+                "with one reduction beside it. Three readings, all findings. **055 > 054** "
+                "prices the barrier at this site and makes the law quantitative twice. "
+                "**055 = 054** says the barrier costs nothing where there is little to "
+                "fuse across, which bounds the law usefully and is the outcome that stops "
+                "the next batch rewriting every kernel. **055 < 054** would say "
+                "`triton_op` carries its own overhead, which nothing here predicts. Bars "
+                "are 054's and must be met exactly: the body is identical, so a different "
+                "correctness number is a registration bug, and "
+                "`visible_int4_head_test` already asserts on a CPU that the op is really "
+                "registered rather than silently falling back to the bare function."
+            ),
+        ),
+        Hypothesis(
+            slug="056-int4-head-torch-dequant",
+            kernels=("int4_head_torch_dequant",),
+            category="A",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The same program with no kernel of ours in it at all: unpack the nibbles, "
+                "apply the group scales, round the scaled weight to bf16 because the "
+                "kernel does, accumulate in fp32 -- the expression "
+                "`tiled_int4_correctness_checks` already uses as the champion's reference "
+                "-- handed whole to `max-autotune`."
+            ),
+            prediction="loss",
+            rationale=(
+                "**The question this project has never answered: is the hand-written "
+                "kernel necessary here, or merely sufficient?** `045` won by deleting a "
+                "kernel, and the honest consequence is to ask the same of the one we are "
+                "proudest of. Predicted **`loss`, 0.55-0.85**, on a bandwidth budget "
+                "rather than a hunch: for this to win, inductor must fuse a *grouped* "
+                "dequantisation into the prologue of a 248320-wide GEMV. If it instead "
+                "materialises the bf16 weight -- 1271.40 MB/token, against a 96 MB L2 that "
+                "cannot hold it -- the candidate moves that **plus** the 317.85 MB of "
+                "packed nibbles it read to build it, and it cannot reach 1.0 however good "
+                "the matmul is. **There is no middle outcome that is hard to read.** "
+                "Entry 1's one datum for this shape is `010-int8-dequant-torch` at 0.9893 "
+                "on rental 37, and it is not this experiment: that was int8 on all 248 "
+                "layer projections, which batch 005 showed cannot separate a kernel from a "
+                "site, and its bandwidth budget proved inductor did *not* materialise "
+                "there. **A win here would be the largest result this project could "
+                "produce and the most uncomfortable** -- it would mean the compiler "
+                "collects the 1.1249x by itself and the champion's kernel earns nothing -- "
+                "which is exactly why it is registered as a predicted loss before the "
+                "rental. Bars are 054's, and the layer-2 numbers must come back identical "
+                "(0.9318, 0.01674) because it is the same function; "
+                "`visible_int4_head_test` asserts that equality on a CPU at rtol=0, atol=0."
+            ),
+        ),
+        Hypothesis(
+            slug="057-static-decode-cache",
+            kernels=("static_decode_cache",),
+            category="A",
+            byte_share=0.0,
+            replaces=("decode_cache",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "`mark_static_address` on all 64 decode-cache tensors. Inductor reads "
+                "`static_input_idxs` twice: once for the cudagraph mutation check, which "
+                "has refused three times, and once in the launch path, where a static "
+                "input skips the per-call alignment test and the copy behind it -- 64 "
+                "tensors on each of 128 decode steps."
+            ),
+            prediction="win",
+            rationale=(
+                "**Two measurements agree and neither could resolve itself, which is what "
+                "15 rounds are for.** It returned **1.0196 (IQR 0.00149)** on rental 42 "
+                "and **1.0214 (IQR 0.0406, `inconclusive`)** on rental 45 -- the same "
+                "number twice, once resolvable and once not. Predicted **win, 1.01-1.03**. "
+                "This is the cheapest slot in the batch and it is here as an ingredient: "
+                "`060` composes it, and rental 45's lesson is that a composition whose "
+                "parts were not measured the same day is unreadable. It also carries the "
+                "batch's cudagraph counters. **Entry 8's actual hypothesis is 0 for 3** -- "
+                "`cudagraph_nodes: 0` every time, on torch 2.11 -- and a fourth zero "
+                "settles that the mutation check is not reachable on this build, which is "
+                "a whole-rental decision (bump torch) rather than a slot. **A win here is "
+                "a win for the alignment check, not for CUDA graphs**, and the record has "
+                "to keep saying which."
+            ),
+        ),
+        Hypothesis(
+            slug="058-conv-and-head",
+            kernels=("inline_causal_conv", "tiled_int4_head"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("causal_conv", "decode_step"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "Both current champions at once: the fusible causal conv and the int4 "
+                "head. 953.55 MB/token removed from one matmul, and 24 cuDNN dispatches "
+                "removed from 24 layers, on disjoint parts of the step."
+            ),
+            prediction="win",
+            rationale=(
+                "**The shipped configuration, measured.** `apply_champions` now installs "
+                "exactly this pair, so a batch that never benchmarked it would be shipping "
+                "an unmeasured default -- and both ingredients are measured above it in "
+                "the same process, which is the rule rental 45 established by breaking it. "
+                "Rental 45's `051` measured this pair at **1.0443 ± 0.1511** and its `052` "
+                "measured the pair plus the static cache at **1.0747 ± 0.0127**; the "
+                "candidate timings agreed and only the reference column differed, so the "
+                "pair is probably worth ~1.07 and the batch could not say so. Predicted "
+                "**win, 1.04-1.10**. The reading that matters is **058 against 053 and "
+                "054 separately**: if it falls short of their product the two are "
+                "competing, and rental 45 could not test that because `051`'s band "
+                "swallowed the difference."
+            ),
+        ),
+        Hypothesis(
+            slug="059-conv-and-head-triton-op",
+            kernels=("inline_causal_conv", "int4_head_triton_op"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("causal_conv", "decode_step"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="055-int4-head-triton-op",
+                floor=1.00,
+                reason=(
+                    "this slot is 058 with the visible head substituted for the opaque "
+                    "one, so its entire content above 058 is whatever 055 showed the "
+                    "registration is worth. With 055 below 1.00 the substitution is a "
+                    "worse 058 and the batch already holds the better version; the floor "
+                    "is 1.00 rather than a champion-beating bar because on a drifting card "
+                    "every absolute collapses toward it, and declining a slot for the "
+                    "card's reasons rather than the hypothesis's is rental 43's failure"
+                ),
+            ),
+            mechanism=(
+                "058 with the head registered through `triton_op`: the same two mechanisms "
+                "with nothing in the graph inductor has to fence against."
+            ),
+            prediction="win",
+            rationale=(
+                "**If the barrier costs anything at the head, this is where the project "
+                "banks it**, and it is one variable from 058 exactly as 055 is one "
+                "variable from 054. Predicted **win, 1.06-1.13**: 058's measurement plus "
+                "whatever 055 beat 054 by. The question it asks that 055 cannot: the head "
+                "and the conv are adjacent in neither the graph nor the model, but both "
+                "now let inductor schedule across them, so **059 minus 058 should equal "
+                "055 minus 054** if the two barriers are independent. A shortfall means "
+                "they are not, and that is a finding about how fusion regions compose that "
+                "no launch census could produce. Bars are 054's; nothing here changes an "
+                "arithmetic operation."
+            ),
+        ),
+        Hypothesis(
+            slug="060-conv-head-cache",
+            kernels=("inline_causal_conv", "tiled_int4_head", "static_decode_cache"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("causal_conv", "decode_step", "decode_cache"),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            requires=Precondition(
+                slug="058-conv-and-head",
+                floor=1.00,
+                reason=(
+                    "this is 058 plus a mechanism 057 has measured alone, so with 058 "
+                    "below 1.00 there is nothing here the batch does not hold: it would "
+                    "add a third install on top of a composition that lost, which is what "
+                    "batch 003 spent five slots doing"
+                ),
+            ),
+            mechanism=(
+                "Three disjoint mechanisms: bytes inside one matmul, 24 cuDNN dispatches "
+                "removed from 24 layers, and inductor's per-call alignment check removed "
+                "from 64 tensors on 128 steps."
+            ),
+            prediction="win",
+            rationale=(
+                "**Rental 45's best measured candidate, re-measured with all three of its "
+                "ingredients on disk the same day for the first time.** `052` returned "
+                "**1.0747 at an IQR of 0.0127** -- the tightest win in that batch -- but "
+                "its conv and head were measured in slots whose own bands were 0.055 and "
+                "0.026, so the decomposition was not readable. Here 053, 054 and 057 all "
+                "run alone above it. Predicted **win, 1.05-1.11**. The question: **the "
+                "conv's saving is a dispatch saving and the static cache's is too**, so if "
+                "060 minus 058 comes out below what 057 measured alone, the two are "
+                "competing for the same microseconds and this project's launch accounting "
+                "is not additive. Either reading is a finding, and it costs one slot "
+                "because every ingredient is measured separately above it."
+            ),
+        ),
+        Hypothesis(
+            slug="061-int4-mlp-torch-dequant",
+            kernels=("int4_mlp_torch_dequant",),
+            category="B",
+            byte_share=0.5275,
+            replaces=("swiglu_mlp",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=220 / 264,
+            kl_threshold=0.10,
+            weight_bits={"mlp": 4},
+            requires=Precondition(
+                slug="056-int4-head-torch-dequant",
+                floor=1.02,
+                reason=(
+                    "this is the same question asked of a block 3.6x larger, and it is "
+                    "only worth asking once the cheap version has shown that inductor "
+                    "fuses a grouped dequantisation into a GEMV prologue at all. Below "
+                    "1.02 on the head it demonstrably does not, and this slot would "
+                    "re-measure a materialised weight at 96 sites instead of one -- which "
+                    "is precisely what batches 003 and 004 spent two rentals doing"
+                ),
+            ),
+            mechanism=(
+                "The compiler-generated dequantise-GEMV on the 96 MLP projections: "
+                "**52.75% of per-token bytes and a 1.6545x ceiling**, the largest "
+                "homogeneous block in the model, at group-128 int4 with no hand-written "
+                "kernel anywhere in it."
+            ),
+            prediction="win",
+            rationale=(
+                "**The prize, and it is only reachable down the branch 056 opens.** Three "
+                "hand-written kernels have failed on these sites at ~66 GB/s across three "
+                "rentals, rental 43 refuted register pressure and latency, and rental 45 "
+                "closed the tile question at five measured points. What has never been "
+                "tried is the possibility that **the right code for these sites is "
+                "inductor's own**. Predicted **win, 1.25-1.55** *given the gate*: the MLP "
+                "costs 4529.85 MB/token of 8587.80, group-128 int4 moves 0.2578 of that, "
+                "and the ceiling is 1.6545x -- if the head slot showed the dequantisation "
+                "fuses, the same fusion at 96 wider sites collects proportionally more, "
+                "because the MLP's sites are 9216 and 2560 channels wide where the "
+                "starved gates are 32. It runs last because it is the batch's riskiest "
+                "and largest install, with everything cheaper already on disk. Bars are "
+                "`030-int4-mlp`'s, which measured 0.04868 nats against this 0.10 after "
+                "predicting ~0.048 -- the one place in this repository where a bar derived "
+                "from a measured point has been checked twice."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -2286,6 +2690,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_006.batch_id: BATCH_006,
     BATCH_007.batch_id: BATCH_007,
     BATCH_008.batch_id: BATCH_008,
+    BATCH_009.batch_id: BATCH_009,
 }
 
 
