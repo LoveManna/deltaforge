@@ -70,6 +70,15 @@ Three things fall out of the table and they shape the plan:
    as a **hard prerequisite**. If int4 in torch does not clear ~1.0 on the whole model,
    `d ≈ v₁` and self-drafting is dead by arithmetic.
 
+**`k·d` is only `k·d` if the drafter's catch-up is merged into its first draft pass.**
+A drafter carries its own recurrent state, and at the start of each cycle that state is
+wrong in two ways: it ran ahead through drafts that were rejected, and it never saw the
+verifier's own token. It must therefore consume the newly committed tokens before it can
+draft again. Done as a separate pass that is `(k+1)·d` and the `k=4`, `p=0.9` cell falls
+from **1.62x to 1.42x**; done as the *first* draft pass of the next cycle — a multi-token
+input whose last position is the first new draft — it is free, because the weights stream
+once either way. **The implementation must merge it, and the plan tests that it did.**
+
 ---
 
 ## 2. What already works, unchanged
@@ -115,7 +124,7 @@ The causal conv history rolls back the same way and is negligible: 24 layers × 
 
 ---
 
-## 4. Correctness, stated before the measurement
+## 4. Correctness: neither existing gate is the right instrument
 
 **The claim is that the emitted token sequence is the reference's.** A draft token is
 accepted only when it equals `argmax` of the *verifier's* logits at that position, and at
@@ -123,22 +132,39 @@ the first disagreement the verifier's own token is emitted and the rest of the b
 discarded. Every emitted token is therefore an argmax of logits this model computed.
 
 **It is not bit-exact, and the reason is this checkpoint's own sensitivity.** The verifier
-computes `k+1` positions in one matmul; the reference computes them one at a time. Different
-shapes mean a different reduction order, and `AGENT.md` §7a records that one bf16 ULP flips
-an argmax on this model — `009-gemv-bf16-control` matched 1 prompt of 5 on exactly that.
+computes `k+1` positions in one matmul; the reference computes them one at a time. A
+different reduction order lands one bf16 ULP away, and `AGENT.md` §7a records that one ULP
+flips an argmax on this model — `009-gemv-bf16-control` matched 1 prompt of 5 on exactly
+that.
 
-So the slot is gated **`approximate`**, and its bars are derived from something already
-measured rather than from the theory: the bit-identical slots (`045`, `057`) returned
-**264/264 and 0.00000 nats**, and a multi-token verify should land within a few flips of
-that. **Registered bars: top-1 ≥ 261/264, KL ≤ 1e-5 nats.** A candidate that misses those is
-not suffering from reduction order; it has a rollback bug, and the bar is set where it can
-say so.
+**And this is where the first draft of this spec was wrong.** It registered the slot as
+`approximate`, which is the policy every quantised slot uses. That policy runs
+`check_distribution`, which **teacher-forces the two models and never calls the decode
+loop** — and a speculative candidate has the reference's own weights, so it would return
+264/264 and 0.00000 nats by construction, including with a rollback that silently corrupts
+the recurrent state. It is not a weak gate here; it is a gate that cannot fail.
 
-One diagnostic makes the distinction free: **run the loop with `k = 0`**, where it degenerates
-to ordinary decoding. That must be bit-identical, and if it is not, nothing else in the slot
-is readable.
+The other policy, `exact`, does exercise the loop — `check_end_to_end` free-runs
+`greedy_decode` on both models and compares token ids — but `Hypothesis.__post_init__`
+refuses `exact` for anything that installs a kernel, for the reason that produced this
+rule three times: computing the same function is not producing the same bits.
 
----
+So this hypothesis needs a **third policy, `sequence`**, and the gate that goes with it:
+
+* free-run both models, compare token ids, and report **the index of the first
+  divergence** rather than a bare pass/fail;
+* at that index, report the **reference's own top-2 logit gap**, which
+  `oracle_test.py::test_report_the_first_greedy_divergence` already computes;
+* **pass** when there is no divergence, or when the first divergence sits at a position
+  whose top-2 gap is below the ULP scale — that is a flip the reduction order explains.
+  **Fail** when a divergence lands on a position the reference was confident about, which
+  is what a rollback bug looks like and what no distribution statistic would have caught.
+
+Registered bars: `first_divergence_gap_ceiling = 0.02` (bf16 has ~3 decimal digits at
+logit magnitudes here, so a gap below this is not a decision the model made), and **no
+divergence at all in the `k = 0` diagnostic**, which must be bit-identical because it
+degenerates to ordinary decoding. The `k = 0` case runs on CPU with `tiny_config`, so it
+is a unit test rather than a rental line.
 
 ## 5. What has to change in the harness
 
@@ -170,9 +196,21 @@ Ordered by who blocks whom.
    the prompt; this one is not, and that is a property of the hypothesis, not a flaw in the
    harness.
 
-Two smaller ones: `recompile_limit` must allow the two shapes the loop compiles (`1` and
-`k+1`), and `graphs_compiled` must be read as usual to confirm neither column fell back to
-eager.
+7. **`DecodeCache` needs `rewind`, and the bench needs `k` positions of headroom.**
+   `advance` is one-way and `ensure_capacity` refuses to write past `max_seq_len`. A cycle
+   writes `k+1` positions and may keep `j+1`, so the cache is allocated at
+   `context + decode_tokens + k` and rewound by `k − j` after every verify.
+8. **The drafter cannot live in the candidate's module tree.**
+   `cli._assert_parameters_are_shared` requires every candidate parameter to share storage
+   with a reference parameter of the same name, and int4 draft weights have no counterpart.
+   That check is load-bearing — it is what catches a candidate that silently loaded a
+   second 8.4 GB copy — so the drafter is held by the loop object rather than registered as
+   a submodule, and the check stays exactly as strict as it is.
+
+Two smaller ones: the drafter's catch-up pass has a **data-dependent length** (`j+1`, which
+varies per cycle), so its sequence dimension is marked dynamic — otherwise dynamo compiles a
+graph per length and the slot is voided by recompilation. And `graphs_compiled` must be read
+as usual to confirm neither column fell back to eager.
 
 ---
 
@@ -224,3 +262,32 @@ composed). It does compose with quantisation, but only through `d`.
 It is also **not** a general throughput result. At batch 1 the card is idle enough that
 verifying four tokens is nearly free; at batch 32 it is not, and the table in §1 does not
 apply there. The claim is about single-stream latency, which is what this project measures.
+
+
+---
+
+## 9. What the review changed, 2026-09-24
+
+The spec was checked against the code the same day it was written, before any
+implementation. Four things changed, and they are recorded here rather than silently
+edited, because a design that was wrong in a way the code could have told you is worth the
+same note as a prediction that missed:
+
+1. **§4 was wrong about the gate.** `approximate` teacher-forces the models and never calls
+   the decode loop; on a candidate with the reference's own weights it cannot fail. A third
+   policy and a divergence-attribution gate replace it.
+2. **§1 understated the drafter's bookkeeping.** A drafter has its own recurrent state and
+   must consume the newly committed tokens each cycle. Merged into the first draft pass that
+   is free; done separately it is `(k+1)·d` and costs the headline cell 0.2x.
+3. **§5 was missing the cache rewind and the headroom** it implies, and the fact that
+   `_assert_parameters_are_shared` refuses a drafter inside the module tree.
+4. **The variable-length catch-up is a recompilation source**, which would void a slot the
+   way `recompile_limit` voided six of nine in batch 008.
+
+Verified against the code and unchanged: the multi-token verify needs no new model code
+(`ReferenceModel.forward` takes `num_logits_to_keep=k+1`; `_causal_conv` prepends the cache
+history; `recurrent_gated_delta_rule` takes `initial_state` and scans; gated attention takes
+`cache_offset`), and the per-step conv windows are free because the layer has already
+concatenated history and input into one tensor. The per-step *recurrent* states are not
+free: `recurrent_gated_delta_rule` returns only the final state, so the versioning is a
+module swap, which is what makes it an installer like any other.
