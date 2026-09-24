@@ -517,3 +517,66 @@ def test_attention_uses_the_gate_the_config_names():
         b, _ = swish_model(ids)
 
     assert not torch.allclose(a, b), "the gate type made no difference; it is being ignored"
+
+
+def test_a_cache_snapshot_restores_the_state_a_prefill_left_behind(model, config):
+    """The bench's rounds are what this is for: prefill once, restore per round.
+
+    Each scoring round used to re-run the whole 2048-token prefill as setup. It is
+    excluded from the timed region, so it never touched a ratio — it just made a round
+    cost ~18 s of billed rental where the timed region costs ~2. Restoring a snapshot
+    reproduces the same starting state at the price of a device-to-device copy.
+    """
+    ids = torch.randint(0, config.vocab_size, (1, 4))
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+    model(ids, cache)
+    snapshot = cache.snapshot()
+    expected, _ = model(ids[:, -1:], cache)
+
+    cache.restore(snapshot)
+    assert cache.seq_len == snapshot.seq_len
+    again, _ = model(ids[:, -1:], cache)
+
+    torch.testing.assert_close(again, expected, rtol=0, atol=0)
+
+
+def test_restoring_a_snapshot_writes_into_the_cache_tensors_it_already_had(model, config):
+    """In place, because an address that moves between rounds is a different experiment.
+
+    `034-static-cache-cudagraphs` won 2.0% by promising inductor these tensors never move
+    (`mark_static_address` puts them in `static_input_idxs`, which is what skips the
+    per-call alignment check). A restore that rebound them to fresh storage would silently
+    void that slot and any CUDA-graph work behind it.
+    """
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+    model(torch.randint(0, config.vocab_size, (1, 4)), cache)
+    snapshot = cache.snapshot()
+    attn_layer = next(i for i, t in enumerate(config.layer_types) if t == FULL_ATTENTION)
+    linear_layer = next(i for i, t in enumerate(config.layer_types) if t != FULL_ATTENTION)
+    keys = cache.attention(attn_layer).keys
+    recurrent = cache.linear(linear_layer).recurrent
+
+    cache.restore(snapshot)
+
+    assert cache.attention(attn_layer).keys is keys
+    assert cache.linear(linear_layer).recurrent is recurrent
+
+
+def test_a_snapshot_is_a_copy_and_not_a_view_of_the_live_cache(model, config):
+    """A snapshot aliasing the cache would restore whatever the last round happened to leave."""
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+    model(torch.randint(0, config.vocab_size, (1, 4)), cache)
+    snapshot = cache.snapshot()
+    before = snapshot.tensors[0].clone()
+
+    model(torch.randint(0, config.vocab_size, (1, 1)), cache)
+
+    torch.testing.assert_close(snapshot.tensors[0], before, rtol=0, atol=0)
+
+
+def test_restoring_a_snapshot_from_a_differently_shaped_cache_is_refused(config):
+    small = DecodeCache(config, batch_size=1, max_seq_len=8)
+    large = DecodeCache(config, batch_size=1, max_seq_len=16)
+
+    with pytest.raises(ValueError, match="different cache"):
+        large.restore(small.snapshot())

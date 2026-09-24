@@ -36,6 +36,17 @@ DF_IMAGE="${DF_IMAGE:-vastai/base-image:cuda-12.9-mini-py312-2026-08-28}"
 # ordered by price and deterministic, so without this the next run lands on exactly the
 # same failing host.
 DF_EXCLUDE_MACHINES="${DF_EXCLUDE_MACHINES:-}"
+# Machine ids to try FIRST, in the order given, before the rest of the price-ordered list.
+#
+# Rentals 45 and 46 landed on machine 140734 by luck, and that luck is the only reason the
+# two batches can be compared with the card held fixed -- which is what let rental 46 say
+# that 15 scoring rounds changed three conclusions rather than that the card had changed.
+# Two RTX 5090s on the same clock, driver and torch ran the reference 1.61x apart, so the
+# card is an uncontrolled variable the size of the effects this project measures.
+#
+# A preference rather than a filter: pinning hard would empty the market on a busy evening
+# and turn "comparable" into "no rental at all".
+DF_PREFER_MACHINES="${DF_PREFER_MACHINES:-}"
 
 DF_MAX_RATE="${DF_MAX_RATE:-0.45}"
 DF_GPU="${DF_GPU:-RTX 5090}"
@@ -83,6 +94,8 @@ Usage: remote/provision.sh [options]
   --fallback-gpu NAME       Fallback GPU name (default: RTX 4090).
   --max-rate USD            Hourly rate ceiling (default: 0.45).
   --exclude-machines IDS    Comma-separated machine ids to skip.
+  --prefer-machines IDS     Comma-separated machine ids to try first, in order. A
+                            preference, not a filter: the rest of the market follows.
   --max-minutes N           Estimated ceiling written to the ledger (default: 210).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --mtd-limit USD           Month-to-date refusal threshold (default: 45).
@@ -113,6 +126,7 @@ while [ $# -gt 0 ]; do
         --state-file)    DF_STATE_FILE="$2"; shift ;;
         --image)         DF_IMAGE="$2"; shift ;;
         --exclude-machines) DF_EXCLUDE_MACHINES="$2"; shift ;;
+        --prefer-machines) DF_PREFER_MACHINES="$2"; shift ;;
         --offer-candidates) DF_OFFER_CANDIDATES="$2"; shift ;;
         -h|--help)       usage; exit 0 ;;
         *)               df_die "unknown option: $1 (try --help)" ;;
@@ -182,6 +196,7 @@ select_offers() {
         --argjson mindown "$DF_MIN_INET_DOWN" \
         --argjson wantverified "$DF_REQUIRE_VERIFIED" \
         --arg excluded "$DF_EXCLUDE_MACHINES" \
+        --arg preferred "$DF_PREFER_MACHINES" \
         --argjson limit "$DF_OFFER_CANDIDATES" '
         .offers // []
         | map(select(
@@ -203,7 +218,12 @@ select_offers() {
             and ((.machine_id // 0) as $m
                  | ($excluded | split(",") | map(select(length > 0)) | index($m | tostring)) == null)
           ))
-        | sort_by(.dph_total)
+        # Preferred machines first, in the order they were named, then everything else in
+        # price order. The machine id is bound before the lookup because inside
+        # `$list | index(x)` the input is the list, not the offer.
+        | map(((.machine_id // 0) | tostring) as $m
+              | . + {_prefer: (($preferred | split(",") | map(select(length > 0)) | index($m)) // 9999)})
+        | sort_by([._prefer, .dph_total])
         | .[0:$limit]
         | .[]
         | [.id, .gpu_name, .dph_total, .reliability2, .gpu_ram, (.cuda_max_good // "?"),

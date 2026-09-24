@@ -14,7 +14,7 @@ import torch
 
 from .config import ModelConfig, model_config
 from .kernels import REGISTRY, KernelEntry, KernelRegistry
-from .reference import DecodeCache, ReferenceModel
+from .reference import CacheSnapshot, DecodeCache, ReferenceModel
 
 __all__ = [
     "INSTALLERS",
@@ -22,6 +22,7 @@ __all__ = [
     "apply_champions",
     "build_model",
     "greedy_decode",
+    "prefill_setup",
     "register_installer",
 ]
 
@@ -130,6 +131,44 @@ def greedy_decode(
         next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
         generated.append(next_token)
     return torch.cat(generated, dim=1)
+
+
+def prefill_setup(
+    model: ReferenceModel,
+    prompt: torch.Tensor,
+    cache: DecodeCache,
+) -> Callable[[], None]:
+    """Per-round setup for a decode column: prefill once, then restore that state.
+
+    `run_interleaved` calls a column's setup before every timed call and excludes it from
+    the measurement, so what it costs never reaches a ratio — it reaches the bill. The
+    setup this replaces was `cache.reset()` plus a full 2048-token prefill, which is why
+    rental 46's rounds cost ~18 s each against a timed region of ~2 s: at 15 scoring rounds
+    and two columns, most of a 364-514 s slot was prefill that no number was read from.
+
+    The prefill is deterministic, so every round after the first only needs the state it
+    left behind. `DecodeCache.restore` copies it back into the tensors the cache already
+    had, which keeps every address fixed — see its docstring for why that matters.
+
+    The prefill still runs eager, on ``model`` rather than a compiled wrapper: compiling it
+    asks inductor to max-autotune the unrolled `gated_delta_rule` scan, ~1M FX nodes at a
+    2048-token context, for a region nothing measures. Rentals 22, 30, 31 and 32 died
+    there. It also runs lazily, on the first call, so that it happens inside the
+    benchmark's `no_grad` region rather than at column-build time — a prefill under
+    autograd makes the cache tensors graph-tracked, which is how the in-place recurrent
+    update becomes an error 3000 s later.
+    """
+    snapshot: list[CacheSnapshot] = []
+
+    def setup() -> None:
+        if not snapshot:
+            cache.reset()
+            model(prompt, cache, num_logits_to_keep=1)
+            snapshot.append(cache.snapshot())
+            return
+        cache.restore(snapshot[0])
+
+    return setup
 
 
 # -- installers --------------------------------------------------------------------

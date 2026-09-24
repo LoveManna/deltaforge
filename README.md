@@ -362,6 +362,10 @@ uv run python docs/roofline.py
 
 # Verify the cost machinery without spending anything.
 remote/run_remote.sh --dry-run --session-id smoke --batch 001-calibration
+
+# Read what the compiler does with a candidate, before renting a card to ask.
+uv run python -m deltaforge.cli fusion --batch 009-visible-kernels     # which slots install a barrier
+uv run python -m deltaforge.cli fusion --install inline_causal_conv    # compile here, diff the code
 ```
 
 The full run — provision, sync, correctness gates, benchmark, pull results, destroy —
@@ -385,6 +389,7 @@ remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)" --batch 001-calib
 | `docs/ARCHITECTURE.md` | The resolved Qwen3.5-4B facts every kernel must honour. |
 | `docs/HYPOTHESES.md` | The idea backlog, and the graveyard of what failed and why. |
 | `docs/BATCHES.md` | How a batch works, and what filling one requires. |
+| `src/deltaforge/fusion.py` | What inductor generated, parsed; which registrations are opaque. No GPU. |
 | `src/deltaforge/batches.py` | The batch manifests, predictions registered in advance. |
 | `AGENT.md` | **Start here.** The single entry point for a working session. |
 | `LEADERBOARD.md` | The current champion, and every hypothesis attempted. |

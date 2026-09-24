@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from . import report
 from .bench import BenchConfig, BenchResult
 from .report import (
     SCHEMA_VERSION,
@@ -517,3 +518,35 @@ def test_a_precondition_skipped_slot_says_which_floor_it_missed():
 
     assert "Slots the batch declined" in markdown
     assert "against a floor of 0.56" in markdown
+
+
+def test_gpu_telemetry_parses_one_nvidia_smi_row(monkeypatch):
+    """One call, five fields — clocks, power, and the card's own throttle reasons.
+
+    Blocker 18 has been open since rental 43: two 5090s 1.61x apart, and the ranked suspect
+    (a persistent power limit on a mining host) untestable because no rental captured power.
+    """
+    row = "2910, 13801, 231.44, 600.00, 0x0000000000000001"
+    monkeypatch.setattr(report, "_nvidia_smi", lambda query: row)
+
+    telemetry = report.capture_gpu_telemetry()
+
+    assert telemetry["sm_mhz"] == 2910
+    assert telemetry["memory_mhz"] == 13801
+    assert telemetry["power_w"] == 231.44
+    assert telemetry["power_limit_w"] == 600.00
+    assert telemetry["throttle_reasons"] == "0x0000000000000001"
+    assert telemetry["observed_at"]
+
+
+def test_gpu_telemetry_is_empty_rather_than_partial_without_a_card(monkeypatch):
+    monkeypatch.setattr(report, "_nvidia_smi", lambda query: None)
+
+    assert report.capture_gpu_telemetry() == {}
+
+
+def test_a_short_nvidia_smi_row_is_refused_rather_than_misaligned(monkeypatch):
+    """A row with fewer fields than asked for would silently shift power into clocks."""
+    monkeypatch.setattr(report, "_nvidia_smi", lambda query: "2910, 13801")
+
+    assert report.capture_gpu_telemetry() == {}

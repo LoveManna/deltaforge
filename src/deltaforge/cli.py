@@ -317,7 +317,7 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     """
     import torch
 
-    from .model import greedy_decode
+    from .model import greedy_decode, prefill_setup
 
     _config, reference, candidate = _load_models(args)
     workload = DEFAULT_WORKLOADS[args.workload]
@@ -332,14 +332,9 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
         if compile_mode is not None:
             runnable = torch.compile(model, mode=compile_mode)
         cache = model.new_cache(batch, context + tokens)
-
-        def setup() -> None:
-            # The prefill is untimed, so it runs eager. Compiling it means asking inductor
-            # to max-autotune the unrolled `gated_delta_rule` scan -- ~1M FX nodes at a
-            # 2048-token context -- for a region `run_interleaved` excludes from every
-            # measurement. See `batch_run.BatchRunner._make_column`.
-            cache.reset()
-            model(prompt, cache, num_logits_to_keep=1)
+        # Prefilled once and restored per round; `model.prefill_setup` says what that saves
+        # and why it is sound.
+        setup = prefill_setup(model, prompt, cache)
 
         def run() -> None:
             greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)
@@ -614,6 +609,115 @@ def cmd_batch(args: argparse.Namespace) -> int:
     return 0
 
 
+def compile_and_capture(model, prompt, cache) -> str:
+    """Compile one decode step and return the generated code inductor logged.
+
+    In-process rather than through a subprocess so the caller can hold two variants of one
+    model in one interpreter, which is the whole point: the comparison is between two
+    programs, and anything that differs between two runs of the same process is noise in it.
+    """
+    import io  # noqa: PLC0415
+    import logging  # noqa: PLC0415
+
+    import torch  # noqa: PLC0415
+
+    captured = io.StringIO()
+    handler = logging.StreamHandler(captured)
+    logger = logging.getLogger("torch._inductor")
+    previous = logger.level
+    torch._logging.set_logs(output_code=True)
+    logger.addHandler(handler)
+    try:
+        with torch.no_grad():
+            model(prompt, cache, num_logits_to_keep=1)
+            step = prompt[:, -1:]
+            torch.compile(model)(step, cache, num_logits_to_keep=1)
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+        torch._logging.set_logs()
+    return captured.getvalue()
+
+
+def cmd_fusion(args: argparse.Namespace) -> int:
+    """Read what the compiler does with a candidate, on this machine, before renting one.
+
+    Three of the last four rentals were decided by generated code rather than by a ratio,
+    and both of this project's champions were found by reading it. This runs the same
+    diagnostic on the tiny CPU config, where a slot costs seconds instead of ~400 s of
+    billed time. `deltaforge.fusion` documents what a CPU dump can and cannot settle: it is
+    the barrier question, not the matmul-prologue question.
+    """
+    import torch  # noqa: PLC0415
+
+    from .batch import registry_for  # noqa: PLC0415
+    from .batches import get_batch  # noqa: PLC0415
+    from .config import tiny_config  # noqa: PLC0415
+    from .fusion import (  # noqa: PLC0415
+        barrier_preflight,
+        diff_reports,
+        opaque_kernels,
+        parse_output_code,
+        render_diff,
+    )
+    from .model import apply_champions  # noqa: PLC0415
+    from .reference import ReferenceModel  # noqa: PLC0415
+
+    if args.batch:
+        # The static half, which needs neither a compile nor a card: a `CustomOpDef` is a
+        # barrier wherever it runs, and a batch that installs one without measuring the same
+        # program without it cannot tell a slow kernel from an expensive registration.
+        batch = get_batch(args.batch)
+        for hyp in batch:
+            opaque = opaque_kernels(hyp.kernels)
+            if opaque:
+                partner = hyp.contrast_with or next(
+                    (o.slug for o in batch if o.contrast_with == hyp.slug), None
+                )
+                against = f"contrasted with {partner}" if partner else "NOT CONTRASTED"
+                print(f"[fusion] {hyp.slug}: opaque {list(opaque)} -- {against}")
+        unpartnered = barrier_preflight(batch)
+        if unpartnered:
+            print(
+                f"[fusion] {len(unpartnered)} slot(s) install a fusion barrier with nothing "
+                f"measuring the alternative: {list(unpartnered)}. That is the 21% the conv "
+                "lost and the 3.2% the head lost, and neither was visible from its own slot."
+            )
+            return 1
+        print("[fusion] no unpartnered fusion barrier in this batch")
+        return 0
+
+    kernels = [name.strip() for name in args.install.split(",") if name.strip()]
+    if not kernels:
+        raise SystemExit("--install names the kernels to read; with none there is nothing to compare")
+
+    config = tiny_config()
+    torch.manual_seed(0)
+    prompt = torch.randint(0, config.vocab_size, (1, args.context), dtype=torch.long)
+
+    dumps: dict[str, str] = {}
+    for label, names in (("reference", []), ("candidate", kernels)):
+        torch._dynamo.reset()
+        model = ReferenceModel(config).eval()
+        if names:
+            applied = apply_champions(model, registry_for(names, label=f"cli fusion {label}"))
+            print(f"[fusion] candidate installs {list(applied)}")
+        dumps[label] = compile_and_capture(model, prompt, model.new_cache(1, args.context + 1))
+
+    if args.save:
+        for label, text in dumps.items():
+            path = Path(args.save).with_suffix("").parent / f"{Path(args.save).name}-{label}.txt"
+            path.write_text(text)
+            print(f"[fusion] wrote {path}")
+
+    diff = diff_reports(parse_output_code(dumps["reference"]), parse_output_code(dumps["candidate"]))
+    print(render_diff(diff))
+    # Exit 1 on a barrier so a pre-rental check can be wired into a manifest test or a
+    # shell script without parsing prose. Everything else is advisory: a split on CPU is
+    # worth reading, but only a dispatch is a barrier wherever it runs.
+    return 1 if diff.introduced_barriers else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="deltaforge", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -741,6 +845,29 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--instance-id", default="")
     batch.add_argument("--hourly-rate", type=float, default=0.0)
     batch.set_defaults(func=cmd_batch)
+
+    fusion = sub.add_parser(
+        "fusion",
+        help="compile the tiny config on CPU and diff what inductor generated (no GPU, no weights)",
+    )
+    fusion.add_argument(
+        "--batch",
+        default="",
+        help="read a manifest's registrations instead of compiling: which slots install a barrier",
+    )
+    fusion.add_argument(
+        "--install",
+        default="",
+        help="comma-separated kernel names to install on the candidate, as `bench --install` takes",
+    )
+    fusion.add_argument(
+        "--context",
+        type=int,
+        default=8,
+        help="prompt length for the prefill that precedes the compiled decode step (default: 8)",
+    )
+    fusion.add_argument("--save", default="", help="write both raw dumps next to this path")
+    fusion.set_defaults(func=cmd_fusion)
 
     return parser
 

@@ -147,6 +147,9 @@ Usage: remote/run_remote.sh [options]
                             whether a stalled pull is a Docker Hub rate limit.
   --exclude-machines IDS    Comma-separated machine ids to skip (ones that already
                             cost a rental without producing a result).
+  --prefer-machines IDS     Comma-separated machine ids to try first. Re-renting the
+                            machine a previous batch ran on is the only way this
+                            project has to hold the card fixed between rentals.
   --simulate-failure STAGE  Force a failure at: provision, sync, correctness, bench, pull.
                             For testing the teardown path.
   -h, --help                This message.
@@ -175,6 +178,7 @@ while [ $# -gt 0 ]; do
         --max-rate)          DF_PROVISION_ARGS="$DF_PROVISION_ARGS --max-rate $2"; shift ;;
         --image)             DF_PROVISION_ARGS="$DF_PROVISION_ARGS --image $2"; shift ;;
         --exclude-machines)  DF_PROVISION_ARGS="$DF_PROVISION_ARGS --exclude-machines $2"; shift ;;
+        --prefer-machines)   DF_PROVISION_ARGS="$DF_PROVISION_ARGS --prefer-machines $2"; shift ;;
         --dump-install)      DF_DUMP_INSTALL="$2"; shift ;;
         --simulate-failure)  DF_SIMULATE_FAILURE="$2"; shift ;;
         --state-file)        DF_STATE_FILE="$2"; shift ;;

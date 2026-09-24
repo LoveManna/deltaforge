@@ -24,6 +24,7 @@ __all__ = [
     "BatchRecord",
     "ResultRecord",
     "capture_environment",
+    "capture_gpu_telemetry",
     "git_info",
     "render_batch_markdown",
     "render_markdown",
@@ -128,15 +129,73 @@ def capture_environment() -> dict[str, Any]:
         env["triton_version"] = None
 
     env["driver_version"] = _nvidia_smi("driver_version")
-    sm_clock = _nvidia_smi("clocks.current.sm")
-    mem_clock = _nvidia_smi("clocks.current.memory")
-    if sm_clock or mem_clock:
+    telemetry = capture_gpu_telemetry()
+    if telemetry:
         env["gpu_clocks_mhz"] = {
-            "sm": _maybe_int(sm_clock),
-            "memory": _maybe_int(mem_clock),
-            "observed_at": datetime.now(timezone.utc).isoformat(),
+            "sm": telemetry.get("sm_mhz"),
+            "memory": telemetry.get("memory_mhz"),
+            "observed_at": telemetry["observed_at"],
+        }
+        env["gpu_power"] = {
+            "draw_w": telemetry.get("power_w"),
+            "limit_w": telemetry.get("power_limit_w"),
+            "throttle_reasons": telemetry.get("throttle_reasons"),
         }
     return env
+
+
+def capture_gpu_telemetry() -> dict[str, Any]:
+    """Clocks, power and the card's own account of why it is not going faster.
+
+    Two RTX 5090s on the same memory clock, driver and torch ran the reference **1.61x
+    apart** (rentals 40 and 43), and every mechanism this project had measured went to zero
+    on the slow one. The ranked suspect — a persistent power limit on a mining host — was
+    never tested, because no rental captured power. `clocks_throttle_reasons.active` is the
+    card answering the question directly, and all of it is one `nvidia-smi` call.
+
+    Cheap enough to call per slot, which is the other half: rental 45's card downclocked
+    2910 -> 2400 MHz *at slot 4* and held it, so a value captured once at startup describes
+    a card the batch no longer has.
+    """
+    fields = (
+        ("sm_mhz", "clocks.current.sm", _maybe_int),
+        ("memory_mhz", "clocks.current.memory", _maybe_int),
+        ("power_w", "power.draw", _maybe_float),
+        ("power_limit_w", "power.limit", _maybe_float),
+        ("throttle_reasons", "clocks_throttle_reasons.active", _throttle_reasons),
+    )
+    query = ",".join(field for _, field, _ in fields)
+    raw = _nvidia_smi(query)
+    if raw is None:
+        return {}
+    values = [piece.strip() for piece in raw.splitlines()[0].split(",")]
+    if len(values) != len(fields):
+        return {}
+    out: dict[str, Any] = {
+        name: convert(value) for (name, _, convert), value in zip(fields, values, strict=True)
+    }
+    out["observed_at"] = datetime.now(timezone.utc).isoformat()
+    return out
+
+
+def _maybe_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _throttle_reasons(value: str | None) -> str | None:
+    """`nvidia-smi` reports this as a hex bitmask; 0x0 means the card is not throttled.
+
+    Kept as the raw string rather than decoded into names: a bitmask this project has never
+    seen decoded wrongly would be worse than one it has to look up once.
+    """
+    if not value:
+        return None
+    return value
 
 
 def _maybe_int(value: str | None) -> int | None:

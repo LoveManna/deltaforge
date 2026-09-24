@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 import torch
 
-from .batch import scoped_registry
+from .batch import scoped_registry, unpaired_slots
 from .batches import (
     BATCH_001,
     BATCH_002,
@@ -31,6 +31,7 @@ from .batches import (
     get_batch,
 )
 from .config import tiny_config
+from .fusion import barrier_preflight
 from .kernels import CHECK_BUILDERS, REGISTRY
 from .model import apply_champions
 from .reference import ReferenceModel
@@ -1369,3 +1370,28 @@ def test_009_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_009:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+def test_every_batch_from_010_on_is_a_set_of_controlled_contrasts():
+    """The design that produced every finding here, asserted for batches not yet run.
+
+    `044`/`045` and `054`/`056` are pairs one variable apart measured in one process; they
+    are also the only two slots in nine batches that settled anything on their own. The
+    rule this asserts is the general form: a slot either measures an ingredient the batch
+    has not measured yet, or names the earlier slot it differs from. Batches 001-009 ran
+    before the rule and are left as they were recorded — rewriting a manifest a rental ran
+    under would falsify the record exactly as rewriting a prediction would.
+    """
+    for batch_id, batch in BATCHES.items():
+        if batch_id.split("-")[0] < "010":
+            continue
+        assert unpaired_slots(batch) == (), (
+            f"batch {batch_id} has slots that re-measure an earlier slot's kernel without "
+            f"naming the contrast: {unpaired_slots(batch)}"
+        )
+        assert barrier_preflight(batch) == (), (
+            f"batch {batch_id} installs a fusion barrier with nothing measuring the same "
+            f"program without one: {barrier_preflight(batch)}. A `custom_op` costs its own "
+            "kernel plus what inductor can no longer fuse across it, and that second term is "
+            "only visible against a slot that does not pay it."
+        )

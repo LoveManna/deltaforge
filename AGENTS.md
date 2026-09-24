@@ -15,6 +15,9 @@ uv run python docs/roofline.py                      # where the bytes go — run
 uv run pytest                                       # must pass with no CUDA present
 uv run ruff check . && uv run ruff format --check .
 remote/run_remote.sh --dry-run --session-id smoke   # cost machinery, spends nothing
+
+uv run python -m deltaforge.cli fusion --batch NNN-slug        # which slots install a barrier
+uv run python -m deltaforge.cli fusion --install some_kernel   # compile here, diff the generated code
 ```
 
 ## Maintaining project memory

@@ -412,6 +412,7 @@ failure mode this project exists to avoid.
 | `docs/BATCHES.md` | **How a batch works** and what filling one requires. |
 | `src/deltaforge/batches.py` | The batch manifests, with every prediction registered in advance. |
 | `src/deltaforge/batch.py` | Batch model, outcome arithmetic, deadline policy. No torch. |
+| `src/deltaforge/fusion.py` | **Pre-rental instruments.** What inductor generated, parsed; which registrations are opaque. `cli fusion` runs both. |
 | `src/deltaforge/batch_run.py` | The GPU-side batch loop: compile once, isolate every slot. |
 | `docs/ARCHITECTURE.md` | Resolved model facts. Read before writing any kernel. |
 | `LEADERBOARD.md` | Champion and every attempt. |

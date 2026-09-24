@@ -132,6 +132,43 @@ compares two slots.
 layer-2 exact-token gate runs at **32** tokens rather than 128, recorded in every result.
 Re-check anything being promoted at 128.
 
+## Before you rent: two checks that cost nothing
+
+**A batch is a set of controlled contrasts or it is a set of anecdotes.** Both findings this
+project holds came from a pair of slots in one process differing in exactly one thing —
+`044`/`045` (37%) and `054`/`056` (3.2%) — and three rentals went into a composition effect
+that did not exist because no slot measured the ingredient alone. A slot therefore either
+measures an ingredient the batch has not measured yet, or names the earlier slot it differs
+from with `Hypothesis.contrast_with`. `batch.unpaired_slots` refuses a manifest that does
+neither, for every batch from 010 on.
+
+**A `torch.library.custom_op` is a fusion barrier by construction**, and the bill lands in
+the kernels next door where nobody looks. `fusion.barrier_preflight` refuses a manifest that
+installs one without measuring the same program without one; `fusion.opaque_kernels` is the
+check underneath it, and it reads the registry rather than a dump, so it needs no GPU.
+
+```sh
+uv run python -m deltaforge.cli fusion --batch 010-whatever     # registrations: which are opaque
+uv run python -m deltaforge.cli fusion --install inline_causal_conv   # compile it here, diff the code
+```
+
+The second form compiles the tiny config on the CPU backend and diffs what inductor
+generated against the reference's. Read `src/deltaforge/fusion.py` for what that can and
+cannot settle: it answers the barrier question and the did-my-rewrite-split-the-graph
+question, and it does **not** answer whether a dequantise prologue fuses into a matmul,
+because the CPU backend sends `mm` to MKL where CUDA generated a Triton template. A CPU dump
+of `056-int4-head-torch-dequant` predicts the loss rental 46 refuted.
+
+## A precondition belongs on the proposition its slot depends on
+
+`Precondition(slug, floor, reason)` puts a floor on one slot's absolute ratio.
+`Precondition(slug, floor, reason, versus=other)` puts it on `ratio[slug] - ratio[other]`,
+and that is the right form whenever the proposition is a comparison. Rental 46 gated
+`061-int4-mlp-torch-dequant` — 52.75% of per-token bytes — on `056` reaching 1.02 absolute.
+`056` returned 1.0171 and the largest prize in the backlog declined by 0.3%, on a quantity
+that moves with how fast the card is that hour. The proposition was `056` against `054`:
+**+3.2%**, nowhere near any band.
+
 ## Adding a batch
 
 1. Write the kernels, each with an installer in `model.INSTALLERS` and checks in
@@ -468,6 +505,15 @@ and is where the 2048-token prefill runs. So ten extra rounds cost **~180 s a sl
 **It was worth it and the arithmetic should still have been right.** Budget a batch round
 at **~18 s**, and remember that the number the bench reports as `median_ms` is the timed
 region alone — it is not what a round costs the rental.
+
+**Fixed 2026-09-24: the prefill now runs once per column, not once per round.** The state a
+prefill leaves behind is deterministic, so every round after the first only needs that state
+back. `DecodeCache.snapshot`/`restore` copy it — ~120 MB device-to-device, sub-millisecond —
+and `model.prefill_setup` is the setup both the batch runner and `cli bench` now build.
+Nothing inside a timed region changed, so no ratio moves; what changes is that a round costs
+roughly its timed region again. **The saving is predicted, not yet measured — the next rental
+is what confirms it**, and the number to read is the wall clock between consecutive round
+lines in the log.
 
 ### What 15 scoring rounds bought
 

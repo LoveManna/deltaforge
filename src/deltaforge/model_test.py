@@ -7,12 +7,17 @@ import torch
 
 from .config import tiny_config
 from .kernels import REGISTRY, KernelRegistry, KernelStatus
-from .model import InstallerMissing, apply_champions, build_model, greedy_decode
+from .model import InstallerMissing, apply_champions, build_model, greedy_decode, prefill_setup
 from .reference import ReferenceModel
 
 
 def noop(*_args, **_kwargs):
     return None
+
+
+@pytest.fixture
+def config():
+    return tiny_config()
 
 
 @pytest.fixture
@@ -122,3 +127,52 @@ def test_greedy_decode_reuses_a_supplied_cache():
     # Three prompt tokens plus three generated ones were fed back through the cache. The
     # fourth generated token is the answer and is never consumed, so it is not committed.
     assert cache.seq_len == 3 + 4 - 1
+
+
+def test_prefill_setup_runs_the_prefill_once_and_restores_it_after(config):
+    """What the bench's per-round setup costs, and what it is allowed to cost.
+
+    Rental 46 paid ~18 s a round against a timed region of ~2 s, and the difference is the
+    2048-token prefill that `run_interleaved` runs as setup and then excludes from every
+    measurement. At 15 scoring rounds and two columns that is most of a slot. The prefill
+    is deterministic, so a round after the first only needs the state it left behind.
+    """
+    model = ReferenceModel(config)
+    prompt = torch.randint(0, config.vocab_size, (1, 6))
+    cache = model.new_cache(1, 16)
+    calls = []
+    original = model.forward
+
+    def counted(*args, **kwargs):
+        calls.append(args[0].shape[1])
+        return original(*args, **kwargs)
+
+    model.forward = counted
+
+    setup = prefill_setup(model, prompt, cache)
+    setup()
+    after_first = cache.seq_len
+    with torch.no_grad():
+        model(prompt[:, -1:], cache, num_logits_to_keep=1)
+    setup()
+    setup()
+
+    # 6 is the prefill, 1 is the decode step this test makes between the two setups.
+    assert calls == [6, 1], "the prefill ran more than once"
+    assert cache.seq_len == after_first == 6
+
+
+def test_prefill_setup_leaves_the_cache_where_the_prefill_left_it(config):
+    model = ReferenceModel(config)
+    prompt = torch.randint(0, config.vocab_size, (1, 6))
+    cache = model.new_cache(1, 16)
+
+    setup = prefill_setup(model, prompt, cache)
+    setup()
+    with torch.no_grad():
+        first, _ = model(prompt[:, -1:], cache, num_logits_to_keep=1)
+    setup()
+    with torch.no_grad():
+        second, _ = model(prompt[:, -1:], cache, num_logits_to_keep=1)
+
+    torch.testing.assert_close(first, second, rtol=0, atol=0)

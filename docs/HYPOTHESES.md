@@ -972,6 +972,56 @@ See `results/batches/005-launch-and-head/README.md`.
 
 ---
 
+### 10. Speculative decoding — the only entry whose ceiling is not the roofline
+
+**Share of bytes: none. It changes tokens per weight-stream, not bytes per token.**
+Category **C**. Design: `docs/superpowers/specs/2026-09-24-speculative-decoding-design.md`.
+
+**Mechanism.** The weights are read once per *forward pass*, not once per *token*. A pass
+that verifies `k` drafted tokens moves 8411.51 MB of weights exactly as a pass that produces
+one does; only the KV read, the recurrent state and the intermediates scale with `k`
+(176.29 MB/token, so +8.2% of bytes at `k=4`). Draft `k` tokens cheaply, verify them in one
+pass, keep every token the verifier's argmax agrees with. Greedy decoding is verifiable, so
+the emitted sequence is the one the reference would have produced.
+
+**Why the compiler cannot.** It is not a fusion, a tiling or a scheduling decision. It is a
+change to the number of forward passes per emitted token, licensed by a property of greedy
+decoding that no scheduler can observe.
+
+**The ceiling.** Every other entry in this file is bounded by 8587.80 MB at 1790 GB/s =
+**4.80 ms/token against a measured 7.05**, so ~1.47x and only at vendor peak. This entry is
+the only one that can go **below** 4.80. With the spec's cost model at `k=2`, an int4
+self-draft at `d = 2.5 ms` and acceptance 0.8 gives **1.38x**; a zero-cost n-gram draft at
+`k=4` breaks even at **10%** acceptance.
+
+**What it costs, and what has to be measured first.** `γ(k)`, the price of a `k+1`-token
+verify, is the whole downside and is **unmeasured**. The spec's first slot measures it with
+no drafter at all — deliberate garbage drafts, acceptance 0, ratio `1/γ` — and registers it
+as a predicted loss. Kill criteria are registered there too.
+
+**What makes this model harder than a transformer.** 24 of 32 layers carry a `(1, 32, 128,
+128)` recurrent state updated in place, and a rejected draft has to roll it back. A KV cache
+rewinds by moving `seq_len`; a recurrent state does not rewind at all. v1 keeps one state
+copy per verified step — `(k+1) × 50.33 MB`, the +2.9% already in `γ` — rather than re-running
+the accepted prefix, which would cost a second weight stream and end the hypothesis.
+
+**Watch for.**
+* **`061-int4-mlp-torch-dequant` is a hard prerequisite** for the self-draft: `d` is a full
+  forward of the quantised model, so if int4 in torch does not clear ~1.0 on the whole model
+  then `d ≈ v₁` and drafting is arithmetic that cannot win. The n-gram drafter has no `d` and
+  is unaffected.
+* **The headline workload prompts with random token ids**, and acceptance on noise is not
+  acceptance on text. This is the first entry whose number depends on the prompt; the spec
+  adds a tokenized-text workload and reports both.
+* **Acceptance is free to measure.** It is the layer-2 gate's teacher-forced top-1
+  agreement, which this repo has computed on every approximate slot since batch 003 — the
+  int4 head alone sits at 0.9318.
+* Gate it **approximate**, not exact: the verifier computes `k+1` positions in one matmul and
+  the reference computes them one at a time, and one bf16 ULP flips an argmax on this
+  checkpoint. Bars registered in the spec: top-1 ≥ 261/264, KL ≤ 1e-5.
+
+---
+
 ## Graveyard
 
 ### Eliminating the GQA head expansion — closed 2026-09-17, by the compiler

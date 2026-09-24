@@ -173,6 +173,11 @@ class SlotResult:
     #: Wall-clock seconds per phase. Recorded even when the slot failed, because a slot
     #: that died 40 minutes into a compile is itself the measurement worth having.
     phases_s: dict[str, float] = field(default_factory=dict)
+    #: Clocks, power draw, power limit and the card's active throttle reasons, sampled as
+    #: this slot finished. Rental 45's card downclocked 2910 -> 2400 MHz at slot 4 and held
+    #: it for the rest of the batch, and the record could only say so because someone read
+    #: the log afterwards. Per slot, this is a column in the results table instead.
+    card: dict[str, Any] = field(default_factory=dict)
 
     def to_slot_dict(self) -> dict[str, Any]:
         return {
@@ -196,6 +201,7 @@ class SlotResult:
             "cudagraph_skip_reasons": list(self.cudagraph_skip_reasons),
             "launch_shapes": dict(self.launch_shapes),
             "phases_s": self.phases_s,
+            "card": dict(self.card),
         }
 
 
@@ -233,7 +239,7 @@ class BatchRunner:
     def _make_column(self, model, compile_mode):
         import torch
 
-        from .model import greedy_decode
+        from .model import greedy_decode, prefill_setup
 
         runnable = model if compile_mode is None else torch.compile(model, mode=compile_mode)
         batch = self.workload["batch_size"]
@@ -241,26 +247,38 @@ class BatchRunner:
         tokens = self.workload["decode_tokens"]
         prompt = self.prompt
 
-        def setup() -> None:
-            # Prefill and cache restoration are excluded from the timed region. Inside it
-            # they would add the same constant to every column, which does not cancel in a
-            # ratio: it drags every ratio toward 1 and hides whatever win is really there.
-            #
-            # And because it is excluded, the prefill runs on `model` rather than
-            # `runnable`: compiling it costs everything and buys nothing. `gated_delta_rule`
-            # unrolls its scan over the sequence, so a 2048-token prefill hands inductor
-            # ~22 nodes x 2048 tokens x 24 linear-attention layers -- about a million FX
-            # nodes -- under `max-autotune`, once per column. That graph is where rentals
-            # 22, 30, 31 and 32 all died; rental 32's slot 0 spent its entire 6980.9s cap
-            # inside it. The decode steps below, which are the measurement, run the scan
-            # once per token and still go through the compiled wrapper.
-            cache.reset()
-            model(prompt, cache, num_logits_to_keep=1)
+        # Prefill and cache restoration are excluded from the timed region. Inside it they
+        # would add the same constant to every column, which does not cancel in a ratio: it
+        # drags every ratio toward 1 and hides whatever win is really there. Being excluded
+        # is also why the prefill may run once and be restored per round rather than re-run
+        # -- `prefill_setup` has the arithmetic and the reasons.
+        setup = prefill_setup(model, prompt, cache)
 
         def run() -> None:
             greedy_decode(runnable, prompt[:, -1:], tokens, cache=cache)
 
         return setup, run
+
+    def _card_telemetry(self, hypothesis) -> dict[str, Any]:
+        """Sample the card as this slot ends, and say so when it is throttling.
+
+        The batch already divides clock drift out of every ratio by interleaving rounds, so
+        this changes no number. What it changes is that a rental which spent its second half
+        on a downclocked card says so in its own record rather than in whoever reads the log.
+        """
+        from .harness.report import capture_gpu_telemetry  # noqa: PLC0415
+
+        telemetry = capture_gpu_telemetry()
+        if not telemetry:
+            return {}
+        throttle = telemetry.get("throttle_reasons")
+        throttled = bool(throttle) and throttle not in ("0x0000000000000000", "0x0", "Not Active")
+        self.log(
+            f"[batch] {hypothesis.slug}: card {telemetry.get('sm_mhz')} MHz SM, "
+            f"{telemetry.get('memory_mhz')} MHz mem, {telemetry.get('power_w')} W of "
+            f"{telemetry.get('power_limit_w')} W" + (f", THROTTLING ({throttle})" if throttled else "")
+        )
+        return telemetry
 
     def _log_memory(self, where: str) -> None:
         """Say how much of the card is gone, and where it went.
@@ -542,6 +560,7 @@ class BatchRunner:
             ratio = result.median_ratio.get(CANDIDATE_COLUMN)
             iqr = result.iqr_ratio.get(CANDIDATE_COLUMN, 0.0)
             outcome = classify_outcome(ratio, iqr, correctness_passed=bool(correctness["passed"]))
+            card = self._card_telemetry(hypothesis)
 
             return SlotResult(
                 hypothesis=hypothesis,
@@ -558,6 +577,7 @@ class BatchRunner:
                 cudagraph_skip_reasons=list(cudagraph_count.reasons),
                 launch_shapes=_launch_shapes_now(),
                 phases_s=phases,
+                card=card,
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
             self.log(f"[batch] {hypothesis.slug}: ERROR {type(exc).__name__}: {exc}")
@@ -874,14 +894,13 @@ def run_batch(
         # what buys the clock for the slots that are still open questions.
         if not precondition_holds(hypothesis.requires, ratios):
             need = hypothesis.requires
-            observed = ratios.get(need.slug)
-            seen = "no ratio" if observed is None else f"{observed:.4f}"
-            log(f"[batch] skipping {hypothesis.slug}: {need.slug} measured {seen}, needed {need.floor}")
+            read = need.describe(ratios)
+            log(f"[batch] skipping {hypothesis.slug}: {read}")
             results.append(
                 SlotResult(
                     hypothesis=hypothesis,
                     outcome="precondition_failed",
-                    error=(f"{need.slug} measured {seen} against a floor of {need.floor}: {need.reason}"),
+                    error=f"{read}: {need.reason}",
                 )
             )
             continue

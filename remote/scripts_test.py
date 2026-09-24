@@ -2492,3 +2492,70 @@ def test_a_cache_under_the_ceiling_is_still_pushed(workdir):
     )
 
     assert "not sending the" not in result.stderr
+
+
+def test_a_preferred_machine_is_tried_before_a_cheaper_one(workdir):
+    """Holding the card fixed between rentals is worth more than a tenth of a cent.
+
+    Rentals 45 and 46 landed on machine 140734 by luck, and that is the only reason rental
+    46 could say that 15 scoring rounds changed three conclusions rather than that the card
+    had changed underneath them. Two RTX 5090s on the same memory clock, driver and torch
+    ran the reference 1.61x apart.
+    """
+    offers_file = workdir / "offers.json"
+    ladder = _offer_ladder(3)
+    offers_file.write_text(json.dumps({"offers": ladder}))
+    dearest = ladder[2]
+
+    with _RefusingCreates(refuse_first=0) as api:
+        run(
+            "provision.sh",
+            "--session-id",
+            "prefer",
+            "--offers-file",
+            str(offers_file),
+            "--prefer-machines",
+            str(dearest["machine_id"]),
+            "--ledger",
+            str(workdir / "ledger" / "spend.jsonl"),
+            "--state-file",
+            str(workdir / "state"),
+            env=api.env(),
+        )
+
+    assert str(dearest["id"]) in api.attempts[0], (
+        f"the preferred machine should be tried first; attempted {api.attempts}"
+    )
+
+
+def test_preferring_a_machine_that_is_not_on_the_market_still_rents(workdir):
+    """A preference, not a filter: an absent favourite must not empty the market."""
+    offers_file = workdir / "offers.json"
+    ladder = _offer_ladder(2)
+    offers_file.write_text(json.dumps({"offers": ladder}))
+
+    with _RefusingCreates(refuse_first=0) as api:
+        result = run(
+            "provision.sh",
+            "--session-id",
+            "prefer-missing",
+            "--offers-file",
+            str(offers_file),
+            "--prefer-machines",
+            "999999",
+            "--ledger",
+            str(workdir / "ledger" / "spend.jsonl"),
+            "--state-file",
+            str(workdir / "state"),
+            env=api.env(),
+        )
+
+    assert result.returncode == 0, result.stderr
+    assert str(ladder[0]["id"]) in api.attempts[0], f"cheapest first; attempted {api.attempts}"
+
+
+def test_run_remote_passes_prefer_machines_through_to_provision():
+    script = (REMOTE / "run_remote.sh").read_text()
+
+    assert "--prefer-machines" in script
+    assert "DF_PROVISION_ARGS --prefer-machines" in script

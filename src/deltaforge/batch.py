@@ -55,6 +55,7 @@ __all__ = [
     "score_predictions",
     "scoped_registry",
     "session_fits_one_hypothesis",
+    "unpaired_slots",
 ]
 
 
@@ -108,18 +109,59 @@ UNSCORED_OUTCOMES = ("error", "not_run", "starved", "precondition_failed")
 
 
 class Precondition(NamedTuple):
-    """A floor an earlier slot's ratio must clear for this slot to be worth running.
+    """A floor an earlier slot must clear for this slot to be worth running.
 
     Batch 003 is why. Its slot 1 measured a hand-written GEMV against cuBLAS on identical
     bytes and returned 0.2801, which settled every quantisation slot behind it: a kernel at
     28% of the baseline's byte rate cannot collect a byte saving. Five slots then re-measured
     that fact at different bit widths. The batch could not stop, and the ordering rule that
     put the informative slot first had no way to act on what it found.
+
+    ``versus`` puts the floor on a **comparison** -- ``ratio[slug] - ratio[versus]`` -- rather
+    than on an absolute ratio. Rental 46 is why that exists. `061-int4-mlp-torch-dequant`,
+    52.75% of per-token bytes and the largest prize in the backlog, depended on the
+    proposition "inductor can fuse a grouped dequantisation into a GEMV prologue", whose
+    measurement is `056` against `054`: **+3.2%, nowhere near any band**. It was gated on
+    `056` reaching 1.02 *absolute*, `056` returned 1.0171, and the slot declined by 0.3% on a
+    quantity that depends on what fraction of the step the head happens to be and on how fast
+    the card is that hour. A precondition must name the proposition its slot depends on, and
+    where that proposition is a comparison, the floor belongs on the comparison.
     """
 
     slug: str
     floor: float
     reason: str
+    #: When set, the floor is on ``ratio[slug] - ratio[versus]``, and both slots must be
+    #: earlier in the batch. A margin between two slots measured in the same process on the
+    #: same card is the one quantity here that does not move with the hour.
+    versus: str | None = None
+
+    @property
+    def slugs(self) -> tuple[str, ...]:
+        """Every slot this precondition reads. All of them must run before the gated slot."""
+        return (self.slug,) if self.versus is None else (self.slug, self.versus)
+
+    def describe(self, ratios_by_slug: dict[str, float | None]) -> str:
+        """What was read and what was needed -- the whole content of a `precondition_failed`.
+
+        A declined slot leaves one line in the record, and rental 46's could not be read
+        against the proposition it was protecting without redoing the arithmetic by hand.
+        This writes the arithmetic down.
+        """
+
+        def seen(slug: str) -> str:
+            value = ratios_by_slug.get(slug)
+            return "no ratio" if value is None else f"{value:.4f}"
+
+        if self.versus is None:
+            return f"{self.slug} measured {seen(self.slug)} against a floor of {self.floor}"
+        left = ratios_by_slug.get(self.slug)
+        right = ratios_by_slug.get(self.versus)
+        margin = f" = {left - right:+.4f}" if left is not None and right is not None else ""
+        return (
+            f"{self.slug} - {self.versus} measured {seen(self.slug)} - {seen(self.versus)}"
+            f"{margin} against a floor of {self.floor}"
+        )
 
 
 def precondition_holds(precondition: Precondition | None, ratios_by_slug: dict[str, float | None]) -> bool:
@@ -127,7 +169,12 @@ def precondition_holds(precondition: Precondition | None, ratios_by_slug: dict[s
     if precondition is None:
         return True
     ratio = ratios_by_slug.get(precondition.slug)
-    return ratio is not None and ratio >= precondition.floor
+    if ratio is None:
+        return False
+    if precondition.versus is None:
+        return ratio >= precondition.floor
+    against = ratios_by_slug.get(precondition.versus)
+    return against is not None and (ratio - against) >= precondition.floor
 
 
 @dataclass(frozen=True)
@@ -173,6 +220,20 @@ class Hypothesis:
     #: A floor an earlier slot in the same batch must clear for this one to be worth
     #: running. `None` means the slot runs whenever the clock allows.
     requires: Precondition | None = None
+    #: The earlier slot this one differs from **by one variable**, named so the batch says
+    #: what the comparison is before it is run.
+    #:
+    #: Every finding this project holds came from a pair of slots measured in one process
+    #: that differ in exactly one thing: `044` against `045` (the four taps as a custom op
+    #: or as torch, 37%) and `054` against `056` (the same dequantise-GEMV as a kernel or as
+    #: torch, 3.2%). Every wasted rental came from a slot whose comparison was implicit and
+    #: reconstructed afterwards: three rentals reasoned about a composition effect between
+    #: two installers because no slot had measured the conv alone.
+    #:
+    #: `None` means "this slot is an ingredient measured alone", which `unpaired_slots`
+    #: checks rather than takes on trust: a slot that re-installs a kernel an earlier slot
+    #: already measured is a comparison whether or not it says so.
+    contrast_with: str | None = None
     #: Which weight regions this candidate re-encodes, and at how many bits — the keys
     #: `harness.bytes_model.WEIGHT_REGIONS` names, plus the alias `layers`. The bench
     #: divides bytes by time, so a hypothesis that did not declare this would be scored
@@ -308,11 +369,18 @@ class Batch:
             # Checked against slots already seen, so a precondition on a later slot -- or
             # on a slug this batch does not hold -- is refused here rather than silently
             # never firing, which would look exactly like a slot that had no precondition.
-            if hyp.requires is not None and hyp.requires.slug not in seen:
+            if hyp.contrast_with is not None and hyp.contrast_with not in seen:
                 raise ValueError(
-                    f"{hyp.slug!r} requires {hyp.requires.slug!r}, which must name an earlier slot "
-                    f"in batch {self.batch_id!r}; earlier slots are {sorted(seen)}"
+                    f"{hyp.slug!r} contrasts with {hyp.contrast_with!r}, which must name an earlier "
+                    f"slot in batch {self.batch_id!r}; earlier slots are {sorted(seen)}"
                 )
+            if hyp.requires is not None:
+                for required in hyp.requires.slugs:
+                    if required not in seen:
+                        raise ValueError(
+                            f"{hyp.slug!r} requires {required!r}, which must name an earlier slot "
+                            f"in batch {self.batch_id!r}; earlier slots are {sorted(seen)}"
+                        )
             seen.add(hyp.slug)
 
     def __len__(self) -> int:
@@ -383,6 +451,28 @@ def registry_for(
             raise RegistryError(f"{label or 'registry'} cannot install {name!r}: {exc}") from exc
     scoped.check_invariants()
     return scoped
+
+
+def unpaired_slots(batch: Batch) -> tuple[str, ...]:
+    """Slugs that re-measure a kernel an earlier slot already ran without saying so.
+
+    A batch is a set of controlled contrasts or it is a set of anecdotes. Two shapes are
+    legitimate: an **ingredient measured alone** — the first slot in the batch to install a
+    given kernel — and a **one-variable contrast** against an earlier slot, which says so
+    with `Hypothesis.contrast_with`. Anything else is a slot whose comparison will be
+    reconstructed after the fact, which is how rentals 42, 43 and 45 spent three writeups on
+    a composition effect that did not exist.
+
+    Returns the offending slugs in batch order, so a manifest can be refused on a laptop.
+    """
+    seen_kernels: set[str] = set()
+    unpaired: list[str] = []
+    for hyp in batch:
+        reused = seen_kernels.intersection(hyp.kernels)
+        if reused and hyp.contrast_with is None:
+            unpaired.append(hyp.slug)
+        seen_kernels.update(hyp.kernels)
+    return tuple(unpaired)
 
 
 def _exceeds(margin: float, band: float) -> bool:

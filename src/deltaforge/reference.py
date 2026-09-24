@@ -56,6 +56,7 @@ from torch import Tensor, nn
 from .config import FULL_ATTENTION, LINEAR_ATTENTION, SIGMOID_GATE, SWISH_GATE, ModelConfig
 
 __all__ = [
+    "CacheSnapshot",
     "DecodeCache",
     "GatedAttention",
     "GatedDeltaNet",
@@ -216,6 +217,27 @@ class _LinearLayerCache:
     recurrent: Tensor  # (batch, num_v_heads, key_head_dim, value_head_dim), always fp32
 
 
+@dataclass(frozen=True)
+class CacheSnapshot:
+    """A copy of a cache's whole state, and the position it was taken at.
+
+    The benchmark is what wants this. Every scoring round has to start from the same
+    post-prefill state, and the only way it had to get there was to re-run the prefill:
+    `cache.reset()` and a 2048-token forward pass, once per column, once per round. That
+    work is excluded from the timed region — so it never moved a ratio — and rental 46
+    still paid ~18 s a round for it against a timed region of ~2 s, which is ~180 s per
+    slot at 15 rounds. A snapshot restores the same state with a device-to-device copy of
+    ~120 MB.
+
+    Held as a flat tuple in the cache's own traversal order rather than as a structure:
+    the only operations are "copy all of it out" and "copy all of it back in", and a flat
+    tuple makes the shape check that guards the second one trivial.
+    """
+
+    seq_len: int
+    tensors: tuple[Tensor, ...]
+
+
 class DecodeCache:
     """Per-layer decode state: KV for attention layers, conv + recurrent for linear ones.
 
@@ -286,6 +308,44 @@ class DecodeCache:
             else:
                 layer.conv.zero_()
                 layer.recurrent.zero_()
+
+    def state_tensors(self) -> tuple[Tensor, ...]:
+        """Every tensor holding decode state, in a fixed order. The snapshot's contract."""
+        tensors: list[Tensor] = []
+        for layer in self.layers:
+            if isinstance(layer, _AttentionLayerCache):
+                tensors.extend((layer.keys, layer.values))
+            else:
+                tensors.extend((layer.conv, layer.recurrent))
+        return tuple(tensors)
+
+    def snapshot(self) -> CacheSnapshot:
+        """Copy the whole state out, so a round can be restarted without a prefill."""
+        return CacheSnapshot(
+            seq_len=self.seq_len,
+            tensors=tuple(tensor.clone() for tensor in self.state_tensors()),
+        )
+
+    def restore(self, snapshot: CacheSnapshot) -> None:
+        """Copy a snapshot back **in place**, keeping every tensor's storage.
+
+        In place is the load-bearing word. `034-static-cache-cudagraphs` won 2.0% on the
+        promise that these tensors never move — `mark_static_address` puts them in
+        inductor's `static_input_idxs`, which is what skips the per-call alignment check —
+        and rebinding them to fresh storage between rounds would void that silently.
+        """
+        live = self.state_tensors()
+        if len(live) != len(snapshot.tensors) or any(
+            a.shape != b.shape or a.dtype != b.dtype for a, b in zip(live, snapshot.tensors)
+        ):
+            raise ValueError(
+                "snapshot came from a different cache: it holds "
+                f"{[tuple(t.shape) for t in snapshot.tensors][:3]}... against this cache's "
+                f"{[tuple(t.shape) for t in live][:3]}..."
+            )
+        for tensor, saved in zip(live, snapshot.tensors):
+            tensor.copy_(saved)
+        self.seq_len = snapshot.seq_len
 
     def attention(self, layer_idx: int) -> _AttentionLayerCache:
         layer = self.layers[layer_idx]

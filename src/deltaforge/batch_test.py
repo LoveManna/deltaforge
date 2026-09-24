@@ -22,6 +22,7 @@ from .batch import (
     scoped_registry,
     score_predictions,
     session_fits_one_hypothesis,
+    unpaired_slots,
 )
 from .kernels import KernelRegistry, KernelStatus, RegistryError
 
@@ -689,3 +690,122 @@ def test_a_hypothesis_that_re_encodes_nothing_declares_nothing():
 def test_a_typo_in_weight_bits_fails_on_a_laptop_rather_than_on_a_rented_box():
     with pytest.raises(ValueError, match="unknown weight region"):
         make_hypothesis(weight_bits={"mpl": 8})
+
+
+def test_a_precondition_can_put_its_floor_on_a_comparison_between_two_slots():
+    """Rental 46's `061` declined on an absolute ratio when it depended on a comparison.
+
+    The slot needed "does expressing the dequantise-GEMV in torch beat expressing it as a
+    custom op?", which measured +3.2%. It was gated on the torch slot reaching 1.02
+    absolute; that slot returned 1.0171 and the largest prize in the backlog declined by
+    0.3% — on a quantity that depends on how fast the card is that hour.
+    """
+    p = Precondition(slug="056-torch", floor=0.01, reason="the compiler must fuse it", versus="054-custom-op")
+
+    assert precondition_holds(p, {"056-torch": 1.0171, "054-custom-op": 0.9851}) is True
+    assert precondition_holds(p, {"056-torch": 1.0171, "054-custom-op": 1.0140}) is False
+
+
+def test_a_comparison_precondition_fails_closed_when_either_slot_has_no_ratio():
+    p = Precondition("a", 0.01, "r", versus="b")
+
+    assert precondition_holds(p, {"a": 1.05, "b": None}) is False
+    assert precondition_holds(p, {"a": None, "b": 1.00}) is False
+    assert precondition_holds(p, {"a": 1.05}) is False
+
+
+def test_a_comparison_precondition_must_name_two_earlier_slots():
+    with pytest.raises(ValueError, match="must name an earlier slot"):
+        Batch(
+            batch_id="x",
+            hypotheses=(
+                make_hypothesis(slug="a"),
+                make_hypothesis(slug="c", requires=Precondition("a", 0.01, "r", versus="b")),
+                make_hypothesis(slug="b"),
+            ),
+        )
+
+
+def test_a_precondition_describes_what_it_read_including_the_comparison():
+    """The skip line is the only record a declined slot leaves; it has to be readable."""
+    absolute = Precondition("a", 1.02, "r")
+    comparison = Precondition("a", 0.01, "r", versus="b")
+
+    assert absolute.describe({"a": 1.0171}) == "a measured 1.0171 against a floor of 1.02"
+    assert comparison.describe({"a": 1.0171, "b": 0.9851}) == (
+        "a - b measured 1.0171 - 0.9851 = +0.0320 against a floor of 0.01"
+    )
+    assert comparison.describe({"a": 1.0171, "b": None}) == (
+        "a - b measured 1.0171 - no ratio against a floor of 0.01"
+    )
+
+
+# -- contrasts ------------------------------------------------------------------------
+
+
+def test_a_slot_can_name_the_earlier_slot_it_differs_from_by_one_variable():
+    batch = Batch(
+        batch_id="x",
+        hypotheses=(
+            make_hypothesis(slug="a", kernels=("k1",)),
+            make_hypothesis(slug="b", kernels=("k1", "k2"), contrast_with="a"),
+        ),
+    )
+
+    assert batch.get("b").contrast_with == "a"
+
+
+def test_a_contrast_naming_a_slot_that_is_not_earlier_is_refused():
+    with pytest.raises(ValueError, match="must name an earlier slot"):
+        Batch(
+            batch_id="x",
+            hypotheses=(
+                make_hypothesis(slug="a", contrast_with="b"),
+                make_hypothesis(slug="b"),
+            ),
+        )
+
+
+def test_a_slot_reusing_an_earlier_slots_kernel_without_naming_a_contrast_is_unpaired():
+    """044 against 045 and 054 against 056 are the only design that has produced knowledge.
+
+    A slot that re-installs a kernel an earlier slot already measured is a comparison
+    whether or not it says so; saying so is what makes the batch readable when one of them
+    surprises. A slot installing a kernel family the batch has not measured yet is an
+    ingredient measured alone, which is the other half of the rule.
+    """
+    batch = Batch(
+        batch_id="x",
+        hypotheses=(
+            make_hypothesis(slug="a", kernels=("k1",)),
+            make_hypothesis(slug="b", kernels=("k2",)),
+            make_hypothesis(slug="c", kernels=("k1", "k2")),
+        ),
+    )
+
+    assert unpaired_slots(batch) == ("c",)
+
+
+def test_an_ingredient_measured_alone_is_not_unpaired():
+    batch = Batch(
+        batch_id="x",
+        hypotheses=(
+            make_hypothesis(slug="000-identity", kernels=(), prediction="identity"),
+            make_hypothesis(slug="a", kernels=("k1",)),
+            make_hypothesis(slug="b", kernels=("k2",)),
+        ),
+    )
+
+    assert unpaired_slots(batch) == ()
+
+
+def test_declaring_the_contrast_pairs_the_slot():
+    batch = Batch(
+        batch_id="x",
+        hypotheses=(
+            make_hypothesis(slug="a", kernels=("k1",)),
+            make_hypothesis(slug="b", kernels=("k1", "k2"), contrast_with="a"),
+        ),
+    )
+
+    assert unpaired_slots(batch) == ()
