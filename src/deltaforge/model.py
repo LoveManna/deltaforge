@@ -123,6 +123,21 @@ def greedy_decode(
     if cache is None:
         cache = model.new_cache(batch, prompt_len + max_new_tokens)
 
+    # A candidate may replace the decode *loop* rather than a module: speculative decoding
+    # changes how many tokens come out of one forward pass, which no module swap can
+    # express. `torch.compile` wraps the model, and `OptimizedModule.__getattr__`
+    # forwards to the original, so this reaches an installed loop through either.
+    loop = getattr(model, "decode_loop", None)
+    if loop is not None:
+        generated = loop(model, input_ids, max_new_tokens, cache)
+        if generated.shape[-1] != max_new_tokens:
+            raise RuntimeError(
+                f"{type(loop).__name__} returned {generated.shape[-1]} tokens, expected "
+                f"{max_new_tokens}. The benchmark divides a fixed token count into the "
+                "measured time, so a loop that emits a different number is not comparable."
+            )
+        return generated
+
     logits, _ = model(input_ids, cache, num_logits_to_keep=1)
     next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
     generated = [next_token]

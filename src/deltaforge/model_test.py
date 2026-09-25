@@ -176,3 +176,45 @@ def test_prefill_setup_leaves_the_cache_where_the_prefill_left_it(config):
         second, _ = model(prompt[:, -1:], cache, num_logits_to_keep=1)
 
     torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_greedy_decode_uses_an_installed_decode_loop(model, config):
+    """The bench times `greedy_decode`, so a candidate that replaces the loop must be
+    reachable from there — a speculative decoder is not a module swap, and
+    `apply_champions` has no other way to put one in front of the benchmark."""
+    seen = {}
+
+    def loop(runnable, input_ids, max_new_tokens, cache):
+        seen["args"] = (runnable, input_ids.shape, max_new_tokens, cache)
+        return torch.zeros((input_ids.shape[0], max_new_tokens), dtype=torch.long)
+
+    model.decode_loop = loop
+    ids = torch.randint(0, config.vocab_size, (1, 3))
+    cache = model.new_cache(1, 16)
+
+    out = greedy_decode(model, ids, 4, cache=cache)
+
+    assert out.shape == (1, 4)
+    assert seen["args"][0] is model
+    assert seen["args"][2] == 4
+    assert seen["args"][3] is cache
+
+
+def test_greedy_decode_without_a_loop_is_unchanged(model, config):
+    ids = torch.randint(0, config.vocab_size, (1, 3))
+
+    out = greedy_decode(model, ids, 4)
+
+    assert out.shape == (1, 4)
+
+
+def test_a_loop_returning_the_wrong_number_of_tokens_is_refused(model, config):
+    """The ratio divides by a fixed token count. A loop that emitted 130 tokens where the
+    reference emitted 128 would look 1.6% faster for having done more work."""
+    model.decode_loop = lambda runnable, input_ids, max_new_tokens, cache: torch.zeros(
+        (1, max_new_tokens - 1), dtype=torch.long
+    )
+    ids = torch.randint(0, config.vocab_size, (1, 3))
+
+    with pytest.raises(RuntimeError, match="returned 3 tokens, expected 4"):
+        greedy_decode(model, ids, 4)
