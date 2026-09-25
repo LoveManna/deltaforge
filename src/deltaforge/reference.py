@@ -376,6 +376,24 @@ class DecodeCache:
         self.ensure_capacity(num_tokens)
         self.seq_len += num_tokens
 
+    def rewind(self, to_seq_len: int) -> None:
+        """Un-commit positions back to ``to_seq_len``. The counter, and only the counter.
+
+        A verify pass writes ``k+1`` positions and may keep only ``j+1`` of them. For the
+        full-attention layers that is all that is needed: attention reads ``[0, seq_len)``,
+        so a position past the counter is never read and the next write overwrites it.
+
+        It is deliberately *not* enough for the linear-attention layers, whose recurrent
+        state was updated in place and carries no position index at all. Those are restored
+        by the candidate that owns them — see `kernels/rollback_state.py`. A cache method
+        that silently did half the job would be worse than one that does a named half.
+        """
+        if to_seq_len < 0:
+            raise ValueError(f"cannot rewind past 0, got {to_seq_len}")
+        if to_seq_len > self.seq_len:
+            raise ValueError(f"can only rewind backwards: asked for {to_seq_len} from {self.seq_len}")
+        self.seq_len = to_seq_len
+
 
 # --------------------------------------------------------------------------------------
 # Gated DeltaNet (linear attention)

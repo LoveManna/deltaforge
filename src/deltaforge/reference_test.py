@@ -580,3 +580,36 @@ def test_restoring_a_snapshot_from_a_differently_shaped_cache_is_refused(config)
 
     with pytest.raises(ValueError, match="different cache"):
         large.restore(small.snapshot())
+
+
+def test_rewinding_the_cache_puts_the_next_write_back_where_it_was(model, config):
+    """A rejected draft has to un-commit positions the verifier already wrote.
+
+    KV positions past `seq_len` are never read — attention masks to the committed length —
+    so rewinding the counter is the whole operation for the attention layers. The recurrent
+    layers are not rewound by this and Task 3 is why.
+    """
+    ids = torch.randint(0, config.vocab_size, (1, 4))
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+    model(ids, cache)
+    committed = cache.seq_len
+
+    cache.advance(3)
+    cache.rewind(committed)
+
+    assert cache.seq_len == committed
+
+
+def test_rewinding_forward_is_refused(model):
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+    cache.advance(2)
+
+    with pytest.raises(ValueError, match="only rewind backwards"):
+        cache.rewind(5)
+
+
+def test_rewinding_below_zero_is_refused(model):
+    cache = model.new_cache(batch_size=1, max_seq_len=16)
+
+    with pytest.raises(ValueError, match="cannot rewind past 0"):
+        cache.rewind(-1)
