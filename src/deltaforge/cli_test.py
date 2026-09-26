@@ -13,7 +13,7 @@ import argparse
 import pytest
 import torch
 
-from .cli import _assert_parameters_are_shared, _selected_columns, build_parser
+from .cli import DEFAULT_WORKLOADS, _assert_parameters_are_shared, _selected_columns, build_parser
 from .config import tiny_config
 from .kernels import KernelRegistry, KernelStatus
 from .model import apply_champions
@@ -320,3 +320,21 @@ def test_a_rental_whose_every_slot_was_cut_off_records_nothing(tmp_path):
     _write_phases_env(path, {}, results)
 
     assert not path.exists()
+
+
+# -- workloads ------------------------------------------------------------------
+
+
+def test_a_text_workload_exists_with_the_headline_shape():
+    """Acceptance on random token ids is not acceptance on text: the model's continuation
+    of noise is its own distribution, and an n-gram drafter can look far better or far
+    worse there than it ever will in use. Every hypothesis before this one was indifferent
+    to the prompt."""
+    text = DEFAULT_WORKLOADS["headline_text"]
+    headline = DEFAULT_WORKLOADS["headline"]
+
+    assert text["batch_size"] == headline["batch_size"]
+    assert text["context_length"] == headline["context_length"]
+    assert text["decode_tokens"] == headline["decode_tokens"]
+    assert text["prompt"] == "text"
+    assert headline.get("prompt", "random") == "random"

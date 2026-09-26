@@ -34,9 +34,18 @@ AUXILIARY_FILES = (
 DEFAULT_WORKLOADS = {
     # The headline: single-stream latency in the memory-bound regime, where fusion wins
     # are real.
-    "headline": {"batch_size": 1, "context_length": 2048, "decode_tokens": 128},
+    "headline": {"batch_size": 1, "context_length": 2048, "decode_tokens": 128, "prompt": "random"},
     # Recorded to show behaviour as the workload becomes compute-bound.
-    "batch32": {"batch_size": 32, "context_length": 2048, "decode_tokens": 128},
+    "batch32": {"batch_size": 32, "context_length": 2048, "decode_tokens": 128, "prompt": "random"},
+    # Same shape, real tokens. Speculative decoding is the first hypothesis whose number
+    # depends on what the prompt says: acceptance is a property of the token distribution,
+    # and `torch.randint` does not have one. Reported beside `headline`, never instead.
+    "headline_text": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "text",
+    },
 }
 
 
@@ -209,6 +218,24 @@ def _tokenize_prompts(weights: Path, prompts: tuple[str, ...]) -> list[list[int]
     return [tokenizer.encode(prompt).ids for prompt in prompts]
 
 
+def _text_prompt(weights: Path, batch: int, context: int, device: str) -> torch.Tensor:  # noqa: F821
+    """`context` tokens of real text, tiled from the correctness prompt set.
+
+    The prompts are already in the repo, already hashed into `PROMPT_DIGEST`, and already
+    the input the correctness gates use — so the benchmark and the gate see the same kind
+    of text, and the digest says which text it was.
+    """
+    import torch  # noqa: PLC0415
+
+    from .harness.prompts import CORRECTNESS_PROMPTS  # noqa: PLC0415
+
+    ids = [token for row in _tokenize_prompts(weights, CORRECTNESS_PROMPTS) for token in row]
+    if not ids:
+        raise SystemExit("the tokenizer returned no ids for the correctness prompts")
+    repeated = (ids * (context // len(ids) + 1))[:context]
+    return torch.tensor([repeated] * batch, dtype=torch.long, device=device)
+
+
 def cmd_correctness(args: argparse.Namespace) -> int:
     from .harness.correctness import CorrectnessReport, check_end_to_end
     from .harness.prompts import CORRECTNESS_PROMPTS, PROMPT_DIGEST
@@ -325,7 +352,12 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     context = workload["context_length"]
     tokens = workload["decode_tokens"]
 
-    prompt = torch.randint(0, reference.config.vocab_size, (batch, context), device="cuda", dtype=torch.long)
+    if workload.get("prompt") == "text":
+        prompt = _text_prompt(Path(args.weights), batch, context, device="cuda")
+    else:
+        prompt = torch.randint(
+            0, reference.config.vocab_size, (batch, context), device="cuda", dtype=torch.long
+        )
 
     def make(model, compile_mode: str | None):
         runnable = model
