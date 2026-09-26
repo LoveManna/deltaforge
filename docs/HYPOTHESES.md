@@ -1031,25 +1031,36 @@ entry's own reasoning says does not fit. Shipped ceiling: `0.3`. This is the reu
 of the defect — before setting *any* divergence-gap or similar tolerance ceiling on this
 checkpoint, compute the dtype's ULP at the relevant magnitude first.
 
-**Before renting batch 010 (unresolved, pre-rental checklist):**
-* **`recompile_limit_for`'s "two entries per slot" budget is one shape short.** Its stated
-  reasoning is "the candidate and its dynamic-shape variant", but a speculative candidate
-  makes *two structurally different* calls into `ReferenceModel.forward` per cycle —
-  `(seq=1, num_logits_to_keep=1)` for a plain continuation and `(seq=k+1,
-  num_logits_to_keep=k+1)` for a verify — so it needs three dynamo cache entries, not two.
-  Batch 010 lands in the 16-20 entry range against a limit of 18. Raise the multiplier or
-  check `graphs_compiled` on slot 1 before trusting its ratio; `0` there voids it the same
-  way it voided six of rental 35's nine slots.
-* **`SPECULATIVE_CACHE_HEADROOM = 16` (`speculative.py`) has no enforced relationship to a
-  registered `block_size`.** The true requirement is `block_size`; the largest registered
-  here is 4, so this is a 4x margin that holds for every slot in this batch but is not
-  checked anywhere. A future kernel registering `block_size >= 17` reproduces the
-  cache-overflow crash this batch's own fix wave found, with no earlier signal than the
-  benchmark dying.
-* **`remote/run_remote.sh` invokes `cli batch` with no `--workload`**, so `064`/`065` run on
-  random token ids unless a text workload is wired through explicitly. `_workload_prompt`
-  makes `headline_text` *reachable* from `cmd_batch`, not automatic — and these two slots'
-  own rationale is that the text workload is where their acceptance question is real.
+**Before renting batch 010:**
+* **Run it with `--workload headline_text`.** `064`/`065` draft with an n-gram drafter,
+  whose acceptance is a property of the token distribution; `headline`'s prompt is
+  `torch.randint` ids, which have none. `run_remote.sh` now forwards `--workload` to
+  `cli batch`, but it is opt-in and defaults to `headline` — passing it is the one step
+  here that is still manual, and without it these two slots measure the wrong thing.
+* **Read `SlotResult.acceptance` before trusting any of `062`-`065`'s ratios.** It carries
+  cycles, mean accepted, and the histogram, the same way `034-static-cache-cudagraphs`'s
+  node count is what told the truth about its 2.0%. A ratio at 0.95 is a bad drafter or an
+  expensive verify, and only this says which.
+* **Check `graphs_compiled` on slot 1.** The budget now accounts for a decode loop's two
+  call shapes (see below), but a `0` there still voids that slot's ratio the same way it
+  voided six of rental 35's nine slots.
+
+*Resolved on 2026-09-26, after the whole-branch review found them and before any card was
+rented* — all three were latent rental-voiders that no CPU test would have shown:
+* **`recompile_limit_for` budgeted two dynamo cache entries per slot**, its stated reasoning
+  being "the candidate and its dynamic-shape variant". A decode-loop candidate calls
+  `ReferenceModel.forward` at two structurally different shapes — `(seq=1,
+  num_logits_to_keep=1)` to commit the prefill's token, `(seq=k+1,
+  num_logits_to_keep=k+1)` to verify a block — so it needs three. Batch 010 sat at 18
+  against an estimated need of 16-20. The count is now read off the batch, so batch 003
+  keeps the 22 its own record cites and batch 010 gets 23. The marker is the entry's `impl`
+  being `install_speculative_loop`: `replaces="decode_step"` cannot serve, because fifteen
+  ordinary module-swap kernels register against that operation too.
+* **`SPECULATIVE_CACHE_HEADROOM` had no enforced tie to `block_size`.** `SpeculativeLoop`
+  now refuses a block larger than the headroom at construction — on a laptop, for free,
+  rather than as a cache overflow on a rented card after the correctness gate has passed.
+* **`remote/run_remote.sh` passed no `--workload`.** It now forwards one when given;
+  see the first checklist item, which is what remains manual.
 * **Acceptance is free to read once a slot runs.** `SlotResult.acceptance` carries cycles,
   mean accepted, and the histogram — read it before trusting any of `062`-`065`'s ratios,
   the same way `034-static-cache-cudagraphs`'s node count is what told the truth about its
