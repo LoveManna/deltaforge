@@ -34,9 +34,18 @@ AUXILIARY_FILES = (
 DEFAULT_WORKLOADS = {
     # The headline: single-stream latency in the memory-bound regime, where fusion wins
     # are real.
-    "headline": {"batch_size": 1, "context_length": 2048, "decode_tokens": 128},
+    "headline": {"batch_size": 1, "context_length": 2048, "decode_tokens": 128, "prompt": "random"},
     # Recorded to show behaviour as the workload becomes compute-bound.
-    "batch32": {"batch_size": 32, "context_length": 2048, "decode_tokens": 128},
+    "batch32": {"batch_size": 32, "context_length": 2048, "decode_tokens": 128, "prompt": "random"},
+    # Same shape, real tokens. Speculative decoding is the first hypothesis whose number
+    # depends on what the prompt says: acceptance is a property of the token distribution,
+    # and `torch.randint` does not have one. Reported beside `headline`, never instead.
+    "headline_text": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "text",
+    },
 }
 
 
@@ -209,6 +218,51 @@ def _tokenize_prompts(weights: Path, prompts: tuple[str, ...]) -> list[list[int]
     return [tokenizer.encode(prompt).ids for prompt in prompts]
 
 
+def _text_prompt(weights: Path, batch: int, context: int, device: str) -> torch.Tensor:  # noqa: F821
+    """`context` tokens of real text, tiled from the correctness prompt set.
+
+    The prompts are already in the repo, already hashed into `PROMPT_DIGEST`, and already
+    the input the correctness gates use — so the benchmark and the gate see the same kind
+    of text, and the digest says which text it was.
+    """
+    import torch  # noqa: PLC0415
+
+    from .harness.prompts import CORRECTNESS_PROMPTS  # noqa: PLC0415
+
+    ids = [token for row in _tokenize_prompts(weights, CORRECTNESS_PROMPTS) for token in row]
+    if not ids:
+        raise SystemExit("the tokenizer returned no ids for the correctness prompts")
+    repeated = (ids * (context // len(ids) + 1))[:context]
+    return torch.tensor([repeated] * batch, dtype=torch.long, device=device)
+
+
+def _workload_prompt(weights: Path, workload: dict, vocab_size: int, device: str) -> torch.Tensor:  # noqa: F821
+    """The prompt a workload's own ``prompt`` field names, shared by every caller that builds one.
+
+    Before this helper existed, `_build_columns` (the `cmd_bench` path) honoured
+    ``prompt: "text"`` and `cmd_batch` did not -- it built its prompt with ``torch.randint``
+    unconditionally, so ``--batch 010-speculative-verify --workload headline_text`` silently
+    ran on random token ids. That guts the slot the workload was built for: `NgramDrafter`'s
+    whole claim is that its acceptance depends on the prompt having structure to find, and
+    noise has none. Routing both paths through this one function is what makes that
+    substitution impossible rather than merely fixed in one place: an unrecognised
+    ``prompt`` value refuses loudly here instead of falling back to noise.
+    """
+    import torch  # noqa: PLC0415
+
+    batch = workload["batch_size"]
+    context = workload["context_length"]
+    kind = workload.get("prompt", "random")
+    if kind == "text":
+        return _text_prompt(weights, batch, context, device=device)
+    if kind == "random":
+        return torch.randint(0, vocab_size, (batch, context), device=device, dtype=torch.long)
+    raise SystemExit(
+        f"unknown workload prompt kind {kind!r}; known: 'random', 'text'. Refusing to guess "
+        "rather than silently falling back to random token ids."
+    )
+
+
 def cmd_correctness(args: argparse.Namespace) -> int:
     from .harness.correctness import CorrectnessReport, check_end_to_end
     from .harness.prompts import CORRECTNESS_PROMPTS, PROMPT_DIGEST
@@ -318,6 +372,7 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     import torch
 
     from .model import greedy_decode, prefill_setup
+    from .speculative import SPECULATIVE_CACHE_HEADROOM
 
     _config, reference, candidate = _load_models(args)
     workload = DEFAULT_WORKLOADS[args.workload]
@@ -325,13 +380,16 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     context = workload["context_length"]
     tokens = workload["decode_tokens"]
 
-    prompt = torch.randint(0, reference.config.vocab_size, (batch, context), device="cuda", dtype=torch.long)
+    prompt = _workload_prompt(Path(args.weights), workload, reference.config.vocab_size, device="cuda")
 
     def make(model, compile_mode: str | None):
         runnable = model
         if compile_mode is not None:
             runnable = torch.compile(model, mode=compile_mode)
-        cache = model.new_cache(batch, context + tokens)
+        # `+ SPECULATIVE_CACHE_HEADROOM`: see the constant's docstring. A speculative
+        # candidate's verify writes `block_size + 1` positions per cycle before rewinding,
+        # which the reference step path's exact `context + tokens` sizing has no room for.
+        cache = model.new_cache(batch, context + tokens + SPECULATIVE_CACHE_HEADROOM)
         # Prefilled once and restored per round; `model.prefill_setup` says what that saves
         # and why it is sound.
         setup = prefill_setup(model, prompt, cache)
@@ -501,13 +559,11 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
     config, reference = _load_reference_only(args)
     prompt_ids = _tokenize_prompts(Path(args.weights), CORRECTNESS_PROMPTS)
-    prompt = torch.randint(
-        0,
-        reference.config.vocab_size,
-        (workload["batch_size"], workload["context_length"]),
-        device="cuda",
-        dtype=torch.long,
-    )
+    # `_workload_prompt` is what makes a `prompt: "text"` workload -- `headline_text`, which
+    # batch 010's n-gram slots depend on -- reach the batch runner. Before this, `cmd_batch`
+    # built its prompt with `torch.randint` unconditionally and `--workload headline_text`
+    # silently ran on random token ids.
+    prompt = _workload_prompt(Path(args.weights), workload, reference.config.vocab_size, device="cuda")
 
     runner = BatchRunner(
         config=config,

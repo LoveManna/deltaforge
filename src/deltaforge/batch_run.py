@@ -178,6 +178,10 @@ class SlotResult:
     #: it for the rest of the batch, and the record could only say so because someone read
     #: the log afterwards. Per slot, this is a column in the results table instead.
     card: dict[str, Any] = field(default_factory=dict)
+    #: What the decode loop accepted, when the candidate installed one: cycles, mean
+    #: accepted per cycle, and the histogram. A speculative ratio at 0.95 is a bad drafter
+    #: or an expensive verify, and only this says which.
+    acceptance: dict[str, Any] = field(default_factory=dict)
 
     def to_slot_dict(self) -> dict[str, Any]:
         return {
@@ -202,6 +206,7 @@ class SlotResult:
             "launch_shapes": dict(self.launch_shapes),
             "phases_s": self.phases_s,
             "card": dict(self.card),
+            "acceptance": dict(self.acceptance),
         }
 
 
@@ -240,10 +245,18 @@ class BatchRunner:
         import torch
 
         from .model import greedy_decode, prefill_setup
+        from .speculative import SPECULATIVE_CACHE_HEADROOM
 
         runnable = model if compile_mode is None else torch.compile(model, mode=compile_mode)
         batch = self.workload["batch_size"]
-        cache = model.new_cache(batch, self.workload["context_length"] + self.workload["decode_tokens"])
+        # `+ SPECULATIVE_CACHE_HEADROOM`: the reference step path consumes exactly
+        # `context + decode_tokens`, but a speculative candidate's verify writes
+        # `block_size + 1` positions per cycle before rewinding -- see the constant's
+        # docstring. Harmless extra capacity for every non-speculative column.
+        cache = model.new_cache(
+            batch,
+            self.workload["context_length"] + self.workload["decode_tokens"] + SPECULATIVE_CACHE_HEADROOM,
+        )
         tokens = self.workload["decode_tokens"]
         prompt = self.prompt
 
@@ -360,12 +373,16 @@ class BatchRunner:
                     f"{hypothesis.slug!r} is the identity champion but installed {applied}. "
                     "It must leave the model untouched or it calibrates nothing."
                 )
-        elif after == before:
+        elif after == before and getattr(candidate, "decode_loop", None) is None:
             # The failure this check exists for: a candidate identical to the reference
-            # measures 1.00 and is indistinguishable from a well-behaved null result.
+            # measures 1.00 and is indistinguishable from a well-behaved null result. A
+            # decode-loop installer is the one legitimate way to change nothing structural
+            # and still be a different program, so it is named here rather than exempted by
+            # a flag nobody can see.
             raise RuntimeError(
-                f"{hypothesis.slug!r} installed {applied} but changed no module class. "
-                "Refusing to benchmark the reference while labelling it the candidate."
+                f"{hypothesis.slug!r} installed {applied} but changed no module class and "
+                "installed no decode loop. Refusing to benchmark the reference while "
+                "labelling it the candidate."
             )
         del before, after
         torch.cuda.synchronize()
@@ -380,7 +397,12 @@ class BatchRunner:
         "different" reports nothing. `Hypothesis.correctness` chooses, and the thresholds
         it is judged against were committed to `batches.py` before the rental.
         """
-        from .harness.correctness import CorrectnessReport, check_distribution, check_end_to_end
+        from .harness.correctness import (
+            CorrectnessReport,
+            check_distribution,
+            check_end_to_end,
+            check_sequence,
+        )
         from .harness.prompts import PROMPT_DIGEST
         from .kernels import REGISTRY, build_kernel_checks
 
@@ -388,6 +410,22 @@ class BatchRunner:
         # Layer 1 runs against `self.reference`, whose modules no install has touched, so
         # each check compares the kernel against the operation it claims to replace.
         kernel_checks = build_kernel_checks(self.reference, registry=registry, device="cuda")
+
+        if hypothesis.correctness == "sequence":
+            sequence = check_sequence(
+                self.reference,
+                candidate,
+                self.prompt_ids,
+                max_new_tokens=self.max_new_tokens,
+                gap_ceiling=hypothesis.divergence_gap_ceiling,
+                prompt_digest=PROMPT_DIGEST,
+            )
+            self.log(
+                f"[batch] {hypothesis.slug}: first divergence "
+                f"{sequence.first_divergence} (reference top-2 gap "
+                f"{sequence.reference_top2_gap}, ceiling {sequence.gap_ceiling})"
+            )
+            return CorrectnessReport(kernel_checks=kernel_checks, sequence=sequence).to_dict()
 
         if hypothesis.correctness == "approximate":
             distribution = check_distribution(
@@ -495,6 +533,13 @@ class BatchRunner:
                 self.log(f"[batch] {hypothesis.slug}: correctness gates")
                 correctness = self._run_correctness(hypothesis, candidate)
                 mark = phase("correctness", mark)
+                # I2: `_run_correctness` just free-ran the candidate's decode loop over five
+                # prompts of real tokenized text (`check_sequence`), and a speculative
+                # candidate's `AcceptanceRecord` was observing every one of those cycles.
+                # Cleared here, before the benchmark starts, so `acceptance` in the slot
+                # record describes the workload the slot claims to measure and not a mix of
+                # that and the correctness gate's own prompts.
+                _reset_acceptance(candidate)
 
                 self.log(f"[batch] {hypothesis.slug}: benchmarking")
                 self._log_memory(f"{hypothesis.slug} candidate build")
@@ -578,6 +623,7 @@ class BatchRunner:
                 launch_shapes=_launch_shapes_now(),
                 phases_s=phases,
                 card=card,
+                acceptance=_acceptance_from_candidate(candidate),
             )
         except Exception as exc:  # noqa: BLE001 - isolating the slot is the whole point
             self.log(f"[batch] {hypothesis.slug}: ERROR {type(exc).__name__}: {exc}")
@@ -696,6 +742,46 @@ def _capturing_skip_reasons(sink: list[str]):
                 torch._logging.set_logs(cudagraphs=False)  # noqa: SLF001
             except Exception:  # noqa: BLE001
                 pass
+
+
+def _acceptance_from_candidate(candidate) -> dict[str, Any]:
+    """What the candidate's decode loop accepted, read off the candidate rather than
+    threaded through as a second return value.
+
+    `install_speculative_loop` (Task 5) puts the `SpeculativeLoop` at `candidate.decode_loop`
+    and the `AcceptanceRecord` it observed into at `.acceptance`. A non-speculative
+    candidate has no `decode_loop` at all, and a loop built with `acceptance=None` -- the
+    gamma-only `FixedTokenDrafter` instrument, say -- has one but nothing recorded on it.
+    Both read as the field's own empty-dict default rather than raising into a slot that
+    made no speculative claim.
+    """
+    loop = getattr(candidate, "decode_loop", None)
+    if loop is None:
+        return {}
+    acceptance = getattr(loop, "acceptance", None)
+    if acceptance is None:
+        return {}
+    return acceptance.to_dict()
+
+
+def _reset_acceptance(candidate) -> None:
+    """Discard whatever the candidate's decode loop has observed so far, if it has one.
+
+    I2: `AcceptanceRecord` is attached once, at install time, and never reset on its own --
+    it keeps observing for the candidate's whole life, correctness gate included. Called
+    between `_run_correctness` and the benchmark so the histogram `_acceptance_from_candidate`
+    reads at the end of the slot describes the benchmark's workload alone. Total via the same
+    `getattr` chain as `_acceptance_from_candidate`, for the same reason: a candidate with no
+    loop, or a loop built with ``acceptance=None``, must not raise into a slot that made no
+    speculative claim.
+    """
+    loop = getattr(candidate, "decode_loop", None)
+    if loop is None:
+        return
+    acceptance = getattr(loop, "acceptance", None)
+    if acceptance is None:
+        return
+    acceptance.reset()
 
 
 def _launch_shapes_now() -> dict[str, list[int]]:

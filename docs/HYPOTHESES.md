@@ -1005,20 +1005,55 @@ rewinds by moving `seq_len`; a recurrent state does not rewind at all. v1 keeps 
 copy per verified step — `(k+1) × 50.33 MB`, the +2.9% already in `γ` — rather than re-running
 the accepted prefix, which would cost a second weight stream and end the hypothesis.
 
-**Watch for.**
-* **`061-int4-mlp-torch-dequant` is a hard prerequisite** for the self-draft: `d` is a full
-  forward of the quantised model, so if int4 in torch does not clear ~1.0 on the whole model
-  then `d ≈ v₁` and drafting is arithmetic that cannot win. The n-gram drafter has no `d` and
-  is unaffected.
-* **The headline workload prompts with random token ids**, and acceptance on noise is not
-  acceptance on text. This is the first entry whose number depends on the prompt; the spec
-  adds a tokenized-text workload and reports both.
-* **Acceptance is free to measure.** It is the layer-2 gate's teacher-forced top-1
-  agreement, which this repo has computed on every approximate slot since batch 003 — the
-  int4 head alone sits at 0.9318.
-* Gate it **approximate**, not exact: the verifier computes `k+1` positions in one matmul and
-  the reference computes them one at a time, and one bf16 ULP flips an argmax on this
-  checkpoint. Bars registered in the spec: top-1 ≥ 261/264, KL ≤ 1e-5.
+**Built (2026-09-26), not yet rented.** `hyp/010-speculative-decoding` implements the
+mechanism — `DecodeCache.rewind`, the `rollback_state` kernel that records one recurrent
+state and conv window per verified step, the drafter protocol, the loop, and a
+`correctness="sequence"` gate — and registers batch `010-speculative-verify`:
+`062-verify-inflation-k4`, `063-verify-inflation-k2` (γ measured with a drafter that is
+always wrong, so acceptance is 0 by construction), `064-spec-ngram-k2`, and
+`065-spec-ngram-k4` (an n-gram drafter, gated `>= 063` on the comparison, not on an absolute
+ratio). `uv run pytest` and ruff are clean. Task 10, the int4 self-draft, is still blocked
+on `061-int4-mlp-torch-dequant` clearing 1.0 (still `precondition_failed` / untested) and is
+not part of this registration.
+
+**Gate it `sequence`, not `approximate`.** `check_distribution` teacher-forces both models,
+so a candidate carrying the reference's own weights scores perfectly on it whatever the
+decode loop did to the recurrent state — it is not a weak gate here, it is one that cannot
+fail. `check_sequence` free-runs both models instead and attributes the first token
+divergence to the reference's own top-2 logit gap there: a flip where the reference had no
+opinion is the verify's different reduction order (Task 3/Task 6 establish this is
+*inherent* to speculative decoding, not a bug); a flip where it was confident is a real
+defect. **The ceiling has to sit above one bf16 ULP or the gate cannot pass any
+divergence** — `oracle_test.py:264` measures 1-2 ULP on this checkpoint at `0.28125`, and a
+`divergence_gap_ceiling` this project shipped once at `0.02` (about 1/14th of that) made
+`passed` false unconditionally, degenerating the gate into the exact-token equality this
+entry's own reasoning says does not fit. Shipped ceiling: `0.3`. This is the reusable form
+of the defect — before setting *any* divergence-gap or similar tolerance ceiling on this
+checkpoint, compute the dtype's ULP at the relevant magnitude first.
+
+**Before renting batch 010 (unresolved, pre-rental checklist):**
+* **`recompile_limit_for`'s "two entries per slot" budget is one shape short.** Its stated
+  reasoning is "the candidate and its dynamic-shape variant", but a speculative candidate
+  makes *two structurally different* calls into `ReferenceModel.forward` per cycle —
+  `(seq=1, num_logits_to_keep=1)` for a plain continuation and `(seq=k+1,
+  num_logits_to_keep=k+1)` for a verify — so it needs three dynamo cache entries, not two.
+  Batch 010 lands in the 16-20 entry range against a limit of 18. Raise the multiplier or
+  check `graphs_compiled` on slot 1 before trusting its ratio; `0` there voids it the same
+  way it voided six of rental 35's nine slots.
+* **`SPECULATIVE_CACHE_HEADROOM = 16` (`speculative.py`) has no enforced relationship to a
+  registered `block_size`.** The true requirement is `block_size`; the largest registered
+  here is 4, so this is a 4x margin that holds for every slot in this batch but is not
+  checked anywhere. A future kernel registering `block_size >= 17` reproduces the
+  cache-overflow crash this batch's own fix wave found, with no earlier signal than the
+  benchmark dying.
+* **`remote/run_remote.sh` invokes `cli batch` with no `--workload`**, so `064`/`065` run on
+  random token ids unless a text workload is wired through explicitly. `_workload_prompt`
+  makes `headline_text` *reachable* from `cmd_batch`, not automatic — and these two slots'
+  own rationale is that the text workload is where their acceptance question is real.
+* **Acceptance is free to read once a slot runs.** `SlotResult.acceptance` carries cycles,
+  mean accepted, and the histogram — read it before trusting any of `062`-`065`'s ratios,
+  the same way `034-static-cache-cudagraphs`'s node count is what told the truth about its
+  2.0%.
 
 ---
 

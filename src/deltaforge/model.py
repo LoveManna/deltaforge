@@ -123,6 +123,21 @@ def greedy_decode(
     if cache is None:
         cache = model.new_cache(batch, prompt_len + max_new_tokens)
 
+    # A candidate may replace the decode *loop* rather than a module: speculative decoding
+    # changes how many tokens come out of one forward pass, which no module swap can
+    # express. `torch.compile` wraps the model, and `OptimizedModule.__getattr__`
+    # forwards to the original, so this reaches an installed loop through either.
+    loop = getattr(model, "decode_loop", None)
+    if loop is not None:
+        generated = loop(model, input_ids, max_new_tokens, cache)
+        if generated.shape[-1] != max_new_tokens:
+            raise RuntimeError(
+                f"{type(loop).__name__} returned {generated.shape[-1]} tokens, expected "
+                f"{max_new_tokens}. The benchmark divides a fixed token count into the "
+                "measured time, so a loop that emits a different number is not comparable."
+            )
+        return generated
+
     logits, _ = model(input_ids, cache, num_logits_to_keep=1)
     next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
     generated = [next_token]
@@ -447,3 +462,61 @@ register_installer("inline_causal_conv", _install_inline_causal_conv)
 register_installer("int4_head_triton_op", _install_int4_head_triton_op)
 register_installer("int4_head_torch_dequant", _install_int4_head_torch_dequant)
 register_installer("int4_mlp_torch_dequant", _install_int4_mlp_torch_dequant)
+
+
+def _install_rollback_state(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.rollback_state import install_rollback_state  # noqa: PLC0415
+
+    install_rollback_state(model, entry)
+
+
+register_installer("rollback_state", _install_rollback_state)
+
+
+# `decode_step` sorts before `gated_delta_rule`, so `apply_champions` (which iterates
+# `registry.champions()` sorted by op name) installs a speculative loop below before it
+# installs `rollback_state` above. That is safe: `SpeculativeLoop.__call__` looks up
+# `rollback_states(runnable)` at *call* time, not install time, so both installers having
+# run by the time the loop is actually called is all that is required.
+def _install_speculative_fixed_k4(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, FixedTokenDrafter(), block_size=4, acceptance=AcceptanceRecord(block_size=4)
+    )
+
+
+register_installer("speculative_fixed_k4", _install_speculative_fixed_k4)
+
+
+def _install_speculative_fixed_k2(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, FixedTokenDrafter(), block_size=2, acceptance=AcceptanceRecord(block_size=2)
+    )
+
+
+register_installer("speculative_fixed_k2", _install_speculative_fixed_k2)
+
+
+def _install_speculative_ngram_k2(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, NgramDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, NgramDrafter(n=3), block_size=2, acceptance=AcceptanceRecord(block_size=2)
+    )
+
+
+register_installer("speculative_ngram_k2", _install_speculative_ngram_k2)
+
+
+def _install_speculative_ngram_k4(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, NgramDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, NgramDrafter(n=3), block_size=4, acceptance=AcceptanceRecord(block_size=4)
+    )
+
+
+register_installer("speculative_ngram_k4", _install_speculative_ngram_k4)

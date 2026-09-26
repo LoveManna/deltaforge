@@ -17,10 +17,12 @@ from .correctness import (
     CorrectnessReport,
     DistributionCheck,
     EndToEndCheck,
+    SequenceCheck,
     TokenMatch,
     check_distribution,
     check_end_to_end,
     check_kernel,
+    check_sequence,
     error_magnitudes,
 )
 
@@ -32,6 +34,86 @@ def model():
     for param in model.parameters():
         torch.nn.init.normal_(param, std=0.05)
     return model
+
+
+@pytest.fixture
+def tiny_models():
+    """A reference and a candidate that starts out bit-identical to it.
+
+    Two separate instances rather than the same object twice, so a test can attach a
+    `decode_loop` to the candidate alone -- `check_sequence` free-runs each model through
+    whatever `greedy_decode` finds on it, and a shared instance would make that
+    impossible to isolate.
+
+    `decode_loop` is set to `None` rather than left unset, so `monkeypatch.setattr` can
+    replace it (it refuses to patch an attribute that was never there) without disturbing
+    `greedy_decode`, which already treats `None` the same as "no loop installed".
+    """
+    torch.manual_seed(4242)
+    reference = ReferenceModel(tiny_config()).to(torch.float32).eval()
+    for param in reference.parameters():
+        torch.nn.init.normal_(param, std=0.05)
+    candidate = ReferenceModel(tiny_config()).to(torch.float32).eval()
+    candidate.load_state_dict(reference.state_dict())
+    candidate.decode_loop = None
+    return reference, candidate
+
+
+def _plain_decode(runnable, input_ids: torch.Tensor, max_new_tokens: int, cache) -> torch.Tensor:
+    """`greedy_decode`'s own fallback loop, copied rather than called.
+
+    A helper installed as `decode_loop` cannot call `greedy_decode` to do its decoding --
+    `greedy_decode` would just find the very attribute under test and call back into it.
+    This is the same one-token-at-a-time loop `greedy_decode` runs when no loop is
+    installed, so a helper built from it decodes exactly as the reference does before it
+    perturbs anything.
+    """
+    with torch.no_grad():
+        logits, _ = runnable(input_ids, cache, num_logits_to_keep=1)
+        next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+        generated = [next_token]
+        for _ in range(max_new_tokens - 1):
+            logits, _ = runnable(next_token, cache, num_logits_to_keep=1)
+            next_token = logits[:, -1].argmax(dim=-1, keepdim=True)
+            generated.append(next_token)
+    return torch.cat(generated, dim=1)
+
+
+def _loop_that_flips_token(index: int):
+    """A decode loop that decodes normally and then swaps the token at `index`.
+
+    Built from `_plain_decode` rather than from canned tokens, so the sequence up to
+    `index` is the real decode and the divergence `check_sequence` reports is the one
+    this flip actually caused, not a fabricated one.
+    """
+
+    def loop(runnable, input_ids: torch.Tensor, max_new_tokens: int, cache) -> torch.Tensor:
+        tokens = _plain_decode(runnable, input_ids, max_new_tokens, cache)
+        flipped = tokens.clone()
+        flipped[:, index] = (flipped[:, index] + 1) % runnable.config.vocab_size
+        return flipped
+
+    return loop
+
+
+def _loop_that_flips_a_tied_token():
+    """A decode loop that flips a token at a position the reference was genuinely
+    unsure about.
+
+    Found by inspecting the tiny model's own logits rather than asserted: with the
+    `tiny_models` fixture's seed and prompt, decoding `[1, 2, 3]` for 8 tokens, the
+    reference's top-2 logit gap at position 2 is ~0.0183 -- inside the 0.02 ceiling
+    `test_a_divergence_where_the_reference_was_indifferent_passes` gates on, and the
+    smallest of the eight positions. Position 3, by contrast, sits at ~0.0565, which is
+    why that other test picks it to demonstrate a confident divergence.
+
+    This is a `tiny_config()` model at fp32, not the checkpoint at bf16: 0.0183 exercises
+    the gate's mechanism (a gap under the ceiling passes) but says nothing about the bf16
+    ULP scale (~0.14-0.28, per `batches.py`'s `divergence_gap_ceiling` docstring and C2)
+    the production ceiling of 0.3 is actually set against. Do not read this fixture as
+    evidence for where that number belongs.
+    """
+    return _loop_that_flips_token(index=2)
 
 
 # -- error magnitudes -----------------------------------------------------------------
@@ -500,3 +582,119 @@ def test_the_interval_is_recorded_beside_the_agreement():
     )
 
     assert "top1_interval" in check.to_dict()
+
+
+# -- layer 2, sequence ------------------------------------------------------------------
+
+
+def test_a_sequence_check_passes_when_the_tokens_match(tiny_models):
+    reference, candidate = tiny_models
+
+    check = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    assert check.first_divergence is None
+    assert check.passed
+
+
+def test_a_divergence_on_a_confident_position_fails(monkeypatch, tiny_models):
+    """A rollback bug looks exactly like this: the model was sure, and we emitted something
+    else. No distribution statistic would have caught it, because the weights are identical."""
+    reference, candidate = tiny_models
+    monkeypatch.setattr(candidate, "decode_loop", _loop_that_flips_token(index=3))
+
+    check = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    assert check.first_divergence == 3
+    assert check.reference_top2_gap > 0.02
+    assert not check.passed
+
+
+def test_a_divergence_where_the_reference_was_indifferent_passes(monkeypatch, tiny_models):
+    """One bf16 ULP flips an argmax on this checkpoint -- `009-gemv-bf16-control` matched 1
+    prompt of 5 on exactly that -- so a flip on a position with no gap is the reduction
+    order, not a bug."""
+    reference, candidate = tiny_models
+    monkeypatch.setattr(candidate, "decode_loop", _loop_that_flips_a_tied_token())
+
+    check = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    assert check.first_divergence is not None
+    assert check.reference_top2_gap <= 0.02, (
+        f"measured gap {check.reference_top2_gap!r}, expected ~0.0183; if this drifted the "
+        "fixture is no longer a near-tie at this position and needs a new one, not a wider "
+        "ceiling in this test"
+    )
+    assert check.passed
+
+
+def test_a_sequence_check_with_no_divergence_reports_no_gap():
+    check = SequenceCheck(num_prompts=2, first_divergence=None, reference_top2_gap=None, gap_ceiling=0.02)
+
+    assert check.passed
+    assert check.to_dict()["first_divergence"] is None
+    assert check.to_dict()["reference_top2_gap"] is None
+
+
+def test_a_sequence_check_fails_when_the_gap_exceeds_the_ceiling():
+    check = SequenceCheck(num_prompts=1, first_divergence=5, reference_top2_gap=0.05, gap_ceiling=0.02)
+
+    assert not check.passed
+
+
+def test_a_sequence_check_passes_a_divergence_within_the_ceiling():
+    check = SequenceCheck(num_prompts=1, first_divergence=5, reference_top2_gap=0.01, gap_ceiling=0.02)
+
+    assert check.passed
+
+
+def test_the_sequence_gate_rejects_an_empty_prompt_set(tiny_models):
+    reference, candidate = tiny_models
+    with pytest.raises(ValueError, match="no prompts"):
+        check_sequence(reference, candidate, [], gap_ceiling=0.02)
+
+
+def test_the_sequence_gate_takes_the_worst_divergence_across_prompts(monkeypatch, tiny_models):
+    """Two prompts, one clean and one with a confident-position flip: the report must carry
+    the flip, not average it away."""
+    reference, candidate = tiny_models
+    monkeypatch.setattr(candidate, "decode_loop", _loop_that_flips_token(index=3))
+
+    check = check_sequence(reference, candidate, [[1, 2, 3], [7, 8]], max_new_tokens=8, gap_ceiling=0.02)
+
+    assert check.first_divergence == 3
+    assert not check.passed
+
+
+def test_the_sequence_check_serialises_its_bars_alongside_its_numbers(tiny_models):
+    reference, candidate = tiny_models
+    check = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    payload = check.to_dict()
+    assert payload["kind"] == "sequence"
+    assert payload["gap_ceiling"] == 0.02
+    assert payload["passed"] is True
+    assert payload["num_prompts"] == 1
+
+
+# -- a report that carries a sequence check ----------------------------------------------
+
+
+def test_a_report_with_a_sequence_check_says_which_policy_it_used(tiny_models):
+    reference, candidate = tiny_models
+    result = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    report = CorrectnessReport(sequence=result)
+
+    assert report.passed
+    assert report.to_dict()["layer2_policy"] == "sequence"
+    assert report.to_dict()["layer2_end_to_end"] is None
+    assert report.to_dict()["layer2_distribution"] is None
+    assert report.to_dict()["layer2_sequence"] == result.to_dict()
+
+
+def test_a_failing_sequence_check_fails_the_report(monkeypatch, tiny_models):
+    reference, candidate = tiny_models
+    monkeypatch.setattr(candidate, "decode_loop", _loop_that_flips_token(index=3))
+    failing = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
+
+    assert not CorrectnessReport(sequence=failing).passed
