@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from .config import tiny_config
 from .kernels.rollback_state import install_rollback_state
 from .model import greedy_decode
 from .reference import ReferenceModel
-from .speculative import AcceptanceRecord, FixedTokenDrafter, NgramDrafter, install_speculative_loop
+from .speculative import (
+    SPECULATIVE_CACHE_HEADROOM,
+    AcceptanceRecord,
+    FixedTokenDrafter,
+    NgramDrafter,
+    SpeculativeLoop,
+    install_speculative_loop,
+)
 
 
 def test_a_fixed_drafter_proposes_the_same_token_every_time():
@@ -185,3 +193,47 @@ class _OracleDrafter:
 
     def commit(self, tokens):
         return None
+
+
+def test_a_negative_block_size_is_refused():
+    """`k` is a count of drafted tokens, so a negative one is a caller error, not a mode."""
+    with pytest.raises(ValueError, match="non-negative"):
+        SpeculativeLoop(FixedTokenDrafter(token_id=0), block_size=-1)
+
+
+def test_a_block_larger_than_the_cache_headroom_is_refused():
+    """The constant every caller sizes its cache with has to cover the block it verifies.
+
+    `SPECULATIVE_CACHE_HEADROOM` is what `batch_run`, `cli` and `check_sequence` add on top
+    of `context + max_new_tokens`, and a verify writes `block_size + 1` positions before
+    rewinding. Nothing tied the two together, so a kernel registering a larger block would
+    have reproduced the cache overflow that voided the first attempt at batch 010 -- not
+    here, but on a rented card, after the correctness gate had already passed, which is the
+    most expensive place to learn it. Refuse at construction instead.
+    """
+    with pytest.raises(ValueError, match="SPECULATIVE_CACHE_HEADROOM"):
+        SpeculativeLoop(FixedTokenDrafter(token_id=0), block_size=SPECULATIVE_CACHE_HEADROOM + 1)
+
+
+def test_a_block_exactly_at_the_headroom_is_allowed():
+    """The bound is the headroom itself: a verify at `k` writes `k+1` positions, of which
+    one is inside the token budget, so `k` extra positions is exactly enough."""
+    loop = SpeculativeLoop(FixedTokenDrafter(token_id=0), block_size=SPECULATIVE_CACHE_HEADROOM)
+
+    assert loop.block_size == SPECULATIVE_CACHE_HEADROOM
+
+
+def test_every_registered_block_size_fits_the_headroom():
+    """The guard above is only worth having if the shipped manifest actually passes it."""
+    from .batches import BATCH_010
+    from .kernels import REGISTRY
+    from .model import INSTALLERS
+    from .reference import ReferenceModel
+
+    model = ReferenceModel(tiny_config()).eval()
+    install_rollback_state(model)
+    for hypothesis in BATCH_010:
+        for name in hypothesis.kernels:
+            if name in REGISTRY and name.startswith("speculative_"):
+                INSTALLERS[name](model, REGISTRY.get(name))
+                assert model.decode_loop.block_size <= SPECULATIVE_CACHE_HEADROOM

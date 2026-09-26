@@ -568,13 +568,17 @@ raises the limit to cover the batch, and every slot record carries `graphs_compi
 there means the number beside it is not a comparison. **Widening a batch means widening that
 limit too.**
 
-**And so does widening what one slot's candidate does.** `recompile_limit_for`'s budget of
-two cache entries per slot assumes a candidate calls the reference's `forward` at one shape.
-A speculative-decoding candidate calls it at *two* — a plain one-token continuation and a
-`k+1`-token verify — so it needs three, not two, and batch 010 (2026-09-26) registered four
-such slots without widening the multiplier for it. Caught before any rental; see
-`docs/HYPOTHESES.md` entry 10's pre-rental checklist. **Before trusting a slot's ratio,
-check what shapes its candidate actually calls, not just how many slots share the batch.**
+**And so does widening what one slot's candidate does.** `recompile_limit_for`'s budget
+assumed two cache entries per slot — a candidate calling the reference's `forward` at one
+shape, plus its dynamic variant. A speculative-decoding candidate calls it at *two*: a plain
+one-token continuation and a `k+1`-token verify. Batch 010 (2026-09-26) registered four such
+slots and sat at 18 entries against an estimated need of 16-20. It now takes
+`entries_per_slot` and `_entries_per_slot_for` reads it off the batch, so a decode-loop batch
+gets three and every older batch keeps the budget its record was measured under. **Before
+trusting a slot's ratio, check what shapes its candidate actually calls, not just how many
+slots share the batch** — and note the marker that works: a loop candidate is identified by
+its registered `impl`, not by `replaces`, because `replaces` names the operation and fifteen
+ordinary module-swap kernels name `decode_step` too.
 
 **"The flop waste is free" is an argument about a memory-bound kernel, and it only holds if
 the kernel is one.** Batch 004's GEMV padded M to 16 so `tl.dot` could carry the partial sums
