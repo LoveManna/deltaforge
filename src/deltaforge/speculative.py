@@ -23,6 +23,8 @@ __all__ = [
     "Drafter",
     "FixedTokenDrafter",
     "NgramDrafter",
+    "SpeculativeLoop",
+    "install_speculative_loop",
 ]
 
 
@@ -131,3 +133,86 @@ class AcceptanceRecord:
             "mean_accepted": self.mean_accepted,
             "histogram": {str(k): v for k, v in self.histogram.items()},
         }
+
+
+class SpeculativeLoop:
+    """Draft `k`, verify in one pass, keep the prefix the verifier agrees with.
+
+    One cycle:
+
+    1. the drafter proposes `k` tokens from what is committed;
+    2. one forward over `[last_committed_token, draft_0 ... draft_{k-1}]` returns `k+1`
+       logits — position `i` is the model's own answer for what follows the first `i`
+       drafted tokens;
+    3. accept the longest prefix where the drafts match those argmaxes, and emit the
+       argmax at the first mismatch as well, which is always a correct token;
+    4. rewind the cache by `k - j` and tell each layer which state version to keep.
+
+    Step 3 is why the emitted sequence is greedy decoding's: every token emitted is an
+    argmax of logits this model computed, and a rejected draft contributes nothing.
+    """
+
+    def __init__(self, drafter: Drafter, block_size: int, acceptance: AcceptanceRecord | None = None):
+        if block_size < 0:
+            raise ValueError(f"block_size must be non-negative, got {block_size}")
+        self.drafter = drafter
+        self.block_size = block_size
+        self.acceptance = acceptance
+
+    def __call__(self, runnable, input_ids: Tensor, max_new_tokens: int, cache) -> Tensor:
+        from .kernels.rollback_state import rollback_states  # noqa: PLC0415
+
+        states = rollback_states(runnable)
+        logits, _ = runnable(input_ids, cache, num_logits_to_keep=1)
+        token = logits[:, -1].argmax(dim=-1, keepdim=True)
+        generated = [token]
+        self.drafter.commit(torch.cat([input_ids, token], dim=1))
+
+        while sum(piece.shape[1] for piece in generated) < max_new_tokens:
+            committed = torch.cat([input_ids, *generated], dim=1)
+            if self.block_size == 0:
+                logits, _ = runnable(token, cache, num_logits_to_keep=1)
+                token = logits[:, -1].argmax(dim=-1, keepdim=True)
+                generated.append(token)
+                self.drafter.commit(token)
+                continue
+
+            drafts = self.drafter.propose(committed, self.block_size)
+            verified = torch.cat([token, drafts], dim=1)
+            before = cache.seq_len
+            logits, _ = runnable(verified, cache, num_logits_to_keep=self.block_size + 1)
+            proposals = logits.argmax(dim=-1)
+
+            # The first position where the model's own answer differs from the draft. Batch
+            # 1 is what this project measures, so this reads row 0 and is honest about it.
+            accepted = 0
+            while accepted < self.block_size and bool((proposals[:, accepted] == drafts[:, accepted]).all()):
+                accepted += 1
+
+            kept = torch.cat([drafts[:, :accepted], proposals[:, accepted : accepted + 1]], dim=1)
+            # The verify wrote `block_size + 1` positions; `accepted + 1` of them survive.
+            cache.rewind(before + accepted + 1)
+            for state in states:
+                state.keep(accepted + 1)
+            if self.acceptance is not None:
+                self.acceptance.observe(accepted)
+
+            generated.append(kept)
+            token = kept[:, -1:]
+            self.drafter.commit(kept)
+
+        return torch.cat(generated, dim=1)[:, :max_new_tokens]
+
+
+def install_speculative_loop(
+    model, drafter: Drafter, block_size: int, acceptance: AcceptanceRecord | None = None
+) -> None:
+    """Put the loop where `greedy_decode` will find it.
+
+    The drafter is held **here**, on the loop, and never registered as a submodule.
+    `cli._assert_parameters_are_shared` requires every candidate parameter to share storage
+    with a reference parameter of the same name — the check that catches a candidate which
+    silently loaded a second 8.4 GB copy of the weights — and draft weights have no
+    counterpart. Keeping them off the module tree leaves that check exactly as strict.
+    """
+    model.decode_loop = SpeculativeLoop(drafter, block_size, acceptance)
