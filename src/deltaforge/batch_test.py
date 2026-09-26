@@ -550,6 +550,41 @@ def test_an_approximate_hypothesis_with_both_bars_is_accepted():
     assert hypothesis.kl_threshold == 0.01
 
 
+# -- the sequence correctness policy -----------------------------------------------------
+
+
+def test_a_sequence_gated_hypothesis_must_register_a_gap_ceiling():
+    with pytest.raises(ValueError, match="divergence_gap_ceiling"):
+        make_hypothesis(slug="062-x", correctness="sequence")
+
+
+def test_a_sequence_gated_hypothesis_carries_no_distribution_bars():
+    with pytest.raises(ValueError, match="teacher-forced"):
+        make_hypothesis(
+            slug="062-x",
+            correctness="sequence",
+            divergence_gap_ceiling=0.02,
+            top1_threshold=0.99,
+            kl_threshold=0.01,
+            correctness_positions=264,
+        )
+
+
+def test_a_sequence_gated_hypothesis_with_a_ceiling_is_accepted():
+    hypothesis = make_hypothesis(slug="062-x", correctness="sequence", divergence_gap_ceiling=0.02)
+
+    assert hypothesis.divergence_gap_ceiling == 0.02
+    assert hypothesis.top1_threshold is None
+    assert hypothesis.kl_threshold is None
+
+
+def test_a_gap_ceiling_registered_against_a_policy_that_never_reads_it_is_refused():
+    with pytest.raises(ValueError, match="never reads it"):
+        make_hypothesis(slug="062-x", correctness="approximate", divergence_gap_ceiling=0.02)
+    with pytest.raises(ValueError, match="never reads it"):
+        _raw_hypothesis(divergence_gap_ceiling=0.02)
+
+
 # -- preconditions --------------------------------------------------------------------
 
 

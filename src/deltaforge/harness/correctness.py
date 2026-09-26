@@ -42,10 +42,12 @@ __all__ = [
     "DistributionCheck",
     "EndToEndCheck",
     "KernelCheck",
+    "SequenceCheck",
     "TokenMatch",
     "check_distribution",
     "check_end_to_end",
     "check_kernel",
+    "check_sequence",
     "error_magnitudes",
 ]
 
@@ -462,14 +464,123 @@ def check_distribution(
 
 
 @dataclass(frozen=True)
+class SequenceCheck:
+    """Free-running token agreement, with the first divergence attributed.
+
+    The policy the speculative candidates need, and the reason neither existing gate fits.
+    `check_distribution` teacher-forces both models, so on a candidate that carries the
+    reference's own weights it returns perfect agreement whatever the decode loop did with
+    the recurrent state. `check_end_to_end` does free-run the loop, but requires the token
+    ids to match exactly — and a verify pass over `k+1` positions reduces in a different
+    order from `k+1` separate passes, which on this checkpoint flips an argmax whenever the
+    top-2 logits are within a ULP of each other.
+
+    So: report **where** the sequences first differ, and how confident the reference was
+    there. A flip on a position the reference had no opinion about is the arithmetic; a
+    flip on one it was sure about is a bug.
+    """
+
+    num_prompts: int
+    first_divergence: int | None
+    reference_top2_gap: float | None
+    gap_ceiling: float
+    prompt_digest: str = ""
+
+    @property
+    def passed(self) -> bool:
+        if self.first_divergence is None:
+            return True
+        return self.reference_top2_gap is not None and self.reference_top2_gap <= self.gap_ceiling
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "sequence",
+            "num_prompts": self.num_prompts,
+            "first_divergence": self.first_divergence,
+            "reference_top2_gap": self.reference_top2_gap,
+            "gap_ceiling": self.gap_ceiling,
+            "prompt_digest": self.prompt_digest,
+            "passed": self.passed,
+        }
+
+
+def check_sequence(
+    reference_model: ReferenceModel,
+    candidate_model: ReferenceModel,
+    prompt_token_ids: Sequence[Sequence[int]],
+    *,
+    max_new_tokens: int = 128,
+    gap_ceiling: float,
+    prompt_digest: str = "",
+    device: torch.device | str | None = None,
+) -> SequenceCheck:
+    """Free-run both models and attribute the first divergence, if there is one."""
+    if not prompt_token_ids:
+        raise ValueError("no prompts supplied to the sequence gate")
+    device = device or next(reference_model.parameters()).device
+
+    worst: tuple[int, float] | None = None
+    for ids in prompt_token_ids:
+        prompt = torch.tensor([list(ids)], dtype=torch.long, device=device)
+        with torch.no_grad():
+            expected = greedy_decode(
+                reference_model,
+                prompt,
+                max_new_tokens,
+                cache=reference_model.new_cache(1, len(ids) + max_new_tokens + 16),
+            )
+            got = greedy_decode(
+                candidate_model,
+                prompt,
+                max_new_tokens,
+                cache=candidate_model.new_cache(1, len(ids) + max_new_tokens + 16),
+            )
+        differing = (expected != got).nonzero()
+        if differing.numel() == 0:
+            continue
+        index = int(differing[0, 1])
+        gap = _reference_top2_gap(reference_model, prompt, expected, index, device)
+        if worst is None or gap > worst[1]:
+            worst = (index, gap)
+
+    if worst is None:
+        return SequenceCheck(len(prompt_token_ids), None, None, gap_ceiling, prompt_digest)
+    return SequenceCheck(len(prompt_token_ids), worst[0], worst[1], gap_ceiling, prompt_digest)
+
+
+def _reference_top2_gap(
+    model: ReferenceModel, prompt: torch.Tensor, expected: torch.Tensor, index: int, device
+) -> float:
+    """How far apart the reference's top two logits were at the position that diverged.
+
+    The same statistic `oracle_test.py::test_report_the_first_greedy_divergence` computes
+    against HuggingFace, for the same purpose: telling a disagreement the arithmetic
+    explains from one it does not.
+    """
+    context = torch.cat([prompt, expected[:, :index]], dim=1)
+    with torch.no_grad():
+        logits, _ = model(context, model.new_cache(1, context.shape[1] + 1), num_logits_to_keep=1)
+    top2 = torch.topk(logits[0, -1].float(), 2)
+    return float(top2.values[0] - top2.values[1])
+
+
+@dataclass(frozen=True)
 class CorrectnessReport:
     """Both gates together. ``passed`` requires both."""
 
     kernel_checks: tuple[KernelCheck, ...] = ()
     end_to_end: EndToEndCheck | None = None
     #: Set instead of ``end_to_end`` for a hypothesis whose candidate is approximate by
-    #: design. Exactly one of the two is populated; a report with neither has no layer 2.
+    #: design.
     distribution: DistributionCheck | None = None
+    #: Set instead of the other two for a hypothesis whose candidate carries the
+    #: reference's own weights — a speculative decode loop, say — where neither gate above
+    #: can fail: ``check_distribution`` teacher-forces both models, so identical weights
+    #: score perfectly whatever the loop did to the recurrent state, and
+    #: ``check_end_to_end`` free-runs but demands exact token ids, which this checkpoint's
+    #: own reduction-order sensitivity does not give even when the loop is correct. Exactly
+    #: one of the three is populated; a report with none has no layer 2.
+    sequence: SequenceCheck | None = None
     metadata: dict[str, object] = field(default_factory=dict)
 
     @property
@@ -480,6 +591,8 @@ class CorrectnessReport:
             layer2 = layer2 and self.end_to_end.passed
         if self.distribution is not None:
             layer2 = layer2 and self.distribution.passed
+        if self.sequence is not None:
+            layer2 = layer2 and self.sequence.passed
         return layer1 and layer2
 
     @property
@@ -498,6 +611,13 @@ class CorrectnessReport:
             "layer1_kernel_checks": [c.to_dict() for c in self.kernel_checks],
             "layer2_end_to_end": self.end_to_end.to_dict() if self.end_to_end else None,
             "layer2_distribution": self.distribution.to_dict() if self.distribution else None,
-            "layer2_policy": "approximate" if self.distribution is not None else "exact",
+            "layer2_sequence": self.sequence.to_dict() if self.sequence else None,
+            "layer2_policy": (
+                "sequence"
+                if self.sequence is not None
+                else "approximate"
+                if self.distribution is not None
+                else "exact"
+            ),
             "metadata": dict(self.metadata),
         }

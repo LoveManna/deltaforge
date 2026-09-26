@@ -68,7 +68,14 @@ __all__ = [
 #:           quantised one cannot match bf16 tokens however correct it is. Scored on top-1
 #:           agreement and mean KL against thresholds this hypothesis registers below.
 #:           `harness.correctness.check_distribution` measures them.
-CORRECTNESS_POLICIES = ("exact", "approximate")
+#: `sequence` — the candidate carries the reference's *own* weights but replaces the decode
+#:           loop, so `approximate`'s teacher-forcing cannot fail it and `exact`'s bit-exact
+#:           match cannot pass it: a multi-token verify reduces in a different order from
+#:           single-token decode and lands off by a ULP on this checkpoint. Scored on where
+#:           the free-run token sequences first diverge and how confident the reference was
+#:           there, against the `divergence_gap_ceiling` this hypothesis registers below.
+#:           `harness.correctness.check_sequence` measures it.
+CORRECTNESS_POLICIES = ("exact", "approximate", "sequence")
 
 #: What a hypothesis may predict, recorded in the manifest before the rental.
 #:
@@ -209,6 +216,10 @@ class Hypothesis:
     #: `None` means undeclared, and an undeclared n is not checked: inventing one would be
     #: worse than not checking.
     correctness_positions: int | None = None
+    #: Only for `sequence`. The largest top-2 logit gap at which a token divergence is still
+    #: attributable to reduction order rather than to a bug. Registered before the rental
+    #: for the same reason every other bar is.
+    divergence_gap_ceiling: float | None = None
     #: Registered before 2026-09-17, when `exact` was still accepted for a kernel that
     #: computes the same *function* as the reference. Batch 003 proved that is not the same
     #: property as producing the same *bits*, and the gate is now refused — but batches 001
@@ -245,6 +256,29 @@ class Hypothesis:
     def __post_init__(self) -> None:
         if self.correctness not in CORRECTNESS_POLICIES:
             raise ValueError(f"correctness must be one of {CORRECTNESS_POLICIES}, got {self.correctness!r}")
+        # Checked ahead of the `approximate` block below, not merged into it: that block's
+        # own "carries approximate thresholds" branch fires whenever a threshold is set and
+        # the policy is not `approximate`, which would misreport a `sequence` hypothesis
+        # carrying them as though it were `exact`. Raising here first pre-empts that.
+        if self.correctness == "sequence":
+            if self.divergence_gap_ceiling is None:
+                raise ValueError(
+                    f"{self.slug!r} is gated on its token sequence and must register a "
+                    "divergence_gap_ceiling before the rental. Without one the gate passes "
+                    "any divergence, including a corrupted recurrent state."
+                )
+            if self.top1_threshold is not None or self.kl_threshold is not None:
+                raise ValueError(
+                    f"{self.slug!r} is gated 'sequence' but carries teacher-forced bars. "
+                    "check_distribution never calls the decode loop, and a candidate that "
+                    "replaces the loop while sharing the reference's weights scores "
+                    "perfectly on it whatever it did."
+                )
+        elif self.divergence_gap_ceiling is not None:
+            raise ValueError(
+                f"{self.slug!r} registers a divergence_gap_ceiling but is gated "
+                f"{self.correctness!r}, which never reads it."
+            )
         if self.correctness == "approximate":
             if self.top1_threshold is None or self.kl_threshold is None:
                 raise ValueError(
