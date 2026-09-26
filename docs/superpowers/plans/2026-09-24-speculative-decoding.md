@@ -49,6 +49,20 @@ not development.
 | `src/deltaforge/cli.py` | **Modify.** `headline_text` workload. |
 | `src/deltaforge/batches.py` | **Modify.** Batch 010. |
 
+> **POST-EXECUTION CORRECTION (2026-09-26, defect 4 of 5).** This table names no file for
+> sizing the decode cache, and no task in this plan does either. `batch_run.py` and
+> `cli.py` allocated exactly `context_length + decode_tokens` — what the reference step
+> path consumes exactly — which is not enough for a loop that verifies `k+1` positions per
+> cycle: at rental shape every speculative slot crashed with `cache overflow` in the
+> benchmark, *after* the correctness gate had already passed, because `check_sequence`
+> happened to allocate its own `+16` headroom independently and never shared it with the
+> benchmark path. At rental shape the whole batch would have produced only the identity
+> slot. Shipped fix: a named `SPECULATIVE_CACHE_HEADROOM = 16` in `speculative.py`, used at
+> all four allocation sites (`batch_run.py`, `cli.py`, and both sides of
+> `harness/correctness.py`'s `check_sequence`). A future plan that adds a decode loop must
+> name cache sizing as a file this plan quotes, not one it is silent about — see the Self-
+> review's post-execution note at the end of this document.
+
 Tasks 1–5 are the mechanism and are independent of any drafter. Task 6 is the gate. Tasks
 7–9 are harness and manifest. Task 10 is the int4 self-draft and is **blocked on `061`**.
 
@@ -401,6 +415,18 @@ class RollbackState:
             raise ValueError(f"step {step} outside the {len(self.states)} recorded steps")
         self.cache.recurrent.copy_(self.states[step])
         self.cache.conv.copy_(self.conv_windows[step])
+```
+
+> **POST-EXECUTION CORRECTION (2026-09-26, defect 2 of 5).** The bounds check above is
+> wrong. `states` holds `seq_len + 1` entries (see `states = [state.clone()]` before the
+> loop in Step 3's `RollbackGatedDeltaNet.forward`), so a valid `step` is `0 <= step <
+> len(self.states)`, not `<=`. As written, `step == len(self.states)` is admitted by the
+> guard and then raises a bare `IndexError` from `self.states[step]` instead of the
+> `ValueError` this method's own docstring promises. Review caught it (Task 3's review,
+> "ONE Important"); ruled a dispatched fix rather than an escalation because it serves the
+> plan's own stated contract and changes nothing for any valid input. Shipped as `<`:
+
+```python
 
 
 def _patched_delta_net_class():
@@ -537,6 +563,42 @@ register_installer("rollback_state", _install_rollback_state)
 Run: `uv run pytest src/deltaforge/kernels/rollback_state_test.py src/deltaforge/batches_test.py -q`
 Expected: PASS. If the first test fails by a small numeric margin rather than exactly, that
 is a **real failure**, not tolerance: both sides run the same fp32 scan in the same order.
+
+> **POST-EXECUTION CORRECTION (2026-09-26, defect 1 of 5).** The sentence above is false,
+> and Step 1's `test_rolling_back_to_j_matches_never_having_run_past_j` did fail at
+> `rtol=0, atol=0` during execution — not on a bug. Two things make bit-identity against
+> the `honest` model impossible in principle, not just in this implementation:
+>
+> 1. The patched (`speculative`) side runs *per-token* scan calls; the unpatched (`honest`)
+>    side the test builds runs *one whole-sequence* call. This directly contradicts this
+>    step's own premise — and Task 6's own `SequenceCheck` docstring, written later in this
+>    same plan, states outright that "a verify pass over `k+1` positions reduces in a
+>    different order from `k+1` separate passes."
+> 2. Independent of the scan: a plain `nn.Linear` fed the same rows returns different
+>    values depending on the row count of the call — measured 9.5e-7, persisting under
+>    `torch.set_num_threads(1)`. This is GEMM blocking in unmodified `reference.py`, before
+>    the recurrent scan ever runs, and it means bit-identity between differently-shaped
+>    calls into the reference is impossible regardless of what this plan patches.
+>
+> Human ruling (round 1): patch the `honest` comparison model with `install_rollback_state`
+> too, so both sides use the identical per-token decomposition and `atol=0` measures only
+> the rollback. That closed most of the gap but not all of it — the residual traced to the
+> `nn.Linear` blocking above, independent of anything this plan controls.
+>
+> Human ruling (round 2, shipped): split the property in two. (1) A new
+> `rtol=0, atol=0` test, `test_keep_restores_the_cache_to_exactly_the_recorded_step`, that
+> `keep(step)` restores `cache.recurrent`/`cache.conv` to exactly `states[step]` /
+> `conv_windows[step]` — the rollback bookkeeping itself, which *is* bit-exact and is the
+> property this step actually needs. (2) The end-to-end comparison at
+> `rtol=1e-4, atol=1e-4` — **not** `reference_test.py:230`'s `1e-5/1e-6`, which is the
+> precedent for the *isolated scan* — the repo's own precedent for whole-model logit
+> comparisons across differently-shaped forward decompositions is
+> `reference_test.py:324` (`1e-4/1e-4`), which is what a speculative candidate is.
+>
+> The general point, worth carrying into any future plan that compares a stepwise
+> decomposition against a whole-sequence reference: **bit-identity against a
+> differently-shaped reference is impossible in principle**, and a step that asserts it
+> anyway is asserting something inherent to the technique is a bug in the technique.
 
 - [ ] **Step 6: Commit**
 
@@ -890,6 +952,34 @@ class _OracleDrafter:
     def commit(self, tokens):
         self.emitted += tokens.shape[1]
 ```
+
+> **POST-EXECUTION CORRECTION (2026-09-26, defect 3 of 5).** Two defects in the plan's own
+> test code above, both reproduced during execution and confirmed to be test bugs, not
+> implementation bugs (a repaired oracle makes the loop match the reference exactly, cycle
+> 1 accepting all 4 drafts):
+>
+> 1. `test_the_loop_records_what_it_accepted` asserts `record.cycles == 6` at
+>    `max_new_tokens=6`. Wrong: the prefill emits the first token *before* any cycle runs
+>    (see the loop's `generated = [token]` before its `while`), so 6 emitted tokens = 1
+>    prefill token + 5 cycles. Measured `cycles == 5`. Shipped fix: ask for
+>    `max_new_tokens=7` instead of loosening the assertion, which preserves
+>    `record.histogram[0] == 6` as the meaningful check.
+> 2. `_OracleDrafter.propose` indexes `self.truth` by `self.emitted`, but `self.emitted` is
+>    incremented by every call to `commit`, including the loop's *first* `commit`, which
+>    passes `cat([input_ids, token])` — the whole prompt plus one token — not just the
+>    token. `truth` holds only generated tokens, so the oracle's read position starts at
+>    `len(input_ids) + 1` (7, for this fixture) instead of 1. This is broken under any
+>    reading of the fixture, not a tolerance question. Separately, `truth` in
+>    `test_a_perfect_drafter_is_accepted_every_time_and_emits_the_same_tokens` is exactly
+>    `max_new_tokens` (8) tokens long, so the final cycle drafts past the end of `truth` and
+>    `mean_accepted == 4.0` is unreachable by construction — measured `[4, 2]`, mean 3.0.
+>    Shipped fix: derive the oracle's read position from the loop's own `committed`
+>    argument (which already carries the full context) rather than from an internal
+>    counter, and give the fixture a 16-token `truth` while still asking the loop for 8
+>    tokens. Both targets — `[4, 4]` / `cycles == 2` / `mean_accepted == 4.0`, and
+>    `cycles == 6` at `max_new_tokens == 7` — were verified reachable before the fix was
+>    written, and the loop's own code (the first `commit(prompt + token)` call) was left
+>    unchanged, which matters for a future drafter that drafts from its own state.
 
 - [ ] **Step 2: Run them and watch them fail**
 
@@ -1358,8 +1448,20 @@ git commit -m "Run the sequence gate, and record what the loop accepted"
 
 ### Task 8: a workload whose prompt is text
 
+> **POST-EXECUTION CORRECTION (2026-09-26).** The Files list below scopes this task to
+> `_build_columns`, which is the `cmd_bench` path. Batch 010 runs through `cmd_batch`, a
+> separate function that built its own prompt with `torch.randint` and never read
+> `workload.get("prompt")` at all. As written, this task wires the text workload into a
+> path the batch does not use — `064`/`065`'s own registered rationale says the text
+> workload is where their acceptance question is real, and it would have stayed
+> unreachable from any actual rental. Caught in final whole-branch review (finding I1).
+> Shipped fix: extract a shared `_workload_prompt(weights, workload, vocab_size, device)`
+> helper and call it from both `_build_columns` and `cmd_batch`. Files list corrected below;
+> the Self-review's spec-coverage claim for item 6 is corrected at the end of this document.
+
 **Files:**
-- Modify: `src/deltaforge/cli.py` (`DEFAULT_WORKLOADS`, `_build_columns`)
+- Modify: `src/deltaforge/cli.py` (`DEFAULT_WORKLOADS`, `_build_columns`, `cmd_batch`, and a
+  shared `_workload_prompt` helper both call)
 - Modify: `src/deltaforge/cli_test.py`
 
 **Interfaces:**
@@ -1466,6 +1568,28 @@ git commit -m "A workload whose prompt is text, because acceptance depends on it
 
 - [ ] **Step 1: Write the manifest**
 
+> **POST-EXECUTION CORRECTION (2026-09-26, defect 5 of 5).** Every `divergence_gap_ceiling`
+> below is written as `0.02` in this plan. That value is wrong by roughly 7x and shipped as
+> `0.3` instead — the four occurrences below are corrected in place, not left at the
+> original number, because a manifest carrying the original value cannot pass any
+> divergence and would have voided all four slots' correctness gates regardless of the
+> ratio measured.
+>
+> `oracle_test.py:264` records that 1-2 ULP on this checkpoint's bf16 logits is `0.28125`,
+> and `batch.py` (the model-fact comment near `CORRECTNESS_POLICIES`) already states that
+> one ULP flips an argmax on this model. `SequenceCheck.passed` requires
+> `reference_top2_gap <= gap_ceiling` when a divergence exists — so a ceiling of `0.02`,
+> sitting below the smallest gap a bf16 rounding difference can ever produce, makes
+> `passed` false for *every* divergence a speculative candidate can produce, including the
+> reduction-order divergence Task 3 and Task 6 both establish is inherent to this
+> technique. Since these four slots register no layer-1 `CHECK_BUILDERS` entry, the gate
+> degenerates into exact-token equality — precisely the gate spec §4 and this plan's own
+> Task 6 motivation say does not fit a speculative candidate — and all four slots would
+> have recorded `incorrect` regardless of what the benchmark measured. This was caught in
+> final whole-branch review, before any rental, and ruled a correction rather than a design
+> choice: raised to `0.3`, with the ULP derivation above registered in each slot's
+> rationale as well as here.
+
 Slots, in order. Every one carries `contrast_with` or is an ingredient the batch has not
 measured, because `batch.unpaired_slots` refuses a manifest from 010 on that does neither.
 
@@ -1512,7 +1636,7 @@ BATCH_010 = Batch(
                 "in the spec rather than decided after the number."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,  # POST-EXECUTION CORRECTION: was 0.02, below 1 ULP; see note above
         ),
         Hypothesis(
             slug="063-verify-inflation-k2",
@@ -1529,7 +1653,7 @@ BATCH_010 = Batch(
                 "spec's arithmetic is wrong in a way that matters more than the slot does."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,  # POST-EXECUTION CORRECTION: was 0.02, below 1 ULP; see note above
         ),
         Hypothesis(
             slug="064-spec-ngram-k2",
@@ -1550,7 +1674,7 @@ BATCH_010 = Batch(
                 "rather than the ratio. The text workload is where this is a real question."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,  # POST-EXECUTION CORRECTION: was 0.02, below 1 ULP; see note above
         ),
         Hypothesis(
             slug="065-spec-ngram-k4",
@@ -1580,7 +1704,7 @@ BATCH_010 = Batch(
                 ),
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,  # POST-EXECUTION CORRECTION: was 0.02, below 1 ULP; see note above
         ),
     ),
 )
@@ -1655,9 +1779,14 @@ When unblocked, the work is a drafter that holds its own quantised model and its
 unchanged model → relied on, nothing to build; §3 state rollback → Tasks 1, 3; §4 gate →
 Task 6; §5 harness items 1–3 → Tasks 2, 7; item 4 (acceptance recorded) → Tasks 4, 7; item 5
 (no byte model) → Task 7 (`weight_bits` left empty, and `_bytes_per_token` already logs "no
-byte model" rather than inventing one); item 6 text workload → Task 8; items 7–8 (rewind,
-drafter off the module tree) → Tasks 1, 5; §6 slots → Task 9; §7 kill criteria → recorded in
-the rationales of `062` and `063` and in Task 10's block; §8 → nothing to build.
+byte model" rather than inventing one); item 6 text workload → Task 8 **(POST-EXECUTION
+CORRECTION, 2026-09-26: this claim was false as shipped — Task 8 wired the text workload
+into `_build_columns`, the `cmd_bench` path, only; batch 010 runs through `cmd_batch`, which
+never read it. Not covered end to end until a follow-up fix extracted a shared
+`_workload_prompt` helper both paths call. See Task 8's own correction note above.)**;
+items 7–8 (rewind, drafter off the module tree) → Tasks 1, 5; §6 slots → Task 9; §7 kill
+criteria → recorded in the rationales of `062` and `063` and in Task 10's block; §8 →
+nothing to build.
 
 **Placeholders.** None: every step carries the code it asks for. Task 7's tests are sketched
 against fixtures that exist in `batch_run_test.py` and the implementer should follow that
@@ -1671,3 +1800,30 @@ which `accepted + 1` survive; `DecodeCache.rewind(to_seq_len)` takes an *absolut
 and Task 5 calls it with `before + accepted + 1`. Those two conventions differ on purpose
 and the always-wrong-drafter test in Task 5 is what catches getting them backwards.
 `Drafter.propose(committed, k)` and `.commit(tokens)` are the same names in Tasks 4, 5, 9.
+
+---
+
+## Post-execution note (2026-09-26)
+
+All 9 in-scope tasks (1-9) shipped, reviewed, and pass on a clean checkout
+(`uv run pytest`, ruff clean). Task 10 is still blocked exactly as written: `061-int4-mlp-
+torch-dequant` remains `precondition_failed` / untested. Execution found five defects in
+this plan, corrected in place above rather than silently: Task 3 Step 5's false rtol=0
+premise, Task 3 Step 3's `keep()` off-by-one, two test-fixture bugs in Task 5, an unstated
+decode-cache sizing requirement (File structure table), and a `divergence_gap_ceiling` four
+sevenths of an order of magnitude below one bf16 ULP (Task 9). A sixth, non-numeric defect
+is Task 8's Files list scoping the text workload to a path batch 010 does not run through.
+
+**The pattern worth stating once, because it is the transferable lesson:** every one of
+these six defects sits at a seam between a file this plan quotes in full and a file it
+names but does not quote, or does not name at all. Task 3 Step 5 quotes the patched class
+in full but not the unpatched `honest` model's shape, nor the GEMM-blocking behaviour of
+`reference.py`'s existing `nn.Linear` calls. Task 5's fixtures quote the loop's own
+`__call__` correctly but get the *fixture's* relationship to it wrong twice, in two
+different ways, because nothing in the plan traces what the loop's first `commit()` call
+actually passes. The cache-sizing defect is exactly a file the File structure table never
+names at all. Task 8's defect is a function (`cmd_batch`) the task's Files list never
+mentions, sitting one file away from the one it does. **This plan is meticulous about code
+it writes out in full and blind to the call sites it never names** — and a future plan
+worth trusting on the first read should audit every file its own File-structure table is
+silent about, not only the ones it quotes.

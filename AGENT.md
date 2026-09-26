@@ -568,6 +568,14 @@ raises the limit to cover the batch, and every slot record carries `graphs_compi
 there means the number beside it is not a comparison. **Widening a batch means widening that
 limit too.**
 
+**And so does widening what one slot's candidate does.** `recompile_limit_for`'s budget of
+two cache entries per slot assumes a candidate calls the reference's `forward` at one shape.
+A speculative-decoding candidate calls it at *two* — a plain one-token continuation and a
+`k+1`-token verify — so it needs three, not two, and batch 010 (2026-09-26) registered four
+such slots without widening the multiplier for it. Caught before any rental; see
+`docs/HYPOTHESES.md` entry 10's pre-rental checklist. **Before trusting a slot's ratio,
+check what shapes its candidate actually calls, not just how many slots share the batch.**
+
 **"The flop waste is free" is an argument about a memory-bound kernel, and it only holds if
 the kernel is one.** Batch 004's GEMV padded M to 16 so `tl.dot` could carry the partial sums
 in the MMA accumulator, on the stated ground that arithmetic intensity at batch-1 decode is
@@ -614,6 +622,17 @@ the same *function* as the reference — bf16 in, fp32 accumulate, bf16 out — 
 flips an argmax on this model. Computing the same function and producing the same bits are
 different properties, and only the identity champion has the second one. This is the third
 time the project has paid for it (§7a, rental 35's slots 001 and 002, now `009`).
+
+**The corollary for a gate that measures a gap rather than equality: size the ceiling to the
+dtype, or the gate cannot pass anything.** `oracle_test.py:264` puts 1-2 bf16 ULP on this
+checkpoint at `0.28125` — that is the smallest logit gap a rounding difference can produce,
+not a rare one. Speculative decoding's `divergence_gap_ceiling` was drafted at `0.02`, about
+1/14th of that, which made its `SequenceCheck.passed` false for every divergence the
+technique can produce and turned a gate built to distinguish "reduction order" from "bug"
+into the exact-equality gate it exists to replace. Caught in review, before any rental;
+shipped at `0.3`. Before setting *any* tolerance ceiling on this checkpoint's bf16 outputs,
+compute the dtype's ULP at the relevant magnitude first — the same arithmetic that makes an
+`exact` gate wrong makes an under-sized approximate one wrong too.
 
 **A shared correctness reference is only shared if the implementations share their rounding.**
 `010`'s layer 1 was the batch's only layer-1 failure and it is not a kernel: `Int8DequantLinear`
