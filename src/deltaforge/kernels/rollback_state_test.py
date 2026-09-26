@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from ..config import tiny_config
@@ -36,6 +37,28 @@ def test_keep_restores_the_cache_to_exactly_the_recorded_step():
             state.keep(step)
             torch.testing.assert_close(state.cache.recurrent, state.states[step], rtol=0, atol=0)
             torch.testing.assert_close(state.cache.conv, state.conv_windows[step], rtol=0, atol=0)
+
+
+def test_keep_accepts_the_full_forward_but_rejects_one_step_past_it():
+    """The boundary TDD missed. `states` holds `seq_len + 1` entries — one per token plus the
+    initial clone — so the full-accept case is `step == seq_len` (`len(states) - 1`), and
+    `step == len(states)`, one past that, must raise rather than index past the list.
+    """
+    config = tiny_config()
+    torch.manual_seed(0)
+    ids = torch.randint(0, config.vocab_size, (1, 9))
+
+    model = ReferenceModel(config).eval()
+    install_rollback_state(model)
+    with torch.no_grad():
+        cache = model.new_cache(1, 32)
+        model(ids[:, :5], cache)  # committed prefix
+        model(ids[:, 5:9], cache)  # 4-token verify: steps 0..4 are valid, 5 is not
+
+    for state in rollback_states(model):
+        state.keep(4)  # the full-accept case: still succeeds
+        with pytest.raises(ValueError, match="outside the valid range"):
+            state.keep(5)  # one past the last recorded step
 
 
 def test_rolling_back_to_j_matches_never_having_run_past_j():

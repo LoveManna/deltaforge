@@ -41,14 +41,19 @@ class RollbackState:
         """Commit the state as of ``step`` tokens of the last forward being accepted.
 
         ``step`` counts tokens of that forward, so 0 means "none of it happened" and
-        ``len(states)`` means "all of it did". Copied in place, because the address of a
-        cache tensor is a promise the compiled graph was given.
+        ``len(states) - 1`` (the number of tokens in that forward) means "all of it did".
+        Copied in place, because the address of a cache tensor is a promise the compiled
+        graph was given.
         """
         if self.cache is None:
             raise RuntimeError("keep() before any forward recorded a state")
-        if not 0 <= step <= len(self.states):
-            raise ValueError(f"step {step} outside the {len(self.states)} recorded steps")
+        if not 0 <= step < len(self.states):
+            raise ValueError(f"step {step} outside the valid range 0..{len(self.states) - 1}")
         self.cache.recurrent.copy_(self.states[step])
+        # `forward` only writes `cache.conv` when `history` is nonzero; this copy is
+        # unconditional. Harmless: at `history == 0`, `cache.conv` and every recorded
+        # window are both zero-width (sized from `max(kernel_size - 1, 0)`), so the copy
+        # is a no-op there rather than a divergence from `forward`'s guard.
         self.cache.conv.copy_(self.conv_windows[step])
 
 
