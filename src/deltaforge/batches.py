@@ -33,6 +33,7 @@ __all__ = [
     "BATCH_007",
     "BATCH_008",
     "BATCH_009",
+    "BATCH_010",
     "get_batch",
 ]
 
@@ -2681,6 +2682,122 @@ BATCH_009 = Batch(
 )
 
 
+BATCH_010 = Batch(
+    batch_id="010-speculative-verify",
+    description=(
+        "What a k+1-token verify costs, measured with no drafter in it, and then two "
+        "drafters that cost nothing. Spec: docs/superpowers/specs/"
+        "2026-09-24-speculative-decoding-design.md."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism="Installs nothing; calibrates the harness against the card of the hour.",
+            prediction="identity",
+            rationale=(
+                "The identity champion must return 1.00 +- noise or every other number in "
+                "the batch is void. It also reports the reference column's achieved "
+                "bandwidth before any candidate runs, which is how rental 43's 800 GB/s "
+                "card was recognised as a card rather than as a result."
+            ),
+        ),
+        Hypothesis(
+            slug="062-verify-inflation-k4",
+            kernels=("rollback_state", "speculative_fixed_k4"),
+            category="C",
+            byte_share=0.0,
+            mechanism=(
+                "The speculative loop with a drafter that always proposes the same token, "
+                "so acceptance is 0 by construction and the ratio is 1/gamma(4)."
+            ),
+            prediction="loss",
+            rationale=(
+                "This slot is an instrument, not a candidate. gamma is the whole downside "
+                "of the hypothesis and nothing has ever measured it: +8.2% of bytes for the "
+                "five-token KV and state traffic, +2.9% for the state versioning, and an "
+                "unknown dispatch term because the linear-attention scan runs five steps "
+                "per layer instead of one. Predicted 0.87-0.95. Above 1.25 in 1/ratio terms "
+                "and blocks longer than 2 are dead, which is registered as a kill criterion "
+                "in the spec rather than decided after the number."
+            ),
+            correctness="sequence",
+            divergence_gap_ceiling=0.02,
+        ),
+        Hypothesis(
+            slug="063-verify-inflation-k2",
+            kernels=("rollback_state", "speculative_fixed_k2"),
+            category="C",
+            byte_share=0.0,
+            contrast_with="062-verify-inflation-k4",
+            mechanism="The same instrument at k=2: how gamma scales with the block.",
+            prediction="loss",
+            rationale=(
+                "One variable from 062, the block size. Traffic says gamma(2) ~ 1.06 "
+                "against gamma(4) ~ 1.11, so this should lose about half as much. If it "
+                "loses as much or more, gamma is dispatch rather than traffic and the "
+                "spec's arithmetic is wrong in a way that matters more than the slot does."
+            ),
+            correctness="sequence",
+            divergence_gap_ceiling=0.02,
+        ),
+        Hypothesis(
+            slug="064-spec-ngram-k2",
+            kernels=("rollback_state", "speculative_ngram_k2"),
+            category="C",
+            byte_share=0.0,
+            contrast_with="063-verify-inflation-k2",
+            mechanism=(
+                "The same loop at k=2 with a prompt-lookup drafter: d=0, so the whole "
+                "downside is gamma-1 and any acceptance above ~10% is a win."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "One variable from 063: the drafter. On the headline workload the prompt "
+                "is torch.randint token ids, and an n-gram drafter over noise has no "
+                "structure to find -- so the honest prediction here is that it lands within "
+                "noise of 063, and the result worth having is the acceptance histogram "
+                "rather than the ratio. The text workload is where this is a real question."
+            ),
+            correctness="sequence",
+            divergence_gap_ceiling=0.02,
+        ),
+        Hypothesis(
+            slug="065-spec-ngram-k4",
+            kernels=("rollback_state", "speculative_ngram_k4"),
+            category="C",
+            byte_share=0.0,
+            contrast_with="064-spec-ngram-k2",
+            mechanism="The prompt-lookup drafter at k=4.",
+            prediction="loss",
+            rationale=(
+                "A longer block costs more gamma and an n-gram drafter's acceptance decays "
+                "fastest with depth, so at k=4 on random ids this should sit below 064. "
+                "Registered as a loss so that a win is informative: it would mean "
+                "acceptance is holding deeper than the drafter deserves, which is worth "
+                "knowing before the int4 self-draft is built."
+            ),
+            requires=Precondition(
+                slug="064-spec-ngram-k2",
+                floor=0.0,
+                versus="063-verify-inflation-k2",
+                reason=(
+                    "The n-gram drafter must at least not lose to the same loop with a "
+                    "drafter that is wrong on purpose. If it does, drafting is costing more "
+                    "than it saves at any block size and k=4 will not rescue it. The floor "
+                    "is on the comparison because that is the proposition -- rental 46's "
+                    "061 declined on an absolute ratio that meant nothing here."
+                ),
+            ),
+            correctness="sequence",
+            divergence_gap_ceiling=0.02,
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -2691,6 +2808,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_007.batch_id: BATCH_007,
     BATCH_008.batch_id: BATCH_008,
     BATCH_009.batch_id: BATCH_009,
+    BATCH_010.batch_id: BATCH_010,
 }
 
 

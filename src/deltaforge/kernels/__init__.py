@@ -958,3 +958,62 @@ REGISTRY.register(
         "state. See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md §3."
     ),
 )
+
+from .. import speculative as _speculative  # noqa: E402
+
+# `decode_step` is the boundary this loop replaces: "A decode *loop* replaces the decode
+# *step*." All four entries below share `install_speculative_loop` as their `impl` because
+# they are one mechanism at four configurations (drafter x block size), not four kernels;
+# like `rollback_state`, none of them is a Triton kernel or a custom op.
+
+REGISTRY.register(
+    "speculative_fixed_k4",
+    impl=_speculative.install_speculative_loop,
+    replaces="decode_step",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="062-verify-inflation-k4",
+    notes=(
+        "The speculative loop with `FixedTokenDrafter`, block_size=4: acceptance is 0 by "
+        "construction, so this is the instrument that measures gamma(4), the pure cost of "
+        "a 5-token verify, with no drafter quality in the number at all. "
+        "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
+    ),
+)
+
+REGISTRY.register(
+    "speculative_fixed_k2",
+    impl=_speculative.install_speculative_loop,
+    replaces="decode_step",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="063-verify-inflation-k2",
+    notes=(
+        "The same instrument as `speculative_fixed_k4` at block_size=2: measures gamma(2) "
+        "for the same reason, at half the block. "
+        "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
+    ),
+)
+
+REGISTRY.register(
+    "speculative_ngram_k2",
+    impl=_speculative.install_speculative_loop,
+    replaces="decode_step",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="064-spec-ngram-k2",
+    notes=(
+        "The speculative loop with `NgramDrafter(n=3)`, block_size=2: prompt-lookup "
+        "drafting, d=0, so the whole downside is gamma-1. "
+        "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
+    ),
+)
+
+REGISTRY.register(
+    "speculative_ngram_k4",
+    impl=_speculative.install_speculative_loop,
+    replaces="decode_step",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="065-spec-ngram-k4",
+    notes=(
+        "The same prompt-lookup drafter as `speculative_ngram_k2` at block_size=4. "
+        "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
+    ),
+)

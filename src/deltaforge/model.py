@@ -471,3 +471,52 @@ def _install_rollback_state(model: ReferenceModel, entry: KernelEntry) -> None:
 
 
 register_installer("rollback_state", _install_rollback_state)
+
+
+# `decode_step` sorts before `gated_delta_rule`, so `apply_champions` (which iterates
+# `registry.champions()` sorted by op name) installs a speculative loop below before it
+# installs `rollback_state` above. That is safe: `SpeculativeLoop.__call__` looks up
+# `rollback_states(runnable)` at *call* time, not install time, so both installers having
+# run by the time the loop is actually called is all that is required.
+def _install_speculative_fixed_k4(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, FixedTokenDrafter(), block_size=4, acceptance=AcceptanceRecord(block_size=4)
+    )
+
+
+register_installer("speculative_fixed_k4", _install_speculative_fixed_k4)
+
+
+def _install_speculative_fixed_k2(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, FixedTokenDrafter(), block_size=2, acceptance=AcceptanceRecord(block_size=2)
+    )
+
+
+register_installer("speculative_fixed_k2", _install_speculative_fixed_k2)
+
+
+def _install_speculative_ngram_k2(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, NgramDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, NgramDrafter(n=3), block_size=2, acceptance=AcceptanceRecord(block_size=2)
+    )
+
+
+register_installer("speculative_ngram_k2", _install_speculative_ngram_k2)
+
+
+def _install_speculative_ngram_k4(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, NgramDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, NgramDrafter(n=3), block_size=4, acceptance=AcceptanceRecord(block_size=4)
+    )
+
+
+register_installer("speculative_ngram_k4", _install_speculative_ngram_k4)
