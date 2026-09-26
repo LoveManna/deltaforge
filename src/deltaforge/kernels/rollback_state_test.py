@@ -7,7 +7,7 @@ import torch
 
 from ..config import tiny_config
 from ..kernels.rollback_state import install_rollback_state, rollback_states
-from ..reference import ReferenceModel
+from ..reference import STATE_DTYPE, GatedDeltaNet, ReferenceModel, _LinearLayerCache
 
 
 def test_keep_restores_the_cache_to_exactly_the_recorded_step():
@@ -136,6 +136,74 @@ def test_keeping_every_step_is_the_same_as_not_rolling_back_at_all():
 
     for old, new in zip(before, after):
         torch.testing.assert_close(old, new, rtol=0, atol=0)
+
+
+def _delta_net(model) -> GatedDeltaNet:
+    nets = [m for m in model.modules() if isinstance(m, GatedDeltaNet)]
+    assert nets, "the tiny config has no linear-attention layer"
+    return nets[0]
+
+
+def _fresh_cache(config) -> _LinearLayerCache:
+    history = max(config.linear_conv_kernel_dim - 1, 0)
+    return _LinearLayerCache(
+        conv=torch.zeros(1, config.linear_conv_dim, history),
+        recurrent=torch.zeros(
+            1,
+            config.linear_num_value_heads,
+            config.linear_key_head_dim,
+            config.linear_value_head_dim,
+            dtype=STATE_DTYPE,
+        ),
+    )
+
+
+def test_rollback_gated_delta_net_forward_matches_the_reference_arithmetic():
+    """I3: binds `RollbackGatedDeltaNet.forward` to `GatedDeltaNet.forward`'s arithmetic.
+
+    `RollbackGatedDeltaNet` reimplements `GatedDeltaNet.forward`'s data flow decomposed per
+    token -- forced by the reference-immutability constraint, since the per-step states this
+    module needs cannot be recorded any other way without touching `reference.py`. Nothing
+    else in this test suite compares the two: the rollback property tests above patch
+    `install_rollback_state` onto *both* sides on purpose, to isolate the rollback from the
+    decomposition (a deliberate human ruling, see the ledger), and `speculative_test.py`'s
+    `test_a_block_size_of_zero_decodes_exactly_like_the_reference` compares token ids, which
+    would only *probably* notice an arithmetic change. So a future edit to
+    `reference.GatedDeltaNet.forward` could silently diverge from the patched copy here and
+    produce wrong tokens no timing would ever reveal. This touches `reference.py` not at
+    all -- it builds one plain `GatedDeltaNet` and one patched copy from the same state dict
+    and compares them directly -- so it does not violate reference-immutability; it is the
+    mitigation for the cost that constraint imposes. If `reference.py`'s arithmetic moves,
+    this fails at edit time instead of at token time.
+
+    `reference_test.py:230`'s isolated-scan tolerance (`rtol=1e-5, atol=1e-6`) is the right
+    precedent here, not `rollback_state_test.py`'s own whole-model `rtol=1e-4, atol=1e-4`:
+    this compares one layer's output and cache in isolation, with no compounding through the
+    rest of the model, which is exactly `reference_test.py:230`'s situation.
+    """
+    config = tiny_config()
+    torch.manual_seed(0)
+
+    reference_model = ReferenceModel(config).eval()
+    reference_net = _delta_net(reference_model)
+
+    patched_model = ReferenceModel(config).eval()
+    patched_model.load_state_dict(reference_model.state_dict())
+    install_rollback_state(patched_model)
+    patched_net = _delta_net(patched_model)
+
+    for seq_len in (1, 4):
+        hidden_states = torch.randn(1, seq_len, config.hidden_size)
+        reference_cache = _fresh_cache(config)
+        patched_cache = _fresh_cache(config)
+
+        with torch.no_grad():
+            reference_out = reference_net(hidden_states, reference_cache)
+            patched_out = patched_net(hidden_states, patched_cache)
+
+        torch.testing.assert_close(reference_out, patched_out, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(reference_cache.recurrent, patched_cache.recurrent, rtol=1e-5, atol=1e-6)
+        torch.testing.assert_close(reference_cache.conv, patched_cache.conv, rtol=1e-5, atol=1e-6)
 
 
 def test_installing_it_changes_the_linear_attention_classes_and_nothing_else():

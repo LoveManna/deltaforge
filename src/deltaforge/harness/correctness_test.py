@@ -106,6 +106,12 @@ def _loop_that_flips_a_tied_token():
     `test_a_divergence_where_the_reference_was_indifferent_passes` gates on, and the
     smallest of the eight positions. Position 3, by contrast, sits at ~0.0565, which is
     why that other test picks it to demonstrate a confident divergence.
+
+    This is a `tiny_config()` model at fp32, not the checkpoint at bf16: 0.0183 exercises
+    the gate's mechanism (a gap under the ceiling passes) but says nothing about the bf16
+    ULP scale (~0.14-0.28, per `batches.py`'s `divergence_gap_ceiling` docstring and C2)
+    the production ceiling of 0.3 is actually set against. Do not read this fixture as
+    evidence for where that number belongs.
     """
     return _loop_that_flips_token(index=2)
 
@@ -613,7 +619,11 @@ def test_a_divergence_where_the_reference_was_indifferent_passes(monkeypatch, ti
     check = check_sequence(reference, candidate, [[1, 2, 3]], max_new_tokens=8, gap_ceiling=0.02)
 
     assert check.first_divergence is not None
-    assert check.reference_top2_gap <= 0.02
+    assert check.reference_top2_gap <= 0.02, (
+        f"measured gap {check.reference_top2_gap!r}, expected ~0.0183; if this drifted the "
+        "fixture is no longer a near-tie at this position and needs a new one, not a wider "
+        "ceiling in this test"
+    )
     assert check.passed
 
 

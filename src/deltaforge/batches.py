@@ -2721,10 +2721,13 @@ BATCH_010 = Batch(
                 "unknown dispatch term because the linear-attention scan runs five steps "
                 "per layer instead of one. Predicted 0.87-0.95. Above 1.25 in 1/ratio terms "
                 "and blocks longer than 2 are dead, which is registered as a kill criterion "
-                "in the spec rather than decided after the number."
+                "in the spec rather than decided after the number. The divergence gate's "
+                "ceiling is set at the measured bf16 ULP scale (0.28125, oracle_test.py:264) "
+                "rather than at a round number: below that, the gate cannot pass a single "
+                "divergence this reduction-order effect causes."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,
         ),
         Hypothesis(
             slug="063-verify-inflation-k2",
@@ -2738,10 +2741,12 @@ BATCH_010 = Batch(
                 "One variable from 062, the block size. Traffic says gamma(2) ~ 1.06 "
                 "against gamma(4) ~ 1.11, so this should lose about half as much. If it "
                 "loses as much or more, gamma is dispatch rather than traffic and the "
-                "spec's arithmetic is wrong in a way that matters more than the slot does."
+                "spec's arithmetic is wrong in a way that matters more than the slot does. "
+                "Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round "
+                "number."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,
         ),
         Hypothesis(
             slug="064-spec-ngram-k2",
@@ -2759,10 +2764,12 @@ BATCH_010 = Batch(
                 "is torch.randint token ids, and an n-gram drafter over noise has no "
                 "structure to find -- so the honest prediction here is that it lands within "
                 "noise of 063, and the result worth having is the acceptance histogram "
-                "rather than the ratio. The text workload is where this is a real question."
+                "rather than the ratio. The text workload is where this is a real question. "
+                "Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round "
+                "number."
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,
         ),
         Hypothesis(
             slug="065-spec-ngram-k4",
@@ -2777,7 +2784,8 @@ BATCH_010 = Batch(
                 "fastest with depth, so at k=4 on random ids this should sit below 064. "
                 "Registered as a loss so that a win is informative: it would mean "
                 "acceptance is holding deeper than the drafter deserves, which is worth "
-                "knowing before the int4 self-draft is built."
+                "knowing before the int4 self-draft is built. Ceiling set at the measured "
+                "bf16 ULP scale, as 062's is, not at a round number."
             ),
             requires=Precondition(
                 slug="064-spec-ngram-k2",
@@ -2792,7 +2800,7 @@ BATCH_010 = Batch(
                 ),
             ),
             correctness="sequence",
-            divergence_gap_ceiling=0.02,
+            divergence_gap_ceiling=0.3,
         ),
     ),
 )

@@ -245,10 +245,18 @@ class BatchRunner:
         import torch
 
         from .model import greedy_decode, prefill_setup
+        from .speculative import SPECULATIVE_CACHE_HEADROOM
 
         runnable = model if compile_mode is None else torch.compile(model, mode=compile_mode)
         batch = self.workload["batch_size"]
-        cache = model.new_cache(batch, self.workload["context_length"] + self.workload["decode_tokens"])
+        # `+ SPECULATIVE_CACHE_HEADROOM`: the reference step path consumes exactly
+        # `context + decode_tokens`, but a speculative candidate's verify writes
+        # `block_size + 1` positions per cycle before rewinding -- see the constant's
+        # docstring. Harmless extra capacity for every non-speculative column.
+        cache = model.new_cache(
+            batch,
+            self.workload["context_length"] + self.workload["decode_tokens"] + SPECULATIVE_CACHE_HEADROOM,
+        )
         tokens = self.workload["decode_tokens"]
         prompt = self.prompt
 
@@ -525,6 +533,13 @@ class BatchRunner:
                 self.log(f"[batch] {hypothesis.slug}: correctness gates")
                 correctness = self._run_correctness(hypothesis, candidate)
                 mark = phase("correctness", mark)
+                # I2: `_run_correctness` just free-ran the candidate's decode loop over five
+                # prompts of real tokenized text (`check_sequence`), and a speculative
+                # candidate's `AcceptanceRecord` was observing every one of those cycles.
+                # Cleared here, before the benchmark starts, so `acceptance` in the slot
+                # record describes the workload the slot claims to measure and not a mix of
+                # that and the correctness gate's own prompts.
+                _reset_acceptance(candidate)
 
                 self.log(f"[batch] {hypothesis.slug}: benchmarking")
                 self._log_memory(f"{hypothesis.slug} candidate build")
@@ -747,6 +762,26 @@ def _acceptance_from_candidate(candidate) -> dict[str, Any]:
     if acceptance is None:
         return {}
     return acceptance.to_dict()
+
+
+def _reset_acceptance(candidate) -> None:
+    """Discard whatever the candidate's decode loop has observed so far, if it has one.
+
+    I2: `AcceptanceRecord` is attached once, at install time, and never reset on its own --
+    it keeps observing for the candidate's whole life, correctness gate included. Called
+    between `_run_correctness` and the benchmark so the histogram `_acceptance_from_candidate`
+    reads at the end of the slot describes the benchmark's workload alone. Total via the same
+    `getattr` chain as `_acceptance_from_candidate`, for the same reason: a candidate with no
+    loop, or a loop built with ``acceptance=None``, must not raise into a slot that made no
+    speculative claim.
+    """
+    loop = getattr(candidate, "decode_loop", None)
+    if loop is None:
+        return
+    acceptance = getattr(loop, "acceptance", None)
+    if acceptance is None:
+        return
+    acceptance.reset()
 
 
 def _launch_shapes_now() -> dict[str, list[int]]:

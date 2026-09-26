@@ -219,6 +219,18 @@ class Hypothesis:
     #: Only for `sequence`. The largest top-2 logit gap at which a token divergence is still
     #: attributable to reduction order rather than to a bug. Registered before the rental
     #: for the same reason every other bar is.
+    #:
+    #: **Must sit at or above one bf16 ULP at this model's logit magnitude, not at a round
+    #: number.** `oracle_test.py:264` measures that ULP directly: 1-2 ULP is 0.28125 on the
+    #: checkpoint this project runs, and `batch.py`'s own reasoning above (search "one ULP
+    #: flips an argmax on this model") is why every reduction-order divergence a `sequence`
+    #: gate will ever see has a top-2 gap of roughly that size or larger. A ceiling below the
+    #: ULP floor cannot pass ANY divergence caused by reduction order — every one of them
+    #: reads as `incorrect` regardless of whether the candidate is actually wrong, which is
+    #: the gate built specifically so it *could* fail degenerating into one that can only
+    #: fail. `0.02` was that number for all four `010-speculative-verify` slots until the
+    #: whole-branch review that found it (C2); `0.3` is what replaced it, with room above the
+    #: measured band rather than sitting on top of it.
     divergence_gap_ceiling: float | None = None
     #: Registered before 2026-09-17, when `exact` was still accepted for a kernel that
     #: computes the same *function* as the reference. Batch 003 proved that is not the same
@@ -266,6 +278,17 @@ class Hypothesis:
                     f"{self.slug!r} is gated on its token sequence and must register a "
                     "divergence_gap_ceiling before the rental. Without one the gate passes "
                     "any divergence, including a corrupted recurrent state."
+                )
+            # A ceiling of 0.0 means "only an exact tie passes", which is C2's failure in
+            # its limiting form: bf16 ULP at this model's logit magnitude is ~0.14-0.28
+            # (oracle_test.py:264), so a ceiling at or below zero fails every reduction-order
+            # divergence the gate will ever see, whether or not the candidate is wrong.
+            if self.divergence_gap_ceiling <= 0.0:
+                raise ValueError(
+                    f"{self.slug!r} sets divergence_gap_ceiling={self.divergence_gap_ceiling!r}, "
+                    "which must be > 0.0. A non-positive ceiling can never pass a divergence "
+                    "caused by reduction order -- see the field's own docstring for the bf16 "
+                    "ULP floor this needs to clear."
                 )
             if self.top1_threshold is not None or self.kl_threshold is not None:
                 raise ValueError(

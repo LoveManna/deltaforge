@@ -19,6 +19,7 @@ import torch
 from torch import Tensor
 
 __all__ = [
+    "SPECULATIVE_CACHE_HEADROOM",
     "AcceptanceRecord",
     "Drafter",
     "FixedTokenDrafter",
@@ -26,6 +27,19 @@ __all__ = [
     "SpeculativeLoop",
     "install_speculative_loop",
 ]
+
+
+#: Extra cache positions a speculative decode column needs beyond `context + max_new_tokens`.
+#:
+#: The reference step path writes exactly one position per call, so `context + decode_tokens`
+#: is exactly what it consumes. This loop does not: a verify writes `block_size + 1` positions
+#: before `SpeculativeLoop.__call__` rewinds the cache to however many of them were kept, and
+#: the *final* cycle can commit up to `block_size` tokens past the `max_new_tokens` budget
+#: before the caller's `[:, :max_new_tokens]` slice truncates the returned sequence — the cache
+#: itself is written before that truncation happens. Reproduced by the controller at
+#: `context=32, tokens=16`: with no headroom, `k=2` overflowed at "46 + 3 > max_seq_len=48".
+#: 16 covers every block size this project has registered (max 4) with room to spare.
+SPECULATIVE_CACHE_HEADROOM = 16
 
 
 class Drafter(Protocol):
@@ -110,6 +124,20 @@ class AcceptanceRecord:
 
     def observe(self, accepted: int) -> None:
         self.accepted.append(accepted)
+
+    def reset(self) -> None:
+        """Discard every observation so far, keeping `block_size`.
+
+        `install_speculative_loop` (Task 5) attaches this once, at candidate-build time, and
+        the loop keeps observing into it for the rest of the candidate's life. `run_slot`
+        (I2) runs `_run_correctness` -- which free-runs the candidate over five prompts of
+        real tokenized text through `check_sequence` -- **before** the benchmark, on the same
+        loop and the same record. Without a reset, the histogram this method exists to
+        report mixes those correctness-gate cycles into the benchmark's own, and for the
+        slots this project built the histogram for, most of the recorded cycles never came
+        from the workload at all.
+        """
+        self.accepted.clear()
 
     @property
     def cycles(self) -> int:

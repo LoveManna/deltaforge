@@ -522,6 +522,57 @@ def test_the_untimed_prefill_still_fills_the_cache(monkeypatch):
     assert seen == [16, 1, 1, 1], "the timed region is the decode steps over the filled cache"
 
 
+def test_a_speculative_columns_cache_has_headroom_for_the_verify():
+    """C1 regression. `_make_column` sized every column's cache as exactly `context +
+    decode_tokens`, which is exactly what the reference step path consumes and not what
+    this loop needs: a verify writes `block_size + 1` positions per cycle before
+    `SpeculativeLoop.__call__` rewinds the cache, and the loop's final cycle can commit up
+    to `block_size` tokens past the `max_new_tokens` budget before the caller's
+    `[:, :max_new_tokens]` slice truncates the return -- the cache is written before that
+    truncation happens. The controller reproduced the overflow this exact sizing used to
+    cause at `context=32, tokens=16`: `k=2` failed at "cache overflow: 46 + 3 >
+    max_seq_len=48", and every speculative slot in a real batch would error the same way.
+
+    This drives `BatchRunner._make_column`'s own cache-sizing formula -- not a hand-rolled
+    copy of it -- with a speculative candidate installed at block_size=4, at the same
+    `context`/`tokens` shape the overflow was reproduced at. It would have failed before
+    `SPECULATIVE_CACHE_HEADROOM` existed.
+    """
+    import torch
+
+    from .batch_run import BatchRunner
+    from .config import tiny_config
+    from .kernels.rollback_state import install_rollback_state
+    from .reference import ReferenceModel
+    from .speculative import FixedTokenDrafter, install_speculative_loop
+
+    config = tiny_config()
+    context, tokens = 32, 16
+    torch.manual_seed(0)
+    prompt = torch.randint(0, config.vocab_size, (1, context))
+
+    model = ReferenceModel(config).eval()
+    install_rollback_state(model)
+    install_speculative_loop(model, FixedTokenDrafter(token_id=3), block_size=4)
+
+    runner = BatchRunner(
+        config=config,
+        reference=model,
+        prompt=prompt,
+        prompt_ids=None,
+        workload={"batch_size": 1, "context_length": context, "decode_tokens": tokens},
+        weights_dtype=torch.float32,
+        bench_config=None,
+        max_new_tokens=tokens,
+        columns=("compiled",),
+        log=silent,
+    )
+    setup, run = runner._make_column(model, None)
+
+    setup()  # the untimed prefill every bench column runs before its timed decode
+    run()  # must not raise "cache overflow"; the assertion is that this returns at all
+
+
 # -- dynamo's recompile limit, which is a ceiling on how many slots a batch can measure ----
 
 
@@ -1072,3 +1123,33 @@ def test_a_decode_loop_with_no_acceptance_record_records_no_acceptance():
     candidate = SimpleNamespace(decode_loop=SpeculativeLoop(FixedTokenDrafter(), 2, acceptance=None))
 
     assert _acceptance_from_candidate(candidate) == {}
+
+
+def test_reset_acceptance_clears_the_candidates_decode_loop_record():
+    """I2 regression. `_run_correctness` free-runs the candidate's loop over real text
+    before the benchmark ever starts, and without this reset those cycles stay in the same
+    `AcceptanceRecord` the benchmark then adds to -- so the histogram `064`/`065` exist to
+    produce mixes correctness-gate cycles into the workload's own."""
+    from .batch_run import _reset_acceptance
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, SpeculativeLoop
+
+    record = AcceptanceRecord(block_size=2)
+    record.observe(2)
+    record.observe(0)
+    candidate = SimpleNamespace(decode_loop=SpeculativeLoop(FixedTokenDrafter(), 2, record))
+
+    _reset_acceptance(candidate)
+
+    assert record.cycles == 0
+    assert _acceptance_from_candidate(candidate)["cycles"] == 0
+
+
+def test_reset_acceptance_is_a_noop_without_a_decode_loop_or_a_record():
+    """The same totality `_acceptance_from_candidate` has, for the same reason: a
+    non-speculative candidate, or a gamma-only loop built with `acceptance=None`, must not
+    raise into a slot that made no speculative claim."""
+    from .batch_run import _reset_acceptance
+    from .speculative import FixedTokenDrafter, SpeculativeLoop
+
+    _reset_acceptance(SimpleNamespace())  # no decode_loop at all
+    _reset_acceptance(SimpleNamespace(decode_loop=SpeculativeLoop(FixedTokenDrafter(), 2, acceptance=None)))

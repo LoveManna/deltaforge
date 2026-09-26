@@ -9,6 +9,7 @@ checks all this actually fires. Those are the parts that would fail silently.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 import pytest
 import torch
@@ -338,3 +339,81 @@ def test_a_text_workload_exists_with_the_headline_shape():
     assert text["decode_tokens"] == headline["decode_tokens"]
     assert text["prompt"] == "text"
     assert headline.get("prompt", "random") == "random"
+
+
+def test_workload_prompt_refuses_an_unrecognised_prompt_kind():
+    """I1's required test: the silent-substitution failure made structurally impossible.
+
+    Before `_workload_prompt` existed, `cmd_batch` built its prompt with `torch.randint`
+    unconditionally and never looked at `workload["prompt"]` at all, so
+    `--batch 010-speculative-verify --workload headline_text` silently ran on random token
+    ids -- exactly the failure this asserts can no longer happen: an unrecognised prompt
+    kind must refuse loudly rather than fall back to noise. Chosen over a full
+    `cmd_batch`-builds-text-prompt test because `cmd_batch` needs CUDA and a checkpoint to
+    run at all; this is what is honestly testable on a CPU.
+    """
+    from .cli import _workload_prompt
+
+    with pytest.raises(SystemExit, match="unknown workload prompt"):
+        _workload_prompt(
+            weights=None,
+            workload={"batch_size": 1, "context_length": 8, "prompt": "surprise"},
+            vocab_size=32,
+            device="cpu",
+        )
+
+
+def test_workload_prompt_routes_a_text_workload_to_the_text_prompt(monkeypatch):
+    """The mechanism `cmd_batch` now shares with `_build_columns`: a `prompt: "text"`
+    workload must reach `_text_prompt`, not `torch.randint`. `_text_prompt` itself needs a
+    real tokenizer file, so it is stubbed here -- what this proves is the routing, which is
+    exactly what was missing from `cmd_batch` before this fix."""
+    import deltaforge.cli as cli_module
+
+    calls = []
+
+    def fake_text_prompt(weights, batch, context, device):
+        calls.append((weights, batch, context, device))
+        return torch.zeros((batch, context), dtype=torch.long)
+
+    monkeypatch.setattr(cli_module, "_text_prompt", fake_text_prompt)
+
+    prompt = cli_module._workload_prompt(
+        weights=Path("/weights"),
+        workload={"batch_size": 2, "context_length": 8, "prompt": "text"},
+        vocab_size=32,
+        device="cpu",
+    )
+
+    assert calls == [(Path("/weights"), 2, 8, "cpu")]
+    assert prompt.shape == (2, 8)
+
+
+def test_workload_prompt_defaults_to_random_ids_when_unspecified():
+    """Unspecified (the `headline`/`batch32` workloads) and explicit `"random"` must both
+    keep behaving exactly as `torch.randint` always did -- this refactor changes which path
+    reaches `cmd_batch`, not what either existing workload measures."""
+    from .cli import _workload_prompt
+
+    torch.manual_seed(0)
+    prompt = _workload_prompt(
+        weights=None, workload={"batch_size": 3, "context_length": 5}, vocab_size=17, device="cpu"
+    )
+
+    assert prompt.shape == (3, 5)
+    assert prompt.dtype == torch.long
+    assert int(prompt.max()) < 17
+
+
+def test_cmd_batch_builds_its_prompt_through_the_shared_workload_helper():
+    """Static, not behavioural: `cmd_batch` needs CUDA and a checkpoint to actually run, so
+    this is the honest way to assert the fix is wired in rather than merely available.
+    Before this, `cmd_batch`'s own body called `torch.randint` unconditionally and never
+    referenced `_workload_prompt` or `workload["prompt"]` at all."""
+    import inspect
+
+    from .cli import cmd_batch
+
+    source = inspect.getsource(cmd_batch)
+    assert "_workload_prompt(" in source
+    assert "torch.randint(" not in source

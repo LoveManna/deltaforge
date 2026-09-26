@@ -144,6 +144,22 @@ def test_the_loop_records_what_it_accepted():
     assert record.histogram[0] == 6
 
 
+def test_reset_clears_observations_but_keeps_block_size():
+    """I2: `run_slot` reuses this record's `block_size` after clearing it, so a reset that
+    also lost `block_size` would corrupt the histogram it is meant to make trustworthy."""
+    record = AcceptanceRecord(block_size=4)
+    record.observe(4)
+    record.observe(2)
+
+    record.reset()
+
+    assert record.accepted == []
+    assert record.cycles == 0
+    assert record.mean_accepted == 0.0
+    assert record.block_size == 4
+    assert record.histogram == {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+
+
 class _OracleDrafter:
     """Drafts the reference's own continuation. Only a test fixture: it has the answer.
 

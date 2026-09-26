@@ -578,6 +578,16 @@ def test_a_sequence_gated_hypothesis_with_a_ceiling_is_accepted():
     assert hypothesis.kl_threshold is None
 
 
+def test_a_non_positive_gap_ceiling_is_refused():
+    """C2's failure in its limiting form: a ceiling of 0.0 means only an exact tie passes,
+    which cannot pass a single reduction-order divergence -- bf16 ULP at this model's logit
+    magnitude is ~0.14-0.28, per the field's own docstring."""
+    with pytest.raises(ValueError, match="divergence_gap_ceiling"):
+        make_hypothesis(slug="062-x", correctness="sequence", divergence_gap_ceiling=0.0)
+    with pytest.raises(ValueError, match="divergence_gap_ceiling"):
+        make_hypothesis(slug="062-x", correctness="sequence", divergence_gap_ceiling=-0.01)
+
+
 def test_a_gap_ceiling_registered_against_a_policy_that_never_reads_it_is_refused():
     with pytest.raises(ValueError, match="never reads it"):
         make_hypothesis(slug="062-x", correctness="approximate", divergence_gap_ceiling=0.02)

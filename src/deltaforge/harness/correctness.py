@@ -35,6 +35,7 @@ import torch
 
 from ..model import greedy_decode
 from ..reference import ReferenceModel
+from ..speculative import SPECULATIVE_CACHE_HEADROOM
 
 __all__ = [
     "DEFAULT_CHUNK_TOKENS",
@@ -523,17 +524,21 @@ def check_sequence(
     for ids in prompt_token_ids:
         prompt = torch.tensor([list(ids)], dtype=torch.long, device=device)
         with torch.no_grad():
+            # `+ SPECULATIVE_CACHE_HEADROOM`: this gate is the one `correctness="sequence"`
+            # hypotheses use, and every one of them is a speculative candidate. Its verify
+            # writes `block_size + 1` positions per cycle before rewinding -- see the
+            # constant's docstring in `speculative.py` for the full arithmetic.
             expected = greedy_decode(
                 reference_model,
                 prompt,
                 max_new_tokens,
-                cache=reference_model.new_cache(1, len(ids) + max_new_tokens + 16),
+                cache=reference_model.new_cache(1, len(ids) + max_new_tokens + SPECULATIVE_CACHE_HEADROOM),
             )
             got = greedy_decode(
                 candidate_model,
                 prompt,
                 max_new_tokens,
-                cache=candidate_model.new_cache(1, len(ids) + max_new_tokens + 16),
+                cache=candidate_model.new_cache(1, len(ids) + max_new_tokens + SPECULATIVE_CACHE_HEADROOM),
             )
         differing = (expected != got).nonzero()
         if differing.numel() == 0:

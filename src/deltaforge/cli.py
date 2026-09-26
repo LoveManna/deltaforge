@@ -236,6 +236,33 @@ def _text_prompt(weights: Path, batch: int, context: int, device: str) -> torch.
     return torch.tensor([repeated] * batch, dtype=torch.long, device=device)
 
 
+def _workload_prompt(weights: Path, workload: dict, vocab_size: int, device: str) -> torch.Tensor:  # noqa: F821
+    """The prompt a workload's own ``prompt`` field names, shared by every caller that builds one.
+
+    Before this helper existed, `_build_columns` (the `cmd_bench` path) honoured
+    ``prompt: "text"`` and `cmd_batch` did not -- it built its prompt with ``torch.randint``
+    unconditionally, so ``--batch 010-speculative-verify --workload headline_text`` silently
+    ran on random token ids. That guts the slot the workload was built for: `NgramDrafter`'s
+    whole claim is that its acceptance depends on the prompt having structure to find, and
+    noise has none. Routing both paths through this one function is what makes that
+    substitution impossible rather than merely fixed in one place: an unrecognised
+    ``prompt`` value refuses loudly here instead of falling back to noise.
+    """
+    import torch  # noqa: PLC0415
+
+    batch = workload["batch_size"]
+    context = workload["context_length"]
+    kind = workload.get("prompt", "random")
+    if kind == "text":
+        return _text_prompt(weights, batch, context, device=device)
+    if kind == "random":
+        return torch.randint(0, vocab_size, (batch, context), device=device, dtype=torch.long)
+    raise SystemExit(
+        f"unknown workload prompt kind {kind!r}; known: 'random', 'text'. Refusing to guess "
+        "rather than silently falling back to random token ids."
+    )
+
+
 def cmd_correctness(args: argparse.Namespace) -> int:
     from .harness.correctness import CorrectnessReport, check_end_to_end
     from .harness.prompts import CORRECTNESS_PROMPTS, PROMPT_DIGEST
@@ -345,6 +372,7 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     import torch
 
     from .model import greedy_decode, prefill_setup
+    from .speculative import SPECULATIVE_CACHE_HEADROOM
 
     _config, reference, candidate = _load_models(args)
     workload = DEFAULT_WORKLOADS[args.workload]
@@ -352,18 +380,16 @@ def _build_columns(args: argparse.Namespace) -> tuple[dict[str, Callable], dict[
     context = workload["context_length"]
     tokens = workload["decode_tokens"]
 
-    if workload.get("prompt") == "text":
-        prompt = _text_prompt(Path(args.weights), batch, context, device="cuda")
-    else:
-        prompt = torch.randint(
-            0, reference.config.vocab_size, (batch, context), device="cuda", dtype=torch.long
-        )
+    prompt = _workload_prompt(Path(args.weights), workload, reference.config.vocab_size, device="cuda")
 
     def make(model, compile_mode: str | None):
         runnable = model
         if compile_mode is not None:
             runnable = torch.compile(model, mode=compile_mode)
-        cache = model.new_cache(batch, context + tokens)
+        # `+ SPECULATIVE_CACHE_HEADROOM`: see the constant's docstring. A speculative
+        # candidate's verify writes `block_size + 1` positions per cycle before rewinding,
+        # which the reference step path's exact `context + tokens` sizing has no room for.
+        cache = model.new_cache(batch, context + tokens + SPECULATIVE_CACHE_HEADROOM)
         # Prefilled once and restored per round; `model.prefill_setup` says what that saves
         # and why it is sound.
         setup = prefill_setup(model, prompt, cache)
@@ -533,13 +559,11 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
     config, reference = _load_reference_only(args)
     prompt_ids = _tokenize_prompts(Path(args.weights), CORRECTNESS_PROMPTS)
-    prompt = torch.randint(
-        0,
-        reference.config.vocab_size,
-        (workload["batch_size"], workload["context_length"]),
-        device="cuda",
-        dtype=torch.long,
-    )
+    # `_workload_prompt` is what makes a `prompt: "text"` workload -- `headline_text`, which
+    # batch 010's n-gram slots depend on -- reach the batch runner. Before this, `cmd_batch`
+    # built its prompt with `torch.randint` unconditionally and `--workload headline_text`
+    # silently ran on random token ids.
+    prompt = _workload_prompt(Path(args.weights), workload, reference.config.vocab_size, device="cuda")
 
     runner = BatchRunner(
         config=config,
