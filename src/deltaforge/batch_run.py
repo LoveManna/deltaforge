@@ -63,7 +63,7 @@ __all__ = [
 DEFAULT_RECOMPILE_LIMIT = 8
 
 
-def recompile_limit_for(slots: int) -> int:
+def recompile_limit_for(slots: int, entries_per_slot: int = 2) -> int:
     """How many dynamo cache entries a batch of ``slots`` hypotheses legitimately needs.
 
     Every slot builds a fresh candidate module and compiles it, and dynamo caches per
@@ -77,12 +77,58 @@ def recompile_limit_for(slots: int) -> int:
     between 0.146 and 0.157, because every one of them was measuring eager against
     compiled rather than a kernel against inductor.
 
-    Two entries per slot covers the candidate and its dynamic-shape variant, plus the
-    default for the reference and whatever else shares those code objects. Still bounded,
-    and deliberately: a limit that grew without end would hide the runaway recompilation
-    this setting exists to catch.
+    ``entries_per_slot`` is 2 for a candidate that replaces a *module*: the candidate and
+    its dynamic-shape variant. A candidate that replaces the decode *loop* needs 3, because
+    it calls `ReferenceModel.forward` at two structurally different shapes — `(seq=1,
+    num_logits_to_keep=1)` to commit the prefill's token, and `(seq=k+1,
+    num_logits_to_keep=k+1)` to verify a block — and each gets its own cache entry before
+    any dynamic variant. `_entries_per_slot_for` reads that off the batch rather than
+    making every batch pay for it, which is what keeps `recompile_limit_for(7)` at the 22
+    that batch 003's record cites.
+
+    Still bounded, and deliberately: a limit that grew without end would hide the runaway
+    recompilation this setting exists to catch.
     """
-    return min(64, max(DEFAULT_RECOMPILE_LIMIT, 2 * slots + DEFAULT_RECOMPILE_LIMIT))
+    return min(64, max(DEFAULT_RECOMPILE_LIMIT, entries_per_slot * slots + DEFAULT_RECOMPILE_LIMIT))
+
+
+def _installs_a_decode_loop(entry) -> bool:
+    """Whether a registry entry installs a decode *loop* rather than swapping a module.
+
+    The marker is the entry's `impl` being `install_speculative_loop` itself. `replaces`
+    cannot serve: a loop candidate registers against `decode_step`, and so do fifteen
+    ordinary module-swap kernels — it names the operation, not the shape of the
+    replacement. A list of kernel names would go stale the day someone writes a fifth
+    drafter. This identity check is exact, needs no new field on `KernelEntry`, and gives
+    the four entries' shared `impl` an actual job: it was previously metadata that nothing
+    read and whose signature nothing could have called.
+    """
+    try:
+        from .speculative import install_speculative_loop  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - the smoke path may not have torch
+        return False
+    return getattr(entry, "impl", None) is install_speculative_loop
+
+
+def _entries_per_slot_for(batch) -> int:
+    """3 if any hypothesis in ``batch`` installs a decode loop, else 2.
+
+    Read off the registry, so a decode-loop kernel written after this function still raises
+    the limit without anyone remembering to update a list here.
+
+    Falls back to 2 if the registry cannot be consulted, and skips any kernel name it does
+    not know — the CPU tests drive `run_batch` with a fake runner and hand-built hypotheses
+    whose kernels need not be registered, and an unregistered name there must not raise.
+    """
+    try:
+        from .kernels import REGISTRY  # noqa: PLC0415
+    except ImportError:  # pragma: no cover - the smoke path may not have the package
+        return 2
+    for hypothesis in batch:
+        for name in hypothesis.kernels:
+            if name in REGISTRY and _installs_a_decode_loop(REGISTRY.get(name)):
+                return 3
+    return 2
 
 
 #: The scoring comparison, and the reason a batch is worth running at all: identical
@@ -938,14 +984,14 @@ def reference_gbps(result: SlotResult) -> float | None:
     return float(value) if value else None
 
 
-def _raise_recompile_limit(slots: int, log=print) -> None:
+def _raise_recompile_limit(slots: int, log=print, entries_per_slot: int = 2) -> None:
     """Give dynamo room for one candidate per slot, and say so in the log.
 
     Torch renamed `cache_size_limit` to `recompile_limit`; both names are set where they
     exist so this works either side of that. Imported lazily and suppressed, because
     `run_batch` is driven by a fake runner in the CPU tests and must not require torch.
     """
-    wanted = recompile_limit_for(slots)
+    wanted = recompile_limit_for(slots, entries_per_slot)
     try:
         from torch._dynamo import config as dynamo_config  # noqa: PLC0415
     except ImportError:  # pragma: no cover - CPU test path has torch, the smoke path may not
@@ -953,7 +999,10 @@ def _raise_recompile_limit(slots: int, log=print) -> None:
     for name in ("recompile_limit", "cache_size_limit"):
         if getattr(dynamo_config, name, None) is not None:
             setattr(dynamo_config, name, wanted)
-    log(f"[batch] dynamo recompile limit raised to {wanted} for {slots} slots")
+    log(
+        f"[batch] dynamo recompile limit raised to {wanted} for {slots} slots "
+        f"({entries_per_slot} cache entries per slot)"
+    )
 
 
 def run_batch(
@@ -969,7 +1018,7 @@ def run_batch(
     Returns ``(results, calibrated, prediction_scores)``. ``calibrated`` is ``None`` when
     the batch has no identity slot, which is itself worth seeing in the record.
     """
-    _raise_recompile_limit(len(batch), log=log)
+    _raise_recompile_limit(len(batch), log=log, entries_per_slot=_entries_per_slot_for(batch))
     runner.prepare_reference()
 
     results: list[SlotResult] = []

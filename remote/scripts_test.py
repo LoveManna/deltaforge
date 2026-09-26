@@ -2559,3 +2559,78 @@ def test_run_remote_passes_prefer_machines_through_to_provision():
 
     assert "--prefer-machines" in script
     assert "DF_PROVISION_ARGS --prefer-machines" in script
+
+
+def test_a_batch_run_forwards_the_workload_to_the_cli(workdir):
+    """Batch 010 is the first batch whose number depends on what the prompt *says*.
+
+    `064`/`065` draft with an n-gram drafter, whose acceptance is a property of the token
+    distribution; `headline`'s prompt is `torch.randint` ids, which have none. Task 8 added
+    the `headline_text` workload and `cli batch` has always accepted `--workload`, but this
+    script never passed one -- so the workload was reachable from `cli bench` and from no
+    rental at all.
+    """
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="wl", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="wl",
+                instance_id="a",
+                actual_minutes=1.0,
+                actual_cost_usd=0.01,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "wl",
+        "--batch",
+        "010-speculative-verify",
+        "--workload",
+        "headline_text",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "cli batch" in result.stderr
+    assert "--workload 'headline_text'" in result.stderr
+
+
+def test_a_batch_run_without_a_workload_passes_none_and_takes_the_cli_default(workdir):
+    """The flag is opt-in: every invocation that predates it must be byte-unchanged."""
+    ledger = write_ledger(
+        workdir / "ledger" / "spend.jsonl",
+        [
+            ledger_line(session_id="wl-default", instance_id="a"),
+            ledger_line(
+                event="destroy",
+                session_id="wl-default",
+                instance_id="a",
+                actual_minutes=1.0,
+                actual_cost_usd=0.01,
+            ),
+        ],
+    )
+
+    result = run(
+        "run_remote.sh",
+        "--dry-run",
+        "--session-id",
+        "wl-default",
+        "--batch",
+        "010-speculative-verify",
+        "--ledger",
+        str(ledger),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert "cli batch" in result.stderr
+    assert "--workload" not in result.stderr

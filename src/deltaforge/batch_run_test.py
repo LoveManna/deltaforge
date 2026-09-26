@@ -635,6 +635,62 @@ def test_the_batch_raises_the_recompile_limit_to_cover_every_slot():
     assert recompile_limit_for(9) <= 64
     # Never lowers what torch already allows.
     assert recompile_limit_for(1) >= 8
+    # Batch 003's record cites this number, and that batch has run: a module-swap batch
+    # must keep the budget it was measured under.
+    assert recompile_limit_for(7) == 22
+
+
+def test_a_decode_loop_batch_earns_a_third_cache_entry_per_slot():
+    """A loop candidate calls `forward` at two shapes, so two entries per slot is short.
+
+    A module swap is one shape plus its dynamic variant. A speculative candidate commits
+    the prefill's token at `(seq=1, num_logits_to_keep=1)` and verifies a block at
+    `(seq=k+1, num_logits_to_keep=k+1)`, and each gets its own dynamo cache entry before
+    any dynamic variant. Batch 010 at the old budget landed inside the margin where batch
+    008 lost six of nine slots to a silent eager fallback.
+    """
+    from .batch_run import _entries_per_slot_for, recompile_limit_for
+    from .batches import BATCH_010
+
+    assert recompile_limit_for(5, 3) > recompile_limit_for(5, 2)
+    assert _entries_per_slot_for(BATCH_010) == 3
+
+
+def test_a_module_swap_batch_keeps_two_cache_entries_per_slot():
+    """The third entry is bought by the decode loop, not by every batch that follows it."""
+    from .batch_run import _entries_per_slot_for
+    from .batches import BATCH_003
+
+    assert _entries_per_slot_for(BATCH_003) == 2
+
+
+def test_an_unregistered_kernel_name_does_not_break_the_entry_count():
+    """`run_batch` is driven by hand-built hypotheses in these tests, whose kernels are not
+    registered. Looking one up must answer 'not a decode loop', not raise."""
+    from .batch_run import _entries_per_slot_for
+
+    assert _entries_per_slot_for(batch_of(hyp(slug="001-x", kernels=("no_such_kernel",)))) == 2
+    assert _entries_per_slot_for(batch_of(hyp(slug="002-y", kernels=("k", "also_absent")))) == 2
+
+
+def test_the_decode_loop_marker_is_the_installer_not_the_operation_it_replaces():
+    """`replaces="decode_step"` names the operation, not the shape of the replacement.
+
+    Fifteen ordinary module-swap kernels register against `decode_step` too, so using it as
+    the marker would have bought every batch since 002 a cache entry it does not need. The
+    marker is the entry's `impl` being `install_speculative_loop`.
+    """
+    from .batch_run import _installs_a_decode_loop
+    from .kernels import REGISTRY
+
+    loops = {entry.name for entry in REGISTRY if _installs_a_decode_loop(entry)}
+    assert loops == {
+        "speculative_fixed_k2",
+        "speculative_fixed_k4",
+        "speculative_ngram_k2",
+        "speculative_ngram_k4",
+    }
+    assert not _installs_a_decode_loop(REGISTRY.get("rollback_state"))
 
 
 def test_a_slot_records_how_many_graphs_dynamo_actually_compiled():

@@ -183,6 +183,18 @@ class SpeculativeLoop:
     def __init__(self, drafter: Drafter, block_size: int, acceptance: AcceptanceRecord | None = None):
         if block_size < 0:
             raise ValueError(f"block_size must be non-negative, got {block_size}")
+        if block_size > SPECULATIVE_CACHE_HEADROOM:
+            # The headroom every caller sizes its cache with is a constant, and this is
+            # what ties it to the block size it has to cover. Without this check a kernel
+            # registering a larger block reproduces the cache overflow that voided the
+            # first attempt at batch 010 -- loudly, but not until a card was rented and the
+            # correctness gate had already passed, which is the most expensive place to
+            # find out. Raise the constant and this refusal goes away.
+            raise ValueError(
+                f"block_size {block_size} exceeds SPECULATIVE_CACHE_HEADROOM "
+                f"({SPECULATIVE_CACHE_HEADROOM}), so a verify would write past the end of a "
+                "cache sized by it. Raise the constant to at least the block size."
+            )
         self.drafter = drafter
         self.block_size = block_size
         self.acceptance = acceptance

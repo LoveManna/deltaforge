@@ -44,6 +44,13 @@ DF_BATCH="${DF_BATCH:-}"
 # of those columns score -- `compiled` and `candidate_compiled`. Dropping the two eager
 # diagnostic columns is the cheapest way to fit a 32 GB card.
 DF_COLUMNS="${DF_COLUMNS:-}"
+# Empty means "let the CLI pick its default", which is `headline`. It is passed through
+# only when set, so no existing invocation changes behaviour. It exists because batch 010
+# is the first batch whose measured number depends on what the prompt *says*: 064 and 065
+# draft with an n-gram drafter, whose acceptance is a property of the token distribution,
+# and `headline`'s prompt is `torch.randint` ids, which have none. Without this the text
+# workload was reachable from `cli bench` and from no rental.
+DF_WORKLOAD="${DF_WORKLOAD:-}"
 DF_LEDGER="${DF_LEDGER:-$DF_REPO_ROOT/ledger/spend.jsonl}"
 # 180 rather than 120: the cold-cache arithmetic in
 # docs/superpowers/specs/2026-09-10-compile-cost-and-memory-design.md §4.1 puts one
@@ -138,6 +145,11 @@ Usage: remote/run_remote.sh [options]
   --columns LIST            Comma-separated benchmark columns, or 'all'. Each column
                             is a resident model state on the card; the scoring pair
                             is compiled,candidate_compiled.
+  --workload NAME           Benchmark workload (default: the CLI's own, headline).
+                            Only matters where the prompt does: headline_text is the
+                            same shape on real tokens, and an n-gram drafter's
+                            acceptance is a property of the token distribution that
+                            torch.randint ids do not have.
   --model REPO_ID           Checkpoint to benchmark (default: Qwen/Qwen3.5-4B).
   --ledger PATH             Ledger file (default: ledger/spend.jsonl).
   --session-limit N         Session GPU-time soft gate, in minutes (default: 180).
@@ -169,6 +181,7 @@ while [ $# -gt 0 ]; do
         --hypothesis)        DF_HYPOTHESIS="$2"; shift ;;
         --batch)             DF_BATCH="$2"; shift ;;
         --columns)           DF_COLUMNS="$2"; shift ;;
+        --workload)          DF_WORKLOAD="$2"; shift ;;
         --model)             DF_MODEL="$2"
                              DF_WEIGHTS_DIR="/workspace/$(printf '%s' "${DF_MODEL#*/}" | tr 'A-Z' 'a-z')"
                              shift ;;
@@ -776,7 +789,7 @@ already used ${SESSION_MINUTES}, this rental ${DF_ELAPSED_MINUTES}, reserve ${DF
     # expandable_segments costs nothing and buys back the allocator fragmentation that a
     # sequence of max-autotune compilations leaves behind. It is not a fix for genuinely
     # not fitting -- see --columns for that -- but the OOM messages asked for it by name.
-    remote_sh "$DF_COMPILE_ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE' --phases-env '$DF_REMOTE_CACHE/phases.env'${DF_COLUMNS:+ --columns '$DF_COLUMNS'}"
+    remote_sh "$DF_COMPILE_ENV PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True timeout ${DF_BATCH_TIMEOUT} python -m deltaforge.cli batch --model '$DF_MODEL' --weights '$DF_WEIGHTS_DIR' --session-id '$DF_SESSION_ID' --batch '$DF_BATCH' --deadline-epoch '$DF_BATCH_DEADLINE' --instance-id '$DF_INSTANCE_ID' --hourly-rate '$DF_INSTANCE_RATE' --phases-env '$DF_REMOTE_CACHE/phases.env'${DF_COLUMNS:+ --columns '$DF_COLUMNS'}${DF_WORKLOAD:+ --workload '$DF_WORKLOAD'}"
 else
     if df_stage_should_fail correctness; then
         df_die "correctness gate failed (simulated)"
