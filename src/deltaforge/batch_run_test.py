@@ -16,6 +16,7 @@ import pytest
 from .batch import Batch, Hypothesis, Precondition, SlotBudget
 from .batch_run import (
     SlotResult,
+    _acceptance_from_candidate,
     _no_new_graph_reading,
     release_compiled_state,
     run_batch,
@@ -898,3 +899,176 @@ def test_the_reading_declines_to_guess_without_timings():
     reading = _no_new_graph_reading(SimpleNamespace(timings_ms={}, median_ms={}))
     assert "DID compile" not in reading
     assert "no compile happened" not in reading
+
+
+# -- speculative decoding: the no-op guard, the sequence gate, and what the loop accepted --
+
+
+def _tiny_reference():
+    from .config import tiny_config
+    from .reference import ReferenceModel
+
+    return ReferenceModel(tiny_config()).eval()
+
+
+def _install_test_kernel(monkeypatch, name: str, installer, replaces: str = "decode_step") -> None:
+    """Make `_build_candidate` see a single champion kernel called ``name``.
+
+    `_build_candidate` and `_run_correctness` reach the kernel registry and the installer
+    table through deferred imports (``from .kernels import REGISTRY``, done fresh on every
+    call), which is exactly what `_column_under_test` already relies on to redirect
+    `torch.compile`: patching the attribute on the real module is what a later deferred
+    import picks up. `scoped_registry` on its own is not enough here, because both
+    functions read the *global* `REGISTRY` before scoping it down.
+    """
+    from . import kernels as kernels_module
+    from . import model as model_module
+    from .kernels import KernelRegistry, KernelStatus
+
+    registry = KernelRegistry()
+    registry.register(name, impl=lambda *_a, **_k: None, replaces=replaces, status=KernelStatus.CHAMPION)
+    monkeypatch.setattr(kernels_module, "REGISTRY", registry)
+    monkeypatch.setitem(model_module.INSTALLERS, name, installer)
+
+
+def _runner_with_reference(reference, config=None):
+    """A `BatchRunner` carrying a real (tiny) reference model, for `_build_candidate`."""
+    from .batch_run import BatchRunner
+    from .config import tiny_config
+    from .harness.bench import BenchConfig
+
+    return BatchRunner(
+        config=config or tiny_config(),
+        reference=reference,
+        prompt=None,
+        prompt_ids=None,
+        workload={"batch_size": 1, "context_length": 16, "decode_tokens": 3},
+        weights_dtype=None,
+        bench_config=BenchConfig(rounds=3, warmup_rounds=1),
+        max_new_tokens=3,
+        columns=("compiled", "candidate_compiled"),
+        log=silent,
+    )
+
+
+def test_a_candidate_that_only_installs_a_decode_loop_is_not_a_no_op(monkeypatch):
+    """The guard exists because a candidate identical to the reference measures 1.00 and
+    reads as a well-behaved null. A loop installer changes no module class and is still the
+    largest behavioural change any candidate here has made."""
+    from .speculative import FixedTokenDrafter, install_speculative_loop
+
+    def loop_installer(model, _entry) -> None:
+        install_speculative_loop(model, FixedTokenDrafter(), block_size=1)
+
+    monkeypatch.setattr("torch.cuda.synchronize", lambda: None)
+    _install_test_kernel(monkeypatch, "loop_only_kernel", loop_installer)
+
+    runner = _runner_with_reference(_tiny_reference())
+    hypothesis = hyp("064-loop-only", kernels=("loop_only_kernel",))
+
+    candidate = runner._build_candidate(hypothesis)
+
+    assert candidate.decode_loop is not None
+
+
+def test_a_candidate_that_changes_nothing_and_installs_no_loop_is_still_rejected(monkeypatch):
+    """The guard's actual job: a kernel whose installer is a genuine no-op -- no module
+    class changed, no decode loop installed -- must still be refused. Widening the guard
+    for a loop installer must not have widened it for this."""
+
+    def noop_installer(_model, _entry) -> None:
+        return None
+
+    monkeypatch.setattr("torch.cuda.synchronize", lambda: None)
+    _install_test_kernel(monkeypatch, "genuinely_noop_kernel", noop_installer)
+
+    runner = _runner_with_reference(_tiny_reference())
+    hypothesis = hyp("065-genuinely-noop", kernels=("genuinely_noop_kernel",))
+
+    with pytest.raises(RuntimeError, match="changed no module class and installed no decode loop"):
+        runner._build_candidate(hypothesis)
+
+
+def _sequence_gated_hypothesis(slug: str = "066-spec-sequence") -> Hypothesis:
+    return Hypothesis(
+        slug=slug,
+        kernels=("loop_only_kernel",),
+        category="A",
+        byte_share=0.01,
+        mechanism="installs a speculative decode loop",
+        prediction="inconclusive",
+        rationale="a rationale long enough to be a claim rather than a label, stated up front",
+        correctness="sequence",
+        divergence_gap_ceiling=0.02,
+    )
+
+
+def test_a_sequence_gated_slot_runs_the_sequence_gate(monkeypatch):
+    """`Hypothesis.correctness == "sequence"` must reach `check_sequence`, with the
+    hypothesis's own registered ceiling and not some other gate's threshold."""
+    from .harness import correctness
+
+    _install_test_kernel(monkeypatch, "loop_only_kernel", lambda *_a, **_k: None)
+    calls: list[dict] = []
+
+    def fake_check_sequence(*_args, **kwargs):
+        calls.append(kwargs)
+        return correctness.SequenceCheck(
+            num_prompts=1, first_divergence=None, reference_top2_gap=None, gap_ceiling=kwargs["gap_ceiling"]
+        )
+
+    monkeypatch.setattr(correctness, "check_sequence", fake_check_sequence)
+
+    runner = _runner_with_reference(_tiny_reference())
+    runner.prompt_ids = [[1, 2, 3]]
+    hypothesis = _sequence_gated_hypothesis()
+
+    report = runner._run_correctness(hypothesis, candidate=object())
+
+    assert calls and calls[0]["gap_ceiling"] == 0.02
+    assert report["passed"] is True
+
+
+# -- what the slot record carries about what the loop accepted -------------------------
+
+
+def test_the_slot_record_carries_the_acceptance_field():
+    """`to_slot_dict` must surface `acceptance`, the same way it already does `card`."""
+    result = SlotResult(hypothesis=hyp("a"), outcome="win", acceptance={"mean_accepted": 1.5})
+
+    assert result.to_slot_dict()["acceptance"] == {"mean_accepted": 1.5}
+
+
+def test_acceptance_is_read_off_the_candidates_decode_loop():
+    """The record without threading a second value through `run_slot`: the loop the
+    candidate carries already holds everything a reader needs."""
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, SpeculativeLoop
+
+    record = AcceptanceRecord(block_size=2)
+    record.observe(2)
+    record.observe(0)
+    candidate = SimpleNamespace(decode_loop=SpeculativeLoop(FixedTokenDrafter(), 2, record))
+
+    acceptance = _acceptance_from_candidate(candidate)
+
+    assert acceptance["mean_accepted"] == 1.0
+    assert acceptance["cycles"] == 2
+
+
+def test_a_candidate_with_no_decode_loop_records_no_acceptance():
+    """A non-speculative slot's candidate has no `decode_loop` attribute at all, and must
+    not pay for a field it never claimed."""
+    candidate = SimpleNamespace()
+
+    assert _acceptance_from_candidate(candidate) == {}
+
+
+def test_a_decode_loop_with_no_acceptance_record_records_no_acceptance():
+    """`install_speculative_loop` defaults `acceptance` to `None`. A loop installed without
+    one -- `FixedTokenDrafter`'s own gamma-only slots do this -- must read as empty, not
+    crash `run_slot`."""
+    from .speculative import FixedTokenDrafter, SpeculativeLoop
+
+    candidate = SimpleNamespace(decode_loop=SpeculativeLoop(FixedTokenDrafter(), 2, acceptance=None))
+
+    assert _acceptance_from_candidate(candidate) == {}
