@@ -462,3 +462,12 @@ register_installer("inline_causal_conv", _install_inline_causal_conv)
 register_installer("int4_head_triton_op", _install_int4_head_triton_op)
 register_installer("int4_head_torch_dequant", _install_int4_head_torch_dequant)
 register_installer("int4_mlp_torch_dequant", _install_int4_mlp_torch_dequant)
+
+
+def _install_rollback_state(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.rollback_state import install_rollback_state  # noqa: PLC0415
+
+    install_rollback_state(model, entry)
+
+
+register_installer("rollback_state", _install_rollback_state)

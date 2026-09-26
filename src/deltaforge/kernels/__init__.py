@@ -941,3 +941,20 @@ REGISTRY.register(
     ),
 )
 register_checks("int4_mlp_torch_dequant", _visible_int4_head.int4_mlp_torch_dequant_correctness_checks)
+
+from . import rollback_state as _rollback_state  # noqa: E402
+
+REGISTRY.register(
+    "rollback_state",
+    impl=_rollback_state.install_rollback_state,
+    replaces="gated_delta_rule",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="062-verify-inflation",
+    notes=(
+        "Records one recurrent state and one conv window per input token, so a rejected "
+        "draft is undone by a copy rather than by a second weight stream. Not a kernel: "
+        "no Triton, no custom op, and the arithmetic is the reference's, one token at a "
+        "time. It exists because `recurrent_gated_delta_rule` returns only its final "
+        "state. See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md §3."
+    ),
+)
