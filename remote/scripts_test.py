@@ -2634,3 +2634,24 @@ def test_a_batch_run_without_a_workload_passes_none_and_takes_the_cli_default(wo
 
     assert "cli batch" in result.stderr
     assert "--workload" not in result.stderr
+
+
+def test_a_quiet_remote_command_keeps_its_ssh_session_alive():
+    """Rentals 47 and 48 died at exit 255 on `closed by remote host`, before any slot ran.
+
+    Different machines, different gateways, and two stages that look unrelated -- a
+    `pip install torch` and a `fetch-weights` -- but both spend minutes writing nothing to
+    the socket, which is what a NAT reaps. `df_retry` is the wrong instrument here: it
+    wraps idempotent transfers, and `remote_sh` runs the batch, which is paid measurement
+    that must never be run twice. So the keepalive lives in the transport, and both ways
+    this script talks to the box carry it.
+    """
+    source = (REMOTE / "run_remote.sh").read_text()
+
+    assert "ServerAliveInterval" in source, "a quiet remote command needs a keepalive"
+    assert "ServerAliveCountMax" in source, "a dead connection must fail in bounded time"
+
+    for helper in ("remote_sh", "remote_capture"):
+        body = source.split(f"{helper}()", 1)[1].split("\n}", 1)[0]
+        assert "DF_SSH_KEEPALIVE" in body, f"{helper} must carry the keepalive options"
+        assert "df_retry" not in body, f"{helper} runs paid work; it must not be retried"

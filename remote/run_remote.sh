@@ -616,6 +616,30 @@ sh "$DF_REPO_ROOT/remote/sync.sh" up $SYNC_FLAGS \
 # Remote work
 # ---------------------------------------------------------------------------
 
+# Keepalives, and why a remote command needs them when rsync did not.
+#
+# Rentals 47 and 48 (2026-09-29, instances 53419816 and 53422249) both died at exit 255 on
+# `Connection to <gateway> closed by remote host`, on different machines (140843, 59164)
+# and different gateways (ssh7, ssh1), before a single slot ran. $0.19 for no measurement.
+#
+# The two deaths look unrelated -- one in `fetch-weights`, one in `pip install torch` --
+# until you notice what those commands have in common: **minutes of silence on the
+# socket.** The pip install prints nothing until it finishes, and the weights fetch sat
+# 8:07 at "4/6" while huggingface_hub retried a CAS error internally. An ssh session with
+# no keepalive and nothing to say is indistinguishable, to every NAT and stateful firewall
+# on the path, from a session that has gone away -- so one of them reaped it. `ssh` learns
+# this only when it next writes, and reports it as the peer closing.
+#
+# `df_retry` did not cover this and should not: it wraps *transfers*, which are idempotent,
+# and `remote_sh` runs the batch itself -- half an hour of paid measurement that must not be
+# silently run twice. The fix belongs in the transport, not in a retry. ServerAliveInterval
+# keeps the path warm through a quiet command; CountMax bounds how long a genuinely dead
+# connection can hang before the teardown trap gets to pull results, at 30 x 6 = 3 minutes.
+#
+# The rsync path already carries ConnectTimeout=20 (sync.sh); this matches it, so the two
+# ways this script talks to the box now fail on the same terms.
+DF_SSH_KEEPALIVE="-o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
+
 # The image already ships torch 2.11 / CUDA 12.8 and a matching Triton, so DeltaForge is
 # installed on top of it with --no-deps. Re-resolving torch here would either waste
 # several minutes of paid time or, worse, replace the CUDA build with a CPU one.
@@ -624,8 +648,8 @@ remote_sh() {
         return 0
     fi
     # shellcheck disable=SC2086
-    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
-        "cd '$DF_REMOTE_DIR' && $*"
+    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new $DF_SSH_KEEPALIVE \
+        "$DF_SSH_HOST" "cd '$DF_REMOTE_DIR' && $*"
 }
 
 # Like `remote_sh`, but the box's answer comes back on stdout instead of being logged. Used
@@ -633,8 +657,8 @@ remote_sh() {
 # to. Never used for a step whose *effect* matters -- a dry run must not silently skip work.
 remote_capture() {
     # shellcheck disable=SC2086
-    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new "$DF_SSH_HOST" \
-        "cd '$DF_REMOTE_DIR' && $*" 2>/dev/null
+    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new $DF_SSH_KEEPALIVE \
+        "$DF_SSH_HOST" "cd '$DF_REMOTE_DIR' && $*" 2>/dev/null
 }
 
 df_log "preparing the remote environment"
