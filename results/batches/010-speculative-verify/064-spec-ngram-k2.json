@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-30T01:30:05.349935+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "064-spec-ngram-k2",
+    "batch": "010-speculative-verify",
+    "statement": "The same loop at k=2 with a prompt-lookup drafter: d=0, so the whole downside is gamma-1 and any acceptance above ~10% is a win.",
+    "prediction": "inconclusive",
+    "rationale": "One variable from 063: the drafter. On the headline workload the prompt is torch.randint token ids, and an n-gram drafter over noise has no structure to find -- so the honest prediction here is that it lands within noise of 063, and the result worth having is the acceptance histogram rather than the ratio. The text workload is where this is a real question. Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round number.",
+    "category": "C",
+    "byte_share": 0.0,
+    "kernels": [
+      "rollback_state",
+      "speculative_ngram_k2"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "text"
+  },
+  "phases": {
+    "candidate_build": 0.05107351008336991,
+    "correctness": 17.357533855945803,
+    "compile_candidate_compiled": 0.004072388983331621,
+    "bench": 88.54282583808526
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+    "hostname": "a5cbda945ce2",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 24080,
+    "gpu_clocks_mhz": {
+      "sm": 2865,
+      "memory": 10251,
+      "observed_at": "2026-09-30T01:30:05.386104+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "8.9",
+    "gpu_power": {
+      "draw_w": 121.68,
+      "limit_w": 480.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        1296.7646484375,
+        1295.8267822265625,
+        1296.0089111328125,
+        1295.782958984375,
+        1295.775390625,
+        1295.9405517578125,
+        1295.8228759765625,
+        1295.9453125,
+        1295.978271484375,
+        1295.97021484375,
+        1295.889404296875,
+        1295.78759765625,
+        1296.0194091796875,
+        1295.9320068359375,
+        1296.1685791015625,
+        1296.185302734375,
+        1296.94287109375
+      ],
+      "candidate_compiled": [
+        34115.1640625,
+        1616.183349609375,
+        1624.2708740234375,
+        1616.9862060546875,
+        1611.905029296875,
+        1622.1456298828125,
+        1628.7559814453125,
+        1635.4293212890625,
+        1623.1451416015625,
+        1630.2869873046875,
+        1625.8936767578125,
+        1633.1171875,
+        1628.675048828125,
+        1635.43115234375,
+        1631.896240234375,
+        1630.164794921875,
+        1629.138916015625
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        1296.0089111328125,
+        1295.782958984375,
+        1295.775390625,
+        1295.9405517578125,
+        1295.8228759765625,
+        1295.9453125,
+        1295.978271484375,
+        1295.97021484375,
+        1295.889404296875,
+        1295.78759765625,
+        1296.0194091796875,
+        1295.9320068359375,
+        1296.1685791015625,
+        1296.185302734375,
+        1296.94287109375
+      ],
+      "candidate_compiled": [
+        1624.2708740234375,
+        1616.9862060546875,
+        1611.905029296875,
+        1622.1456298828125,
+        1628.7559814453125,
+        1635.4293212890625,
+        1623.1451416015625,
+        1630.2869873046875,
+        1625.8936767578125,
+        1633.1171875,
+        1628.675048828125,
+        1635.43115234375,
+        1631.896240234375,
+        1630.164794921875,
+        1629.138916015625
+      ]
+    },
+    "median_ms": {
+      "compiled": 1295.9453125,
+      "candidate_compiled": 1628.7559814453125
+    },
+    "achieved_gbps": {
+      "compiled": 848.213778570228,
+      "candidate_compiled": 674.8946329950336
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.7979019582629736,
+        0.801356841593583,
+        0.8038782478333893,
+        0.7989051832858152,
+        0.7955905554536693,
+        0.7924190276095345,
+        0.7984364665045475,
+        0.7949337907593466,
+        0.7970320709291412,
+        0.7934443453135539,
+        0.7957507607869402,
+        0.7924100045292194,
+        0.7942714414952051,
+        0.7951253190917389,
+        0.7960910259670644
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.7957507607869402
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.0035665962564845888
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "text"
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "064-spec-ngram-k2",
+      "prediction": "inconclusive",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [],
+    "layer2_end_to_end": null,
+    "layer2_distribution": null,
+    "layer2_sequence": {
+      "kind": "sequence",
+      "num_prompts": 5,
+      "first_divergence": 2,
+      "reference_top2_gap": 0.125,
+      "gap_ceiling": 0.3,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "passed": true
+    },
+    "layer2_policy": "sequence",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

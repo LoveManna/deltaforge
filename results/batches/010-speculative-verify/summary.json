@@ -1,0 +1,400 @@
+{
+  "schema_version": 1,
+  "kind": "batch",
+  "batch_id": "010-speculative-verify",
+  "session_id": "batch010-20260930T010727Z",
+  "description": "What a k+1-token verify costs, measured with no drafter in it, and then two drafters that cost nothing. Spec: docs/superpowers/specs/2026-09-24-speculative-decoding-design.md.",
+  "timestamp": "2026-09-30T01:31:59.073288+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "text"
+  },
+  "phases": {
+    "000-identity.candidate_build": 0.04651062691118568,
+    "000-identity.correctness": 13.693076878087595,
+    "000-identity.compile_candidate_compiled": 0.004192146938294172,
+    "000-identity.bench": 80.08646448003128,
+    "062-verify-inflation-k4.candidate_build": 0.05040627298876643,
+    "062-verify-inflation-k4.correctness": 20.19643274601549,
+    "062-verify-inflation-k4.compile_candidate_compiled": 0.003943736897781491,
+    "062-verify-inflation-k4.bench": 270.99575461505447,
+    "063-verify-inflation-k2.candidate_build": 0.051357644028030336,
+    "063-verify-inflation-k2.correctness": 17.688742312020622,
+    "063-verify-inflation-k2.compile_candidate_compiled": 0.004169871914200485,
+    "063-verify-inflation-k2.bench": 219.9713186440058,
+    "064-spec-ngram-k2.candidate_build": 0.05107351008336991,
+    "064-spec-ngram-k2.correctness": 17.357533855945803,
+    "064-spec-ngram-k2.compile_candidate_compiled": 0.004072388983331621,
+    "064-spec-ngram-k2.bench": 88.54282583808526,
+    "065-spec-ngram-k4.candidate_build": 0.05304151598829776,
+    "065-spec-ngram-k4.correctness": 20.536914094001986,
+    "065-spec-ngram-k4.compile_candidate_compiled": 0.004038023995235562,
+    "065-spec-ngram-k4.bench": 91.6473622439662
+  },
+  "calibrated": true,
+  "counts": {
+    "win": 1,
+    "loss": 4
+  },
+  "predictions": [
+    {
+      "slug": "000-identity",
+      "predicted": "identity",
+      "outcome": "win",
+      "correct": true
+    },
+    {
+      "slug": "062-verify-inflation-k4",
+      "predicted": "loss",
+      "outcome": "loss",
+      "correct": true
+    },
+    {
+      "slug": "063-verify-inflation-k2",
+      "predicted": "loss",
+      "outcome": "loss",
+      "correct": true
+    },
+    {
+      "slug": "064-spec-ngram-k2",
+      "predicted": "inconclusive",
+      "outcome": "loss",
+      "correct": false
+    },
+    {
+      "slug": "065-spec-ngram-k4",
+      "predicted": "loss",
+      "outcome": "loss",
+      "correct": true
+    }
+  ],
+  "prediction_record": {
+    "correct": 4,
+    "scored": 5
+  },
+  "slots": [
+    {
+      "slug": "000-identity",
+      "outcome": "win",
+      "prediction": "identity",
+      "category": "calibration",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [],
+      "mechanism": "Installs nothing; calibrates the harness against the card of the hour.",
+      "rationale": "The identity champion must return 1.00 +- noise or every other number in the batch is void. It also reports the reference column's achieved bandwidth before any candidate runs, which is how rental 43's 800 GB/s card was recognised as a card rather than as a result.",
+      "median_ratio": 1.0001998373022718,
+      "iqr_ratio": 0.00012202724858267899,
+      "error": null,
+      "duration_s": 93.84995431103744,
+      "peak_memory_mb": 9143,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for graph without symints",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.04651062691118568,
+        "correctness": 13.693076878087595,
+        "compile_candidate_compiled": 0.004192146938294172,
+        "bench": 80.08646448003128
+      },
+      "card": {
+        "sm_mhz": 2850,
+        "memory_mhz": 10251,
+        "power_w": 384.82,
+        "power_limit_w": 480.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-09-30T01:19:26.564631+00:00"
+      },
+      "acceptance": {},
+      "prediction_correct": true
+    },
+    {
+      "slug": "062-verify-inflation-k4",
+      "outcome": "loss",
+      "prediction": "loss",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_fixed_k4"
+      ],
+      "mechanism": "The speculative loop with a drafter that always proposes the same token, so acceptance is 0 by construction and the ratio is 1/gamma(4).",
+      "rationale": "This slot is an instrument, not a candidate. gamma is the whole downside of the hypothesis and nothing has ever measured it: +8.2% of bytes for the five-token KV and state traffic, +2.9% for the state versioning, and an unknown dispatch term because the linear-attention scan runs five steps per layer instead of one. Predicted 0.87-0.95. Above 1.25 in 1/ratio terms and blocks longer than 2 are dead, which is registered as a kill criterion in the spec rather than decided after the number. The divergence gate's ceiling is set at the measured bf16 ULP scale (0.28125, oracle_test.py:264) rather than at a round number: below that, the gate cannot pass a single divergence this reduction-order effect causes.",
+      "median_ratio": 0.7120150960193848,
+      "iqr_ratio": 0.0054513261557671555,
+      "error": null,
+      "duration_s": 291.26688267302234,
+      "peak_memory_mb": 9886,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key (5, 2049)",
+        "Recording cudagraph tree for symint key (5, 2050)",
+        "Recording cudagraph tree for symint key (5, 2051)",
+        "Recording cudagraph tree for symint key (5, 2052)",
+        "Recording cudagraph tree for symint key (5, 2053)",
+        "Recording cudagraph tree for symint key (5, 2054)"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.05040627298876643,
+        "correctness": 20.19643274601549,
+        "compile_candidate_compiled": 0.003943736897781491,
+        "bench": 270.99575461505447
+      },
+      "card": {
+        "sm_mhz": 2850,
+        "memory_mhz": 10251,
+        "power_w": 253.69,
+        "power_limit_w": 480.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-09-30T01:24:18.046911+00:00"
+      },
+      "acceptance": {
+        "block_size": 4,
+        "cycles": 2159,
+        "mean_accepted": 0.0,
+        "histogram": {
+          "0": 2159,
+          "1": 0,
+          "2": 0,
+          "3": 0,
+          "4": 0
+        }
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "063-verify-inflation-k2",
+      "outcome": "loss",
+      "prediction": "loss",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_fixed_k2"
+      ],
+      "mechanism": "The same instrument at k=2: how gamma scales with the block.",
+      "rationale": "One variable from 062, the block size. Traffic says gamma(2) ~ 1.06 against gamma(4) ~ 1.11, so this should lose about half as much. If it loses as much or more, gamma is dispatch rather than traffic and the spec's arithmetic is wrong in a way that matters more than the slot does. Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round number.",
+      "median_ratio": 0.7596493756216915,
+      "iqr_ratio": 0.005217082382366733,
+      "error": null,
+      "duration_s": 237.735787716927,
+      "peak_memory_mb": 9885,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key (3, 2049)",
+        "Recording cudagraph tree for symint key (3, 2050)",
+        "Recording cudagraph tree for symint key (3, 2051)",
+        "Recording cudagraph tree for symint key (3, 2052)",
+        "Recording cudagraph tree for symint key (3, 2053)",
+        "Recording cudagraph tree for symint key (3, 2054)"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.051357644028030336,
+        "correctness": 17.688742312020622,
+        "compile_candidate_compiled": 0.004169871914200485,
+        "bench": 219.9713186440058
+      },
+      "card": {
+        "sm_mhz": 2850,
+        "memory_mhz": 10251,
+        "power_w": 264.24,
+        "power_limit_w": 480.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-09-30T01:28:16.737428+00:00"
+      },
+      "acceptance": {
+        "block_size": 2,
+        "cycles": 2159,
+        "mean_accepted": 0.0,
+        "histogram": {
+          "0": 2159,
+          "1": 0,
+          "2": 0
+        }
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "064-spec-ngram-k2",
+      "outcome": "loss",
+      "prediction": "inconclusive",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_ngram_k2"
+      ],
+      "mechanism": "The same loop at k=2 with a prompt-lookup drafter: d=0, so the whole downside is gamma-1 and any acceptance above ~10% is a win.",
+      "rationale": "One variable from 063: the drafter. On the headline workload the prompt is torch.randint token ids, and an n-gram drafter over noise has no structure to find -- so the honest prediction here is that it lands within noise of 063, and the result worth having is the acceptance histogram rather than the ratio. The text workload is where this is a real question. Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round number.",
+      "median_ratio": 0.7957507607869402,
+      "iqr_ratio": 0.0035665962564845888,
+      "error": null,
+      "duration_s": 105.97562477400061,
+      "peak_memory_mb": 9215,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 126,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key (3, 2049)",
+        "Recording cudagraph tree for symint key (3, 2050)",
+        "Recording cudagraph tree for symint key (3, 2051)",
+        "Recording cudagraph tree for symint key (3, 2052)",
+        "Recording cudagraph tree for symint key (3, 2053)",
+        "Recording cudagraph tree for symint key (3, 2054)"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.05107351008336991,
+        "correctness": 17.357533855945803,
+        "compile_candidate_compiled": 0.004072388983331621,
+        "bench": 88.54282583808526
+      },
+      "card": {
+        "sm_mhz": 2850,
+        "memory_mhz": 10251,
+        "power_w": 272.64,
+        "power_limit_w": 480.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-09-30T01:30:04.070864+00:00"
+      },
+      "acceptance": {
+        "block_size": 2,
+        "cycles": 2125,
+        "mean_accepted": 0.016,
+        "histogram": {
+          "0": 2108,
+          "1": 0,
+          "2": 17
+        }
+      },
+      "prediction_correct": false
+    },
+    {
+      "slug": "065-spec-ngram-k4",
+      "outcome": "loss",
+      "prediction": "loss",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_ngram_k4"
+      ],
+      "mechanism": "The prompt-lookup drafter at k=4.",
+      "rationale": "A longer block costs more gamma and an n-gram drafter's acceptance decays fastest with depth, so at k=4 on random ids this should sit below 064. Registered as a loss so that a win is informative: it would mean acceptance is holding deeper than the drafter deserves, which is worth knowing before the int4 self-draft is built. Ceiling set at the measured bf16 ULP scale, as 062's is, not at a round number.",
+      "median_ratio": 0.7344300564066759,
+      "iqr_ratio": 0.006234283969824617,
+      "error": null,
+      "duration_s": 112.26126528496388,
+      "peak_memory_mb": 9219,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 126,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key (5, 2049)",
+        "Recording cudagraph tree for symint key (5, 2050)",
+        "Recording cudagraph tree for symint key (5, 2051)",
+        "Recording cudagraph tree for symint key (5, 2052)",
+        "Recording cudagraph tree for symint key (5, 2053)",
+        "Recording cudagraph tree for symint key (5, 2054)"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.05304151598829776,
+        "correctness": 20.536914094001986,
+        "compile_candidate_compiled": 0.004038023995235562,
+        "bench": 91.6473622439662
+      },
+      "card": {
+        "sm_mhz": 2850,
+        "memory_mhz": 10251,
+        "power_w": 254.45,
+        "power_limit_w": 480.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-09-30T01:31:57.651217+00:00"
+      },
+      "acceptance": {
+        "block_size": 4,
+        "cycles": 2125,
+        "mean_accepted": 0.016,
+        "histogram": {
+          "0": 2108,
+          "1": 0,
+          "2": 17,
+          "3": 0,
+          "4": 0
+        }
+      },
+      "prediction_correct": true
+    }
+  ],
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+    "hostname": "a5cbda945ce2",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 24080,
+    "gpu_clocks_mhz": {
+      "sm": 2865,
+      "memory": 10251,
+      "observed_at": "2026-09-30T01:31:59.110659+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "8.9",
+    "gpu_power": {
+      "draw_w": 122.27,
+      "limit_w": 480.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "cost": {
+    "instance_id": "53443472",
+    "hourly_rate_usd": 0.3626666666666667,
+    "gpu_model": null,
+    "actual_minutes": null,
+    "actual_cost_usd": null
+  },
+  "notes": ""
+}

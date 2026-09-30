@@ -36,6 +36,49 @@ recorded as proven on rental 27 and rental 33 disproved it. **Blocker 18 is open
 unmitigated**, and it is the first one here that costs *correctness of conclusions* rather
 than a rental.
 
+### Blocker 19 — a remote step lived exactly as long as its ssh connection
+
+**Three rentals in one evening, $0.43, no measurement.** 47, 48 and 50 all died on
+
+```
+Connection to <gateway> closed by remote host.
+```
+
+at exit 255 — on machines 140843, 59164 and 144172, through gateways ssh7, ssh1 and ssh2,
+in `fetch-weights`, in `pip install torch` and in slot 0's benchmark. Rentals 30 and 39 are
+the same failure, and were both filed against the host.
+
+**It was never the host.** `remote_sh` was `ssh host "command"`, which makes the batch's
+stdout *be* the ssh channel: a paid hour of GPU work lived exactly as long as one TCP
+connection, and nothing on either end had a reason to keep that connection interesting.
+What the three stages share is minutes of silence on the socket — `pip install --quiet`
+prints nothing until it finishes, and the weights fetch sat 8:07 at "4/6" while
+`huggingface_hub` retried a CAS error internally.
+
+**Keepalives were the first fix and they were not enough.** `ServerAliveInterval=30
+ServerAliveCountMax=6` went in after 48; rental 50 carried them and still lost the session
+32 minutes in. They are kept, because holding a live connection open is worth doing, but
+they do not address the premise.
+
+**The fix is that the step no longer belongs to the connection.** `remote/step.sh start`
+launches it under `setsid` with its output going to a file on the box; `poll` reads that
+file from wherever the caller has got to. A drop now costs one reconnect and a warning.
+
+Two details are load-bearing and each has a test that fails without it:
+
+* `start` records `started` **before** launching, so a launch whose ssh died after the box
+  took the request can be retried without ever running a paid step twice.
+* `poll` prints its marker **before** the payload. A step log routinely ends mid-line — the
+  weights fetch emits a `\r` progress bar — and a marker appended to a partial line is
+  invisible to a line-based parse, so the caller would read no status, believe the step
+  still running, and hang until the stall budget fired. Verified against the old ordering:
+  zero line-anchored matches.
+
+**How to apply:** when a guard fails twice with a plausible story attached, suspect the
+story. "Some hosts drop ssh" explained every observation and was wrong for five rentals
+across three sessions — the same shape as blocker 7, which the memory of this project
+already records as the expensive kind of plausible.
+
 ### Blocker 18 — the card is an uncontrolled variable the size of the effect
 
 Rental 43 rented an RTX 5090 that ran the reference at **10.73 ms/token and 800 GB/s**
@@ -486,9 +529,23 @@ project have not been the loud ones.
 | 44 | 2026-09-23 | container started, **refused the account ssh key** — blocker 2 recurred on one host | 6.23 min | $0.0500 |
 | 45 | 2026-09-23 | **batch 008: eleven slots, a new champion at 1.0765, and a custom op priced at 21%** | 115.52 min | $0.9427 |
 | 46 | 2026-09-23 | **batch 009: the compiler beat our kernel at the head**; fixed cost ~22 min after the cache guard | 79.00 min | $0.6446 |
+| 47 | 2026-09-29 | ssh dropped in `fetch-weights` (exit 255) — blocker 19 | 24.00 min | $0.1638 |
+| 48 | 2026-09-29 | ssh dropped in `pip install torch` (exit 255) — blocker 19, keepalives added | 3.75 min | $0.0270 |
+| 49 | 2026-09-29 | `docker login failed!`, caught by the 300s stall guard — blocker 1 | 13.23 min | $0.0962 |
+| 50 | 2026-09-29 | ssh dropped in slot 0's benchmark **with keepalives on** — blocker 19 refuted them | 32.18 min | $0.2411 |
+| 51 | 2026-09-30 | cancelled by hand: host advertised CUDA exactly 12.8 — blocker 11 pre-empted | 0.70 min | $0.0047 |
+| 52 | 2026-09-30 | container refused the account ssh key — blocker 2 recurred | 1.27 min | $0.0082 |
+| 53 | 2026-09-30 | **first 4090**; identity 1.0001, three slots OOM'd on a prefill-scale recording | 20.40 min | $0.1186 |
+| 54 | 2026-09-30 | **batch 010: all five slots measured**; γ(2)=1.316, γ(4)=1.404 | 25.08 min | $0.1516 |
 
-Forty rentals, $6.706, **zero leaked instances** — every one destroyed cleanly by the
-trap, including two cancelled mid-flight with SIGTERM.
+Forty-eight rentals, $9.954, **zero leaked instances** — every one destroyed cleanly by the
+trap, including three cancelled mid-flight with SIGTERM.
+
+**2026-09-30 cost $0.811 across eight rentals and seven of them bought no measurement.**
+Three died on one bug (blocker 19), one on a registry failure, one was pre-empted on the
+CUDA floor, one refused the key, and one found a real defect by OOMing. That is a worse
+hit-rate than any previous session, and the entry that explains it is blocker 19: it had
+been mistaken for "some hosts drop ssh" twice before, at rentals 30 and 39.
 
 **Rental 28 is the cheapest informative rental yet**, and worth reading against rental 27.
 Both reached the GPU suite and died at the same assertion; 27 cost $0.6242 and 28 cost

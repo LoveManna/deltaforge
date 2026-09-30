@@ -2,13 +2,14 @@
   "schema_version": 1,
   "kind": "baseline",
   "outcome": "baseline",
-  "timestamp": "2026-09-23T18:25:58.827544+00:00",
+  "timestamp": "2026-09-30T01:17:12.260067+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": null,
   "workload": {
     "batch_size": 1,
     "context_length": 2048,
-    "decode_tokens": 128
+    "decode_tokens": 128,
+    "prompt": "random"
   },
   "phases": {},
   "git": {
@@ -18,23 +19,28 @@
   },
   "environment": {
     "python_version": "3.12.3",
-    "platform": "Linux-5.15.0-186-generic-x86_64-with-glibc2.39",
-    "hostname": "db36a3ff897a",
+    "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+    "hostname": "a5cbda945ce2",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
     "cuda_version": "12.8",
-    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
     "gpu_count": 1,
-    "driver_version": "580.173.02",
-    "gpu_memory_total_mb": 32109,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 24080,
     "gpu_clocks_mhz": {
-      "sm": 2580,
-      "memory": 13801,
-      "observed_at": "2026-09-23T18:25:59.019525+00:00"
+      "sm": 2850,
+      "memory": 10251,
+      "observed_at": "2026-09-30T01:17:12.297808+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
-    "compute_capability": "12.0"
+    "compute_capability": "8.9",
+    "gpu_power": {
+      "draw_w": 369.15,
+      "limit_w": 480.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
   },
   "bench": {
     "labels": [
@@ -46,32 +52,32 @@
     "baseline": "compiled",
     "timings_ms": {
       "compiled": [
-        274750.96875
+        22025.818359375
       ],
       "candidate_compiled": [
-        199520.40625
+        34486.8671875
       ]
     },
     "scoring_timings_ms": {
       "compiled": [
-        274750.96875
+        22025.818359375
       ],
       "candidate_compiled": [
-        199520.40625
+        34486.8671875
       ]
     },
     "median_ms": {
-      "compiled": 274750.96875,
-      "candidate_compiled": 199520.40625
+      "compiled": 22025.818359375,
+      "candidate_compiled": 34486.8671875
     },
     "achieved_gbps": {},
     "ratios": {
       "candidate_compiled": [
-        1.377056983363074
+        0.6386726355752722
       ]
     },
     "median_ratio": {
-      "candidate_compiled": 1.377056983363074
+      "candidate_compiled": 0.6386726355752722
     },
     "iqr_ratio": {
       "candidate_compiled": 0.0

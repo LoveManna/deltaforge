@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-09-30T01:24:18.957898+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "062-verify-inflation-k4",
+    "batch": "010-speculative-verify",
+    "statement": "The speculative loop with a drafter that always proposes the same token, so acceptance is 0 by construction and the ratio is 1/gamma(4).",
+    "prediction": "loss",
+    "rationale": "This slot is an instrument, not a candidate. gamma is the whole downside of the hypothesis and nothing has ever measured it: +8.2% of bytes for the five-token KV and state traffic, +2.9% for the state versioning, and an unknown dispatch term because the linear-attention scan runs five steps per layer instead of one. Predicted 0.87-0.95. Above 1.25 in 1/ratio terms and blocks longer than 2 are dead, which is registered as a kill criterion in the spec rather than decided after the number. The divergence gate's ceiling is set at the measured bf16 ULP scale (0.28125, oracle_test.py:264) rather than at a round number: below that, the gate cannot pass a single divergence this reduction-order effect causes.",
+    "category": "C",
+    "byte_share": 0.0,
+    "kernels": [
+      "rollback_state",
+      "speculative_fixed_k4"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "text"
+  },
+  "phases": {
+    "candidate_build": 0.05040627298876643,
+    "correctness": 20.19643274601549,
+    "compile_candidate_compiled": 0.003943736897781491,
+    "bench": 270.99575461505447
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.39",
+    "hostname": "a5cbda945ce2",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 4090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 24080,
+    "gpu_clocks_mhz": {
+      "sm": 2865,
+      "memory": 10251,
+      "observed_at": "2026-09-30T01:24:18.998039+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "8.9",
+    "gpu_power": {
+      "draw_w": 155.08,
+      "limit_w": 480.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        1296.617431640625,
+        1295.8135986328125,
+        1295.7603759765625,
+        1295.479736328125,
+        1295.6907958984375,
+        1295.722412109375,
+        1295.9688720703125,
+        1295.689697265625,
+        1295.691650390625,
+        1295.8726806640625,
+        1296.078857421875,
+        1295.7318115234375,
+        1295.689697265625,
+        1295.8658447265625,
+        1295.9957275390625,
+        1295.7908935546875,
+        1295.6456298828125
+      ],
+      "candidate_compiled": [
+        213296.640625,
+        1816.0772705078125,
+        1844.6649169921875,
+        1818.7694091796875,
+        1829.6929931640625,
+        1819.7962646484375,
+        1814.66943359375,
+        1825.06591796875,
+        1815.534912109375,
+        1846.57470703125,
+        1832.9569091796875,
+        1835.98974609375,
+        1814.739501953125,
+        1812.2708740234375,
+        1818.999755859375,
+        1819.18310546875,
+        1820.6220703125
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        1295.7603759765625,
+        1295.479736328125,
+        1295.6907958984375,
+        1295.722412109375,
+        1295.9688720703125,
+        1295.689697265625,
+        1295.691650390625,
+        1295.8726806640625,
+        1296.078857421875,
+        1295.7318115234375,
+        1295.689697265625,
+        1295.8658447265625,
+        1295.9957275390625,
+        1295.7908935546875,
+        1295.6456298828125
+      ],
+      "candidate_compiled": [
+        1844.6649169921875,
+        1818.7694091796875,
+        1829.6929931640625,
+        1819.7962646484375,
+        1814.66943359375,
+        1825.06591796875,
+        1815.534912109375,
+        1846.57470703125,
+        1832.9569091796875,
+        1835.98974609375,
+        1814.739501953125,
+        1812.2708740234375,
+        1818.999755859375,
+        1819.18310546875,
+        1820.6220703125
+      ]
+    },
+    "median_ms": {
+      "compiled": 1295.7318115234375,
+      "candidate_compiled": 1819.7962646484375
+    },
+    "achieved_gbps": {
+      "compiled": 848.3535408794096,
+      "candidate_compiled": 604.0449096912282
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.702436721184767,
+        0.7122836626730049,
+        0.7081465583238735,
+        0.7120150960193848,
+        0.7141625069993002,
+        0.7099413147266994,
+        0.713669366393637,
+        0.7017710552027681,
+        0.707097286865252,
+        0.7057402222862275,
+        0.7139810952873019,
+        0.7150508587326132,
+        0.7124771311070228,
+        0.7122927261468824,
+        0.7116499634986968
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.7120150960193848
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.0054513261557671555
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "text"
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "062-verify-inflation-k4",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [],
+    "layer2_end_to_end": null,
+    "layer2_distribution": null,
+    "layer2_sequence": {
+      "kind": "sequence",
+      "num_prompts": 5,
+      "first_divergence": 3,
+      "reference_top2_gap": 0.0,
+      "gap_ceiling": 0.3,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "passed": true
+    },
+    "layer2_policy": "sequence",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

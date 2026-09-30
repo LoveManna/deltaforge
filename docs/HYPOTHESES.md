@@ -972,10 +972,51 @@ See `results/batches/005-launch-and-head/README.md`.
 
 ---
 
-### 10. Speculative decoding — the only entry whose ceiling is not the roofline
+### 10. Speculative decoding — γ measured, and it is a step at the multi-token boundary
 
 **Share of bytes: none. It changes tokens per weight-stream, not bytes per token.**
 Category **C**. Design: `docs/superpowers/specs/2026-09-24-speculative-decoding-design.md`.
+Result: [`010-speculative-verify`](../results/batches/010-speculative-verify/) (rental 54,
+RTX 4090, 2026-09-30).
+
+**MEASURED, and worse than predicted. γ(2) = 1.316, γ(4) = 1.404** against a traffic model
+that budgeted 1.06 and 1.11, with acceptance provably zero across 2159 cycles in both
+instrument slots and an identity slot at 1.0002 ± 0.0001.
+
+**The cost is a step, not a slope.** Fitting the two points gives 4.4% per token and a
+fixed 1.184; 1 → 3 tokens costs 31.6% while 3 → 5 costs 6.7%. Since a one-token verify *is*
+ordinary decode at γ = 1.000, **there is a ~23% discontinuity at the seq=1 → seq>1 boundary
+itself**, and the spec contains no term for it. It priced traffic (+8.2% of bytes at k=4)
+and named dispatch "the open half" without predicting it; the open half is the whole answer.
+This relocates the entry from "how good is the drafter" to **"why does seq>1 cost 23%"**.
+
+**Four kill criteria are withdrawn as underived.** γ(4) > 1.25 and γ(2) > 1.15 were both
+crossed, and neither conclusion follows from the spec's own §1 formula: substituting the
+measured γ still gives **1.34x at k=2 and 1.45x at k=4** for an int4 self-draft at p = 0.9 —
+with k=4, the one its criterion kills, winning by more. What the measured γ does is move
+break-even mean-accepted-per-cycle from 0.06 to **0.317** for a free drafter. **A kill
+criterion is a prediction and has to be derived from the cost model, not chosen because it
+looks strict.**
+
+**The n-gram drafter is refuted on text: 0.016 against a 0.317 bar**, 20x short, with a
+histogram that says why — `{0: 2108, 1: 0, 2: 17}` over 2125 cycles. Never one token, 0.8%
+of the time the whole block: prompt-lookup finds a literal repeat or nothing. At k=4 the
+counts at 3 and 4 are zero, so a longer block bought no acceptance and cost 6.7% more γ.
+
+**Open, and the cheapest next step is not a drafter.** Every candidate compile on the 4090
+logged `No valid triton configs ... Required: 110592 Hardware limit: 101376` on the verify's
+`k+1` shape — a shape the reference never compiles — so **γ here is plausibly inflated by an
+unknown amount**. One 5090 rental of `062` and `063` alone decides whether 23% is this
+model's decode graph or this card's shared memory. Ranked suspects for the step:
+`reference.py`'s `if seq_len > 1` mask branch (8 of 32 layers), and the rollback layer's
+`k+1` sequential scan launches per layer (which scales with k, so it is in the slope, not
+the step).
+
+**Also measured: what the harness got right.** The `sequence` policy attributed five real
+bf16 divergences (gaps 0.0 and 0.125 against a 0.3 ceiling); the `approximate` policy this
+spec originally registered would have returned 264/264 for all of them, including through a
+defect that OOM'd three slots. The 0.3 ceiling passed a divergence at 0.125 that the `0.02`
+this project once shipped would have failed unconditionally.
 
 **Mechanism.** The weights are read once per *forward pass*, not once per *token*. A pass
 that verifies `k` drafted tokens moves 8411.51 MB of weights exactly as a pass that produces
@@ -1005,7 +1046,7 @@ rewinds by moving `seq_len`; a recurrent state does not rewind at all. v1 keeps 
 copy per verified step — `(k+1) × 50.33 MB`, the +2.9% already in `γ` — rather than re-running
 the accepted prefix, which would cost a second weight stream and end the hypothesis.
 
-**Built (2026-09-26), not yet rented.** `hyp/010-speculative-decoding` implements the
+**Built (2026-09-26), rented 2026-09-30 (see above).** `hyp/010-speculative-decoding` implements the
 mechanism — `DecodeCache.rewind`, the `rollback_state` kernel that records one recurrent
 state and conv window per verified step, the drafter protocol, the loop, and a
 `correctness="sequence"` gate — and registers batch `010-speculative-verify`:

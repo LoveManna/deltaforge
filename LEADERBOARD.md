@@ -642,6 +642,50 @@ per-token bytes.
 
 Full account: [`results/batches/009-visible-kernels/README.md`](results/batches/009-visible-kernels/README.md).
 
+### Batch 010 — a verify costs 32%, and almost none of it is the extra tokens, 2026-09-30 (rental 54)
+
+**RTX 4090 — the first non-5090 this project has recorded**, reference at 849 GB/s and
+10.12 ms/token, identity **1.0002 (IQR 0.0001)**, the tightest calibration yet. All five
+slots measured, nothing voided, every slot `dynamo compiled 2 graph(s)`. Predictions scored
+**3 of 5**, and the two misses are the result.
+
+| Slot | Outcome | Ratio | IQR | Δ ms/token | γ = 1/ratio | mean accepted | Predicted |
+|---|---|---:|---:|---:|---:|---:|---|
+| `000-identity` | calibrated | 1.0002 | 0.0001 | −0.002 | — | — | `identity` ✅ |
+| `062-verify-inflation-k4` | **`loss`** | **0.7120** | 0.0055 | +4.094 | **1.404** | **0.000** | `loss` ✅, 0.87–0.95 ❌ |
+| `063-verify-inflation-k2` | **`loss`** | **0.7596** | 0.0052 | +3.204 | **1.316** | **0.000** | `loss` ✅, 0.93–0.97 ❌ |
+| `064-spec-ngram-k2` | **`loss`** | **0.7958** | 0.0036 | +2.600 | 1.257 | **0.016** | `inconclusive` ❌ |
+| `065-spec-ngram-k4` | **`loss`** | **0.7344** | 0.0062 | +3.662 | 1.362 | **0.016** | `loss` ✅ |
+
+**No candidate here was ever meant to win.** `062` and `063` are instruments: their drafter
+is wrong on purpose, so acceptance is zero by construction — and the histograms confirm it
+across 2159 cycles — which makes their ratio exactly `1/γ`, the price of a `k+1`-token
+verify. Nothing had ever measured it.
+
+**γ is a step, not a slope.** 1 → 3 tokens costs 31.6%; 3 → 5 costs 6.7%. A one-token verify
+*is* ordinary decode at γ = 1.000, so **~23% is a discontinuity at the seq=1 → seq>1
+boundary**, and the spec's cost model has no term for it — it priced traffic and left
+dispatch unpredicted. The open half was the whole answer.
+
+**Both registered kill criteria are withdrawn as underived.** γ(4) > 1.25 and γ(2) > 1.15
+were crossed, yet the spec's own formula with the measured γ still gives 1.34x at k=2 and
+1.45x at k=4 for an int4 self-draft at p = 0.9 — k=4 winning by more than the k=2 its
+criterion spares. What γ really moved is break-even: 0.06 → **0.317** mean accepted tokens
+per cycle for a free drafter.
+
+**The n-gram drafter measurably works and is 20x too weak**: 0.016 against 0.317, on the
+text workload added for this slot. Its histogram is the reason — `{0: 2108, 1: 0, 2: 17}`,
+never one token and 0.8% of the time the whole block, which is prompt-lookup finding a
+literal repeat or nothing.
+
+**Eight rentals, $0.811, and seven bought no measurement.** Three died on one bug — a remote
+step whose life was its ssh connection (blocker 19, which had been misfiled against hosts at
+rentals 30 and 39) — and rental 53 paid for itself by OOMing at 23.03 GiB on both k=4 and
+k=2, identical to two decimals, which is what named a per-step recording that never scaled
+with the block. **25.08 billed minutes, $0.1516** for the rental that worked.
+
+Full account: [`results/batches/010-speculative-verify/README.md`](results/batches/010-speculative-verify/README.md).
+
 ### Column definitions
 
 - **ID** — `NNN`, matching the branch `hyp/NNN-slug` and `results/hypotheses/NNN-slug.json`.
