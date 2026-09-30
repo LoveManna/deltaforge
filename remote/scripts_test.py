@@ -2636,22 +2636,157 @@ def test_a_batch_run_without_a_workload_passes_none_and_takes_the_cli_default(wo
     assert "--workload" not in result.stderr
 
 
-def test_a_quiet_remote_command_keeps_its_ssh_session_alive():
+def test_every_way_this_script_talks_to_the_box_carries_a_keepalive():
     """Rentals 47 and 48 died at exit 255 on `closed by remote host`, before any slot ran.
 
     Different machines, different gateways, and two stages that look unrelated -- a
     `pip install torch` and a `fetch-weights` -- but both spend minutes writing nothing to
-    the socket, which is what a NAT reaps. `df_retry` is the wrong instrument here: it
-    wraps idempotent transfers, and `remote_sh` runs the batch, which is paid measurement
-    that must never be run twice. So the keepalive lives in the transport, and both ways
-    this script talks to the box carry it.
+    the socket, which is what a NAT reaps. The keepalive was the first response; rental 50
+    then proved it insufficient on its own, which is why the step also detaches now. Both
+    are kept: the keepalive holds a live connection open, and detaching means losing one
+    costs a reconnect rather than the rental.
+
+    Asserted through the single `_ssh` helper, because an invocation that grew its own
+    `ssh` line would silently opt out of both.
     """
     source = (REMOTE / "run_remote.sh").read_text()
 
     assert "ServerAliveInterval" in source, "a quiet remote command needs a keepalive"
     assert "ServerAliveCountMax" in source, "a dead connection must fail in bounded time"
 
+    # Anchored at line start: `wait_for_ssh()` also ends in `_ssh()`.
+    ssh_body = source.split("\n_ssh()", 1)[1].split("\n}", 1)[0]
+    assert "DF_SSH_KEEPALIVE" in ssh_body, "_ssh must carry the keepalive options"
+
+    # Every ssh in the remote-work half of the script goes through `_ssh`. The readiness
+    # probe above it is deliberately excluded: it has its own short stall budget. `_ssh`'s
+    # own body is the one place a raw `ssh` belongs, so it comes out before scanning.
+    remote_work = source[source.index("# Remote work") :].replace(ssh_body, "")
+    for line in remote_work.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ssh ") or stripped.startswith("ssh $"):
+            raise AssertionError(f"a raw ssh bypasses _ssh and its keepalive: {stripped}")
+
     for helper in ("remote_sh", "remote_capture"):
         body = source.split(f"{helper}()", 1)[1].split("\n}", 1)[0]
-        assert "DF_SSH_KEEPALIVE" in body, f"{helper} must carry the keepalive options"
+        assert "_ssh" in body, f"{helper} must go through the _ssh helper"
         assert "df_retry" not in body, f"{helper} runs paid work; it must not be retried"
+
+
+def _step_wait(step_dir: Path, timeout: float = 20.0) -> str:
+    """Poll `step.sh` the way run_remote.sh does, returning everything the step printed."""
+    seen, offset = "", 0
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        out = run("step.sh", "poll", str(step_dir), str(offset)).stdout
+        meta = [line for line in out.splitlines() if line.startswith("__DF_STEP__")][-1]
+        seen += "\n".join(line for line in out.splitlines() if not line.startswith("__DF_STEP__"))
+        offset = int(re.search(r"offset=(\d+)", meta).group(1))
+        status = re.search(r"status=(\S+)", meta).group(1)
+        if status != "running":
+            return f"{status}|{seen}"
+        time.sleep(0.1)
+    raise AssertionError(f"step under {step_dir} never finished")
+
+
+def test_a_detached_step_survives_the_caller_going_away(tmp_path):
+    """The property four rentals were lost for: the step's life is not the connection's.
+
+    Rentals 47, 48 and 50 died on `closed by remote host` in three different stages, at
+    three different hosts, for $0.528 and no recorded slot. Here the "connection" is the
+    process that called `start` -- it returns immediately, and the work still finishes.
+    """
+    step = tmp_path / "1"
+    step.mkdir()
+    (step / "cmd.sh").write_text("echo before; sleep 0.5; echo after\n")
+
+    run("step.sh", "start", str(step))
+    # `start` must not wait for the command: that is the whole point.
+    assert not (step / "status").exists()
+
+    assert _step_wait(step) == "0|beforeafter"
+
+
+def test_a_detached_step_reports_the_command_s_own_exit_status(tmp_path):
+    """`set -e` in run_remote.sh only fails the run if the status survives the round trip.
+
+    A step that silently returned 0 would turn a failed batch into a successful rental
+    with no results, which is worse than the crash it replaced.
+    """
+    step = tmp_path / "1"
+    step.mkdir()
+    (step / "cmd.sh").write_text("echo nope; exit 17\n")
+    run("step.sh", "start", str(step))
+    assert _step_wait(step) == "17|nope"
+
+
+def test_starting_a_step_twice_does_not_run_paid_work_twice(tmp_path):
+    """The launch is retried on a dropped ssh, so it has to be idempotent.
+
+    `remote_sh` retries `start` three times, because an ssh that dies after the box took
+    the request leaves the caller unable to tell whether the step began. Running the batch
+    twice would bill half an hour of measurement twice and interleave two writers into one
+    results directory.
+    """
+    step = tmp_path / "1"
+    step.mkdir()
+    counter = tmp_path / "runs"
+    (step / "cmd.sh").write_text(f"echo x >> {counter}\n")
+
+    for _ in range(3):
+        run("step.sh", "start", str(step))
+    _step_wait(step)
+    time.sleep(0.3)
+
+    assert counter.read_text() == "x\n", "the command ran more than once"
+
+
+def test_polling_shows_every_byte_exactly_once(tmp_path):
+    """No duplication and no loss, while the log is still being appended to.
+
+    `poll` reports the offset it has *shown*, not the end of the file, because the two
+    differ whenever the step writes between the size read and the byte read -- and an
+    offset past what was shown loses output permanently.
+    """
+    step = tmp_path / "1"
+    step.mkdir()
+    (step / "cmd.sh").write_text("for i in 1 2 3 4 5; do echo line$i; sleep 0.2; done\n")
+
+    run("step.sh", "start", str(step))
+    body = _step_wait(step).split("|", 1)[1]
+
+    for i in range(1, 6):
+        assert body.count(f"line{i}") == 1, f"line{i} appeared {body.count(f'line{i}')} times"
+
+
+def test_step_logs_stay_out_of_the_compile_cache():
+    """`cache-down` pulls all of $DF_REMOTE_CACHE home, and its size gates the push.
+
+    A step log under that directory would ride home with the compile cache and then count
+    against the 512 MB ceiling that rental 45 paid 33 billed minutes to earn.
+    """
+    source = (REMOTE / "run_remote.sh").read_text()
+    steps = re.search(r'DF_REMOTE_STEPS="\$\{DF_REMOTE_STEPS:-([^}]+)\}"', source).group(1)
+    cache = re.search(r'DF_REMOTE_CACHE="\$\{DF_REMOTE_CACHE:-([^}]+)\}"', source).group(1)
+    assert not steps.startswith(cache.rstrip("/") + "/"), f"{steps} is inside {cache}"
+
+
+def test_a_step_whose_output_ends_mid_line_is_still_readable(tmp_path):
+    """The marker must survive a log that ends without a newline.
+
+    `fetch-weights` emits a `\\r` progress bar, so the log genuinely ends mid-line for
+    minutes at a time. With the marker printed after the payload it landed on the end of
+    that partial line, where a line-based parse cannot find it: the caller would read no
+    status, believe the step was still running, and hang until the stall budget fired --
+    turning a finished step into a dead rental.
+    """
+    step = tmp_path / "1"
+    step.mkdir()
+    (step / "cmd.sh").write_text("printf 'no trailing newline'\n")
+    run("step.sh", "start", str(step))
+
+    assert _step_wait(step) == "0|no trailing newline"
+
+    # And the marker is findable by the parse run_remote.sh actually uses, at any offset.
+    out = run("step.sh", "poll", str(step), "0").stdout
+    assert re.search(r"(?m)^__DF_STEP__ offset=\d+ status=0$", out), out

@@ -640,25 +640,112 @@ sh "$DF_REPO_ROOT/remote/sync.sh" up $SYNC_FLAGS \
 # ways this script talks to the box now fail on the same terms.
 DF_SSH_KEEPALIVE="-o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=6"
 
+_ssh() {
+    # shellcheck disable=SC2086
+    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new $DF_SSH_KEEPALIVE \
+        "$DF_SSH_HOST" "$@"
+}
+
+#: Where a detached step keeps its command, its log and its exit status.
+#:
+#: Deliberately **not** under $DF_REMOTE_CACHE: `sync.sh cache-down` pulls that whole
+#: directory home into cache/compile/<key>/, and the size of that directory is what the
+#: 512 MB push ceiling measures. Step logs there would ride home with the compile cache and
+#: then count against sending it back up -- the guard rental 45 paid 33 billed minutes to
+#: earn.
+DF_REMOTE_STEPS="${DF_REMOTE_STEPS:-/workspace/df-steps}"
+#: How often to ask the box for a step's new output, in seconds.
+DF_STEP_POLL_S="${DF_STEP_POLL_S:-15}"
+#: How long a step may produce *nothing at all* before we stop believing in it. The remote
+#: `timeout` and the local watchdog are the real bounds on a step; this only exists so a
+#: poll loop cannot spin forever against a box that has gone silent for good. Generous on
+#: purpose: a cold max-autotune compile of the reference is 268 s of silence, and the
+#: measured per-slot cost runs to 526 s.
+DF_STEP_STALL_S="${DF_STEP_STALL_S:-2400}"
+DF_STEP_SEQ=0
+
 # The image already ships torch 2.11 / CUDA 12.8 and a matching Triton, so DeltaForge is
 # installed on top of it with --no-deps. Re-resolving torch here would either waste
 # several minutes of paid time or, worse, replace the CUDA build with a CPU one.
+#
+# The step runs detached on the box and we follow its log; `remote/step.sh` has the whole
+# argument for why, and the property that makes the launch retry safe. What matters here:
+# **losing the connection is no longer losing the rental**, and the step is started exactly
+# once whatever the network does.
 remote_sh() {
     if df_dry "would run on the instance: $*"; then
         return 0
     fi
-    # shellcheck disable=SC2086
-    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new $DF_SSH_KEEPALIVE \
-        "$DF_SSH_HOST" "cd '$DF_REMOTE_DIR' && $*"
+    DF_STEP_SEQ=$((DF_STEP_SEQ + 1))
+    _step_dir="$DF_REMOTE_STEPS/$DF_STEP_SEQ"
+    _step_helper="$DF_REMOTE_DIR/remote/step.sh"
+    _step_tmp="${TMPDIR:-/tmp}/df-step-$$-$DF_STEP_SEQ"
+
+    # The command goes over as a file rather than as an argument, so nothing re-parses it on
+    # the way. `$(nproc)` inside DF_COMPILE_ENV is meant to be evaluated by the box and
+    # still is: it reaches cmd.sh literally, exactly as it used to reach the remote shell.
+    _step_try=1
+    while :; do
+        if printf '%s\n' "cd '$DF_REMOTE_DIR' && $*" | _ssh \
+            "mkdir -p '$_step_dir' && cat > '$_step_dir/cmd.sh' && sh '$_step_helper' start '$_step_dir'"
+        then
+            break
+        fi
+        if [ "$_step_try" -ge 3 ]; then
+            df_die "could not start remote step $DF_STEP_SEQ after $_step_try attempts"
+        fi
+        df_warn "starting remote step $DF_STEP_SEQ failed (attempt $_step_try of 3); retrying in 5s"
+        _step_try=$((_step_try + 1))
+        sleep 5
+    done
+
+    _step_offset=0
+    _step_quiet_since=$(df_now_epoch)
+    while :; do
+        if _ssh "sh '$_step_helper' poll '$_step_dir' $_step_offset" > "$_step_tmp" 2>/dev/null; then
+            _step_meta=$(sed -n 's/^__DF_STEP__ //p' "$_step_tmp" | tail -1)
+            sed '/^__DF_STEP__/d' "$_step_tmp"
+
+            _step_new=${_step_meta#offset=}
+            _step_new=${_step_new%% *}
+            _step_status=${_step_meta##*status=}
+
+            if [ -n "$_step_new" ] && [ "$_step_new" != "$_step_offset" ]; then
+                _step_offset=$_step_new
+                _step_quiet_since=$(df_now_epoch)
+            fi
+            case "$_step_status" in
+                running | "") : ;;
+                *[!0-9]* )
+                    rm -f "$_step_tmp"
+                    df_die "remote step $DF_STEP_SEQ reported an unreadable status '$_step_status'"
+                    ;;
+                *)
+                    rm -f "$_step_tmp"
+                    return "$_step_status"
+                    ;;
+            esac
+        else
+            # The step is still running on the box; only our view of it broke. This is the
+            # whole point of the design, so it is a warning and not a failure.
+            df_warn "lost the connection while following remote step $DF_STEP_SEQ; it keeps running on the box"
+        fi
+
+        if [ $(( $(df_now_epoch) - _step_quiet_since )) -ge "$DF_STEP_STALL_S" ]; then
+            rm -f "$_step_tmp"
+            df_die "remote step $DF_STEP_SEQ produced nothing for ${DF_STEP_STALL_S}s; giving up on it"
+        fi
+        sleep "$DF_STEP_POLL_S"
+    done
 }
 
 # Like `remote_sh`, but the box's answer comes back on stdout instead of being logged. Used
 # for the two facts only the box knows: what card this is, and how many cores it will admit
 # to. Never used for a step whose *effect* matters -- a dry run must not silently skip work.
+# Deliberately not detached: these are one-line questions answered in milliseconds, and the
+# answer has to come back on stdout. There is no long-lived channel here to lose.
 remote_capture() {
-    # shellcheck disable=SC2086
-    ssh $DF_SSH_ID -p "$DF_SSH_PORT" -o StrictHostKeyChecking=accept-new $DF_SSH_KEEPALIVE \
-        "$DF_SSH_HOST" "cd '$DF_REMOTE_DIR' && $*" 2>/dev/null
+    _ssh "cd '$DF_REMOTE_DIR' && $*" 2>/dev/null
 }
 
 df_log "preparing the remote environment"
