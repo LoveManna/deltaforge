@@ -248,8 +248,20 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Forty-five instances created, forty-five destroyed, $9.143 lifetime, zero leaked. Both
+**Fifty-three instances created, fifty-three destroyed, $9.954 lifetime, zero leaked. Both
 champions are kernels this project deleted rather than wrote.**
+
+**Rental 54 (2026-09-30): `gamma` exists.** A `k+1`-token verify costs **1.316 at k=2 and
+1.404 at k=4**, and the two points say the cost is a **step** — ~23% for entering the
+seq>1 path at all, then 4.4% per token. Batch 010's two registered kill criteria were both
+crossed and both are **withdrawn as underived**: the spec's own formula with the measured
+`gamma` still shows 1.34x and 1.45x. A kill criterion is a prediction; derive it and
+re-substitute before writing "dead". See
+[`results/batches/010-speculative-verify/`](results/batches/010-speculative-verify/).
+
+**That session also cost $0.811 across eight rentals, seven of which measured nothing** —
+three to one bug (blocker 19: a remote step lived exactly as long as its ssh connection, and
+had been misfiled against hosts twice). Remote steps now run detached via `remote/step.sh`.
 
 **Rental 46 (2026-09-23): the compiler beat our hand-written kernel at the one site we had
 ever won on.** Three registrations of one program ran in one process — the champion's
