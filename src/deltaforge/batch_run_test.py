@@ -685,6 +685,7 @@ def test_the_decode_loop_marker_is_the_installer_not_the_operation_it_replaces()
 
     loops = {entry.name for entry in REGISTRY if _installs_a_decode_loop(entry)}
     assert loops == {
+        "speculative_fixed_k1",
         "speculative_fixed_k2",
         "speculative_fixed_k4",
         "speculative_ngram_k2",

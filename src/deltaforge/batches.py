@@ -2806,6 +2806,419 @@ BATCH_010 = Batch(
 )
 
 
+BATCH_011 = Batch(
+    batch_id="011-bytes-not-kernels",
+    description=(
+        "**Ten batches have answered the question this project registered, and the answer is "
+        "no.** The premise was that a hand-written Triton kernel can beat what "
+        "`torch.compile(mode='max-autotune')` generates on this decode path. Every kernel "
+        "written here has now been measured against the compiler at the two sites most "
+        "favourable to it, and the compiler won both: `045` beat `044` by **37%** on the "
+        "causal conv, and `056` beat `054` by **3.2%** on the int4 head -- each time the "
+        "*same function*, the win going to the version with no kernel of ours in it. Both "
+        "champions are kernels this project deleted. "
+        "**So this batch stops contesting codegen and starts contesting the program.** The "
+        "compiler chooses instructions; it does not choose how many bytes the weights "
+        "occupy, and it does not choose how many forward passes a token costs. Those two "
+        "are still ours, and this batch measures both: the grouped int4 dequantise-GEMV "
+        "that `056` proved inductor fuses, taken from 14.80% of per-token bytes to "
+        "**52.75%** (`071`), **67.55%** (`072`) and **97.85%** (`074`) -- a dose-response "
+        "ladder whose every rung is one install on top of a measured one -- and the "
+        "**two-token verify** (`069`), which decides whether rental 54's 23% step at the "
+        "seq=1 -> seq>1 boundary is real. "
+        "It also measures **the pair this repository ships**: `apply_champions` installs "
+        "`inline_causal_conv` beside `int4_head_torch_dequant` and no rental has ever "
+        "benchmarked that combination -- rental 46's `058` composed the conv with the "
+        "kernel that has since been retired. "
+        "Every composition sits above its own ingredients in the same process, and every "
+        "gate is on a **comparison** rather than an absolute ratio, which is the defect "
+        "that cost rental 46 the largest slot in the batch."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the ratio is the "
+                "harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band or every other number here is "
+                "void. Nine rentals have got this far: 1.0009, 1.0018, 1.0024, 0.9913, "
+                "1.0008, 1.0053, 1.0101, 0.9972 and -- with 15 scoring rounds instead of "
+                "5 -- **1.0002 at an IQR of 0.0001**, the tightest this project has "
+                "recorded. Read its *sign* before any margin below it (rental 43 carried "
+                "+1.01%, rental 45 −0.28%), and read the reference column's achieved "
+                "bandwidth before any of them: 1282, 800, 1197 and 849 GB/s on four cards "
+                "reporting the same clocks. **This slot is also the divisor for four gates "
+                "in this batch**, which is new: every precondition here is a margin "
+                "against this slot rather than an absolute ratio, so a drifting card "
+                "cannot decline a hypothesis for reasons that have nothing to do with it."
+            ),
+        ),
+        Hypothesis(
+            slug="066-inline-causal-conv",
+            kernels=("inline_causal_conv",),
+            category="A",
+            byte_share=0.00055,
+            replaces=("causal_conv",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=264 / 264,
+            kl_threshold=1e-06,
+            weight_bits={},
+            mechanism=(
+                "The champion of `causal_conv`: the four-tap depthwise convolution at "
+                "seq_len 1 written as torch operations -- four multiplies, a round to "
+                "bf16, a silu and a shifted history -- instead of `F.conv1d`. Inductor "
+                "folds it into the kernels either side and all 24 cuDNN calls disappear."
+            ),
+            prediction="win",
+            rationale=(
+                "**An ingredient, measured alone, because three slots below compose it.** "
+                "Measured 1.0765 (IQR 0.0552) on rental 45 and **1.0650** on rental 46 at "
+                "15 rounds, bit-identical both times (264/264, 0.00000 nats). Predicted "
+                "**win, 1.03-1.09**. It attacks 0.055% of the bytes and returns 6%, which "
+                "is the one place in this repository where the byte ceiling is not the "
+                "binding constraint: the saving is 24 cuDNN dispatches and the fusion "
+                "either side of them, not traffic. Bars are `045`'s and are exact by "
+                "construction -- `inline_causal_conv_test` asserts bit-identity with the "
+                "reference at rtol=0, atol=0 on a CPU, so anything but 264/264 at 0 nats "
+                "is a harness fault rather than a kernel property."
+            ),
+        ),
+        Hypothesis(
+            slug="067-int4-head-torch-dequant",
+            kernels=("int4_head_torch_dequant",),
+            category="A",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion of `decode_step`: the group-128 int4 dequantise-GEMV on the "
+                "tied 248320 x 2560 head, written as torch operations -- unpack the "
+                "nibbles, apply the group scales, round to bf16, accumulate in fp32 -- and "
+                "handed whole to `max-autotune`, which fuses the entire unpack, the `mm`, "
+                "the final RMSNorm and the residual add into one reduction kernel."
+            ),
+            prediction="win",
+            rationale=(
+                "**The ingredient every quantised slot below is read against, and the only "
+                "in-batch evidence that inductor fuses a grouped dequantisation at all.** "
+                "Measured **1.0171 (IQR 0.0130)** on rental 46 against a 1.1249x byte "
+                "ceiling, with the hand-written kernel at 0.9851 in the same process. "
+                "Predicted **win, 1.01-1.04**. Its margin over `000` is the quantity four "
+                "gates below read, and that is the whole point of running it first: rental "
+                "46 gated the MLP on this slot reaching **1.02 absolute** and declined the "
+                "largest prize in the backlog by 0.3%, on a number that moves with how "
+                "fast the card is that hour and with what fraction of the step the head "
+                "happens to be. Bars are `054`'s and the layer-2 numbers must come back "
+                "**0.9318 and 0.01674** -- five rentals have returned exactly that, and a "
+                "different number means the weights or the rounding changed, not the card."
+            ),
+        ),
+        Hypothesis(
+            slug="068-champion-pair",
+            kernels=("inline_causal_conv", "int4_head_torch_dequant"),
+            category="B",
+            byte_share=0.1486,
+            replaces=("causal_conv", "decode_step"),
+            contrast_with="067-int4-head-torch-dequant",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "Both champions at once, which is what `apply_champions` installs: 953.55 "
+                "MB/token removed from one matmul, and 24 cuDNN dispatches removed from 24 "
+                "layers, on disjoint parts of the step."
+            ),
+            prediction="win",
+            rationale=(
+                "**The shipped configuration, and it has never been benchmarked.** Rental "
+                "46's `058` measured the conv with the *retired* Triton head, so the pair "
+                "this repository actually assembles has no number at all -- an unmeasured "
+                "default is the one thing a project like this may not ship. Predicted "
+                "**win, 1.06-1.12**: `066` and `067` compose to ~1.08 if their savings are "
+                "independent, which they should be -- one is bytes inside the last matmul "
+                "and the other is dispatches inside 24 layers. **The reading that matters "
+                "is 068 against 066 and 067 separately.** A shortfall would put this pair "
+                "in the same class as `060`, where two dispatch savings competed for the "
+                "same microseconds and the static cache was worth +1.5% alone and +0.0% on "
+                "top of the conv. Bars are `067`'s: the conv changes no arithmetic."
+            ),
+        ),
+        Hypothesis(
+            slug="069-verify-inflation-k1",
+            kernels=("rollback_state", "speculative_fixed_k1"),
+            category="C",
+            byte_share=0.0,
+            correctness="sequence",
+            divergence_gap_ceiling=0.3,
+            mechanism=(
+                "The speculative loop at block_size=1 with a drafter that always proposes "
+                "the same token: acceptance is 0 by construction, every cycle runs one "
+                "**two-token** verify, and the ratio is 1/gamma(1)."
+            ),
+            prediction="loss",
+            rationale=(
+                "**One slot that separates two models of rental 54's number, and they are "
+                "10% apart.** gamma(2)=1.316 and gamma(4)=1.404 fit a line with slope 4.4% "
+                "per token and intercept 1.184 -- but a one-token verify *is* ordinary "
+                "decode at gamma=1.000, so either there is a **~23% step at the seq=1 -> "
+                "seq>1 boundary itself** or the two points are on a curve. The step model "
+                "predicts gamma(1)=1.272 and a ratio of **0.786**; a model with no step, "
+                "through (1 token, 1.000) and (3 tokens, 1.316), predicts 1.158 and "
+                "**0.864**. Rental 54's identity IQR was 0.0001 and these slots' were "
+                "0.005, so the separation is 15 band-widths. Predicted **loss** either "
+                "way, and the prediction that is on the record is the *number*: **0.786, "
+                "the step**, because the step is what the suspects predict -- "
+                "`reference.py`'s `if seq_len > 1` mask branch and a `k+1` autotune pool "
+                "that the reference column never compiles are both **fixed costs of "
+                "leaving seq=1**, not per-token ones. 0.864 would refute both and make the "
+                "verify a traffic problem the spec's own model already prices. **This is "
+                "the cheapest decisive slot in the batch**: no new arithmetic, no new "
+                "kernel, and it governs whether entry 10 is alive."
+            ),
+        ),
+        Hypothesis(
+            slug="070-verify-inflation-k2",
+            kernels=("rollback_state", "speculative_fixed_k2"),
+            category="C",
+            byte_share=0.0,
+            contrast_with="069-verify-inflation-k1",
+            correctness="sequence",
+            divergence_gap_ceiling=0.3,
+            mechanism="The same instrument at block_size=2: a three-token verify, gamma(2).",
+            prediction="loss",
+            rationale=(
+                "**One variable from 069, and the only number in this batch that can be "
+                "compared with another rental's.** Rental 54 measured 0.7596 for exactly "
+                "this slot on an **RTX 4090**, where every candidate compile logged `No "
+                "valid triton configs ... Required: 110592 Hardware limit: 101376` on the "
+                "verify's `k+1` shape -- a shape the reference column never compiles. A "
+                "5090 has more shared memory per SM and offers a wider pool, so **if this "
+                "returns materially above 0.7596 on a 5090 the 23% step is partly that "
+                "card's shared-memory limit and not this model's decode graph.** "
+                "Predicted **loss, 0.76-0.85**, the range spanning both readings. Without "
+                "this slot, 069's number could not be placed: 069 alone measures gamma(1) "
+                "against a card nothing else has characterised, and the pair measures the "
+                "*shape* of gamma on one card, which is the quantity the step model is "
+                "about. Run it whatever 069 returns."
+            ),
+        ),
+        Hypothesis(
+            slug="071-int4-mlp-torch-dequant",
+            kernels=("int4_mlp_torch_dequant",),
+            category="B",
+            byte_share=0.5275,
+            replaces=("swiglu_mlp",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=232 / 264,
+            kl_threshold=0.06,
+            weight_bits={"mlp": 4},
+            requires=Precondition(
+                slug="067-int4-head-torch-dequant",
+                floor=0.0,
+                versus="000-identity",
+                reason=(
+                    "the proposition this slot depends on is that a grouped int4 "
+                    "dequantise-GEMV written in torch is worth something at a site inductor "
+                    "compiles -- and that proposition is a *comparison* between the head "
+                    "slot and the unmodified reference, measured in the same process on the "
+                    "same card in the same interleaved rounds. Rental 46 put the floor on "
+                    "the head's absolute ratio at 1.02, the head returned 1.0171 while "
+                    "answering the question with an unambiguous yes, and this slot -- 52.75% "
+                    "of per-token bytes, the largest prize in the backlog -- declined by "
+                    "0.3% of a quantity that depends on the hour's card"
+                ),
+            ),
+            mechanism=(
+                "The construction `056` proved fuses, on the 96 MLP projections: **52.75% "
+                "of per-token bytes at a 1.6545x ceiling**, the largest homogeneous block "
+                "in the model, at group-128 int4 with no hand-written kernel in it."
+            ),
+            prediction="win",
+            rationale=(
+                "**The prize, and the first slot in eleven batches to attack it with code "
+                "we did not write.** Three hand-written kernels have failed on these sites "
+                "at ~66 GB/s across three rentals; rental 43 refuted register pressure and "
+                "latency; rental 45 closed the tile at five measured points. What was "
+                "never tried is that the right code for these sites is inductor's own. "
+                "Predicted **win, 1.25-1.55** against a 1.6545x ceiling -- the head "
+                "collected 1.0171 of 1.1249, 14% of its ceiling, and if this collects the "
+                "same fraction it returns 1.09; if it collects what the *bytes* say, 1.45. "
+                "The honest range spans them, and the wide sites are the reason to expect "
+                "the upper half: gate_proj and up_proj are 9216 channels and down_proj "
+                "2560, against the 32 that starved every kernel batches 003 and 004 "
+                "measured. **A bandwidth budget reads a loss just as clearly.** If "
+                "inductor materialises the dequantised weight at these sites, the "
+                "candidate moves 4529.85 MB/token of bf16 *plus* the 1132.46 MB of packed "
+                "nibbles it read to build it, and lands near 0.6 -- there is no middle "
+                "outcome that is hard to read, which is what made `056` worth three "
+                "minutes and makes this worth six. Bars are derived from a measured point: "
+                "`030-int4-mlp` is the same weights, the same k-major grouping and the "
+                "same rounding through a Triton kernel, and returned **237/264 agreement "
+                "at 0.04868 nats** -- and `054` against `056` showed two authors of one "
+                "function return layer-2 numbers identical to the digit, so a number far "
+                "from 0.04868 here is a registration bug rather than a quantisation "
+                "effect. `--dump-install int4_mlp_torch_dequant` is set for this rental, "
+                "so whatever this slot returns, the generated code says why."
+            ),
+        ),
+        Hypothesis(
+            slug="072-int4-mlp-and-head",
+            kernels=("int4_mlp_torch_dequant", "int4_head_torch_dequant"),
+            category="B",
+            byte_share=0.6755,
+            replaces=("swiglu_mlp", "decode_step"),
+            contrast_with="071-int4-mlp-torch-dequant",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=224 / 264,
+            kl_threshold=0.09,
+            weight_bits={"mlp": 4, "head": 4},
+            requires=Precondition(
+                slug="071-int4-mlp-torch-dequant",
+                floor=0.0,
+                versus="000-identity",
+                reason=(
+                    "this is the MLP install plus a second one measured alone two slots "
+                    "above it, so with the MLP below the reference there is nothing here "
+                    "the batch does not already hold -- adding a second install on top of a "
+                    "composition that lost is what batch 003 spent five slots doing, and "
+                    "batch 004 two more. The floor is on the margin over identity because "
+                    "that is the proposition: did quantising the MLP in torch beat bf16 on "
+                    "*this* card"
+                ),
+            ),
+            mechanism=(
+                "Both quantised installs at once: 67.55% of per-token bytes at 4 bits, "
+                "**a 2.0269x ceiling** -- the MLP's 96 projections and the tied head, "
+                "which between them are every wide matmul the decode step performs."
+            ),
+            prediction="win",
+            rationale=(
+                "**The rung that says whether the construction adds.** One variable from "
+                "071, and the quantity is `072 - 071` against `067 - 000`: if the head's "
+                "margin survives being stacked on the MLP's, the mechanism is byte-count "
+                "and byte-counts add. If it does not, then something shared is saturating "
+                "-- the same non-additivity `060` found for two dispatch savings, but for "
+                "traffic, which would be a more interesting result than the ratio. "
+                "Predicted **win, 1.35-1.75**. Bars come from two measured points and a "
+                "superset: KL is roughly additive over independent perturbations, so "
+                "0.04868 (`030`, the MLP) + 0.01674 (`022`, the head) ~ 0.065, and "
+                "`014-int4-full` -- a strict superset of these sites -- measured **226/264 "
+                "at 0.09185**, which bounds it from above. The bar sits at 224/264 and "
+                "0.09, between the sum and the bound."
+            ),
+        ),
+        Hypothesis(
+            slug="073-conv-mlp-and-head",
+            kernels=("inline_causal_conv", "int4_mlp_torch_dequant", "int4_head_torch_dequant"),
+            category="B",
+            byte_share=0.6761,
+            replaces=("causal_conv", "swiglu_mlp", "decode_step"),
+            contrast_with="072-int4-mlp-and-head",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=224 / 264,
+            kl_threshold=0.09,
+            weight_bits={"mlp": 4, "head": 4},
+            requires=Precondition(
+                slug="072-int4-mlp-and-head",
+                floor=0.0,
+                versus="000-identity",
+                reason=(
+                    "this is 072 with the conv added, and the conv's own value is measured "
+                    "in 066 and 068. With 072 below the reference the batch already holds "
+                    "every part of this slot separately and the composition would only "
+                    "stack a third install on a loss"
+                ),
+            ),
+            mechanism=(
+                "The configuration this repository would ship if 071 wins: bytes removed "
+                "from every wide matmul, and 24 cuDNN dispatches removed from 24 layers."
+            ),
+            prediction="win",
+            rationale=(
+                "**One variable from 072: the conv, whose value was measured alone in 066 "
+                "and in one composition in 068.** Predicted **win, 1.40-1.85**, and the "
+                "reading is `073 - 072` against `068 - 067`: the conv saved 24 dispatches "
+                "next to a bf16 MLP, and this asks whether it still saves them next to an "
+                "MLP whose own kernels changed. It is the promotable configuration, so it "
+                "has to exist as a number before anything promotes it -- `058` is on the "
+                "record as the last time this project shipped a pair no rental had run. "
+                "Bars are 072's: the conv is bit-identical to the reference."
+            ),
+        ),
+        Hypothesis(
+            slug="074-int4-wide-and-head",
+            kernels=("int4_wide_torch_dequant",),
+            category="B",
+            byte_share=0.9785,
+            replaces=("decode_step",),
+            contrast_with="072-int4-mlp-and-head",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=220 / 264,
+            kl_threshold=0.12,
+            weight_bits={"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+            requires=Precondition(
+                slug="072-int4-mlp-and-head",
+                floor=0.0,
+                versus="071-int4-mlp-torch-dequant",
+                reason=(
+                    "this slot's whole content above 072 is *more sites*, so the "
+                    "proposition it rests on is that adding sites to this construction "
+                    "keeps paying -- which is exactly what 072 minus 071 measures, in one "
+                    "process on one card. If putting the head's sites on top of the MLP's "
+                    "took the ratio down, putting another 2602 MB/token of narrower "
+                    "projections on top will take it down further, and the batch will "
+                    "already know why. The floor is on the margin between two slots rather "
+                    "than on either one's absolute value, because a card that drifts moves "
+                    "both together"
+                ),
+            ),
+            mechanism=(
+                "Every layer projection except the two 32-channel gates, plus the tied "
+                "head, at group-128 int4 in torch: 200 sites, **97.85% of what the "
+                "compiled column moves, a 3.7578x ceiling** -- the whole weight stream "
+                "bar 7.86 MB/token."
+            ),
+            prediction="win",
+            rationale=(
+                "**The largest byte share this project can attack, and the riskiest install "
+                "in the batch, so it runs last with everything cheaper already on disk.** "
+                "Predicted **win, 1.5-2.4**. The 48 excluded sites are `in_proj_a` and "
+                "`in_proj_b` -- 0.09% of the bytes and the whole of the numerical risk, "
+                "because they feed an exponential through `A_log` -- so this buys 97.85% of "
+                "the stream at none of that cost. **What it can find that 072 cannot**: "
+                "the head is 248320 channels wide and the MLP 9216, and every site added "
+                "here is narrower -- 2560, 4096, the full-attention projections. If the "
+                "ratio falls below 072's, the fusion `056` discovered is **width-dependent**, "
+                "and the boundary is a fact about inductor's GEMV prologue that this "
+                "project could state in one table. That reading is worth a slot on its own. "
+                "The one measurement of these sites at 4 bits is `014-int4-full` (rental "
+                "37): **226/264 at 0.09185 nats, gate passed** -- through a row-major "
+                "packing and a hand-written kernel running at 141 GB/s, so its correctness "
+                "transfers and its ratio does not. Bars sit at 220/264 and 0.12, one "
+                "measurement's headroom above that point rather than on top of it, and "
+                "**this slot excludes the gates 014 included**, so it should be no worse."
+            ),
+        ),
+    ),
+)
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -2817,6 +3230,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_008.batch_id: BATCH_008,
     BATCH_009.batch_id: BATCH_009,
     BATCH_010.batch_id: BATCH_010,
+    BATCH_011.batch_id: BATCH_011,
 }
 
 

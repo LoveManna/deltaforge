@@ -379,8 +379,45 @@ def test_falls_back_to_the_second_generation_card_when_none_match(workdir):
     )
 
     assert "no RTX 6090 offer met the filters" in result.stderr
-    assert "selected offer 9006" in result.stderr
+    # 9012, not 9006: the cheaper 4090 in the fixture advertises `cuda_max_good` exactly
+    # 12.8, which `DF_MIN_CUDA` excludes because every rental that took such a host died
+    # with Error 804. The fallback must still find the card, one driver newer.
+    assert "selected offer 9012" in result.stderr
     assert "RTX 4090" in result.stderr
+
+
+def test_a_host_sitting_exactly_on_the_cuda_floor_is_never_selected(workdir):
+    """Rentals 33, 41 and 42 each took a host advertising `cuda_max_good` **exactly 12.8**
+    and each died at the first CUDA call with Error 804; rental 51 was cancelled by hand for
+    $0.005 once someone recognised the number in the offer line. Three for three is not a
+    coincidence, so the floor a cu128 build needs is *above* 12.8 and `DF_MIN_CUDA` says
+    12.9.
+
+    The fixture's cheapest RTX 4090 is exactly such a host, and it is cheaper than the one
+    that works -- so a search ordered on price alone walks into it, which is what happened."""
+    offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())["offers"]
+    on_the_floor = [o for o in offers if float(o.get("cuda_max_good") or 0) == 12.8]
+    assert on_the_floor, "the fixture must contain a host sitting exactly on the CUDA floor"
+    assert min(o["dph_total"] for o in on_the_floor) < min(
+        o["dph_total"] for o in offers if o.get("gpu_name") == "RTX 4090" and o not in on_the_floor
+    ), "and it must be the cheapest of its generation, or the test proves nothing about price order"
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "on-the-floor",
+        "--gpu",
+        "RTX 4090",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    for offer in on_the_floor:
+        assert f"selected offer {offer['id']}" not in result.stderr
+    assert "selected offer 9012" in result.stderr
 
 
 def test_exits_cleanly_when_nothing_meets_the_filters(workdir):
@@ -1918,12 +1955,28 @@ def _passing_offer() -> dict:
         and (o.get("reliability2") or 0) > 0.98
         and (o.get("dph_total") or 1e9) <= 0.45
         and (o.get("gpu_ram") or 0) >= 24000
-        and float(o.get("cuda_max_good") or 0) >= 12.8
+        and float(o.get("cuda_max_good") or 0) >= _min_cuda_floor()
         and (o.get("inet_down") or 0) > 300
         and o.get("verified") is not False
     ]
     assert passing, "the fixture must contain at least one fully-passing RTX 5090 offer"
     return sorted(passing, key=lambda o: o["dph_total"])[0]
+
+
+def _min_cuda_floor() -> float:
+    """provision.sh's own `DF_MIN_CUDA` default, read rather than copied.
+
+    A test that re-states the filter's constant has to be edited every time the filter
+    moves, and the edit is the thing that gets forgotten: the floor was 12.8 here for as
+    long as it was 12.8 there, and the day it became 12.9 these two tests would have gone
+    on selecting a fixture offer provision.sh rejects.
+    """
+    import re
+
+    text = (REMOTE / "provision.sh").read_text()
+    match = re.search(r'DF_MIN_CUDA="\$\{DF_MIN_CUDA:-([0-9.]+)\}"', text)
+    assert match, "provision.sh no longer sets a DF_MIN_CUDA default"
+    return float(match.group(1))
 
 
 def _offer_ladder(n: int) -> list[dict]:
@@ -2077,7 +2130,7 @@ def test_a_host_whose_driver_predates_our_torch_build_is_never_selected(workdir)
     Nothing in the filter compared the host's driver against the wheels we install, so the
     price-ordered search walked straight into it."""
     offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())
-    stale = [o for o in offers["offers"] if (o.get("cuda_max_good") or 0) < 12.8]
+    stale = [o for o in offers["offers"] if (o.get("cuda_max_good") or 0) < _min_cuda_floor()]
     assert stale, "the fixture must contain an offer with a driver too old for cu128"
     stale_ids = {s["id"] for s in stale}
     assert min(o["dph_total"] for o in stale) < min(

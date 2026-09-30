@@ -771,6 +771,15 @@ the one this file has been documenting.
 | 34 | 13.0 | fine |
 | 42 | 12.8 | `Error 804` |
 
+**Closed on 2026-09-30: `DF_MIN_CUDA` now *defaults* to 12.9.** It had stayed at 12.8 for
+three rentals after this paragraph concluded 12.9 was right, so the filter was correct only
+for a session that remembered to pass it — and rental 51 is what that costs when someone
+does remember (cancelled by hand, $0.005) against rentals 33, 41 and 42 when nobody does.
+`remote/fixtures/offers.json` now carries both cases: 9006 is a 4090 on the floor that must
+be rejected, and 9012 is the same card one driver newer at $0.02 more, which the fallback
+search must select. `remote/scripts_test.py` reads the floor out of `provision.sh` instead
+of restating it, because restating it is how it drifted.
+
 A host sitting *exactly on* the floor is the failing case, every time it has been tried.
 `DF_MIN_CUDA=12.9` is therefore the correct filter for a cu128 torch build — but it
 **emptied the 4090 pool at the default $0.45 ceiling**, so the two knobs are coupled:

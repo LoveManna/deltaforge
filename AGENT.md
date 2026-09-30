@@ -25,6 +25,51 @@ So: **state your prediction and your mechanism before you write code.** Being ri
 advance is the result. A hypothesis you predicted would fail, that failed for the reason you
 gave, is worth more than an unexplained win.
 
+### 1.1 Ten batches in, the premise is answered, and the answer is no
+
+Read this before filling a batch, because it decides what kind of hypothesis is worth a
+slot.
+
+The question above has now been put to the two sites in this model most favourable to a
+hand-written kernel, and it lost both times **to the same program written as torch
+operations**:
+
+| pair | one variable | kernel | no kernel |
+|---|---|---:|---:|
+| `044` / `045` (rental 45) | the four taps as a `custom_op`, or as torch | 0.7854 | **1.0765** |
+| `054` / `056` (rental 46) | the int4 dequantise-GEMV as a kernel, or as torch | 0.9851 | **1.0171** |
+
+Both of this project's champions are kernels it **deleted**, and the mechanism is not a
+mystery: a `custom_op` costs its own kernel *plus* everything inductor can no longer fuse
+across it, and that second term is invisible at the call site. The two numbers also bound
+it — 37% where the kernel sat between a fused producer and a fused consumer in 24 layers,
+3.2% at one call site with one reduction beside it. **The barrier's cost and the fusion
+opportunity are the same quantity**, so a hand-written kernel is cheapest exactly where it
+has least to gain. That is close to a closed argument.
+
+**What is not closed is the program.** The compiler picks instructions; it does not pick
+
+* **how many bytes the weights occupy** — quantisation and layout are ours, and `056`
+  proved inductor will fuse a *grouped* nibble unpack into a 248320-wide GEMV prologue with
+  no weight-sized buffer in the graph, which this file assumed for nine batches it could
+  not. 91.85% of per-token bytes sit behind that one fact.
+* **how many forward passes a token costs** — speculative decoding changes it under a
+  property of greedy decoding no scheduler can observe. γ is measured now (§5) and the open
+  question is a 23% step, not the drafter.
+
+So from batch 011 the rule is: **do not register a slot that writes our code where torch
+already expresses the program.** Register a slot that hands the compiler a *different
+program* — fewer bytes, fewer passes, a layout it cannot choose — and let it write the
+kernel. `docs/HYPOTHESES.md` entry 1 is now a ladder of byte shares rather than a kernel
+backlog.
+
+**What would reopen the kernel line, stated in advance so it can happen.** A site where
+inductor's generated kernel falls materially short of the roofline, with the dump to show
+what it emitted — and the bar is now quantitative rather than rhetorical: a hand-written
+replacement has to beat it by **more than the fusion it destroys**, which the table above
+prices at 3-37% depending on what sits next to it. Every slot reports achieved GB/s beside
+its ratio, so any batch can notice this; none has yet.
+
 ## 2. The arithmetic that decides whether your hypothesis is worth trying
 
 Run this first. It needs no GPU, no checkpoint, and no money:
@@ -250,6 +295,22 @@ file rather than `argv`, and `remote/scripts_test.py` asserts that.
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
 **Fifty-three instances created, fifty-three destroyed, $9.954 lifetime, zero leaked. Both
 champions are kernels this project deleted rather than wrote.**
+
+**Batch 011 is registered (2026-09-30): `011-bytes-not-kernels`, ten slots.** It is the
+first batch built on §1.1: nothing in it writes a kernel. The pair this repository *ships*
+(`068`) is measured for the first time, then the construction `056` proved fuses climbs a
+byte-share ladder — 52.75% (`071`), 67.55% (`072`), 97.85% (`074`) — and two slots
+(`069`, `070`) settle whether rental 54's 23% step at the seq=1 → seq>1 boundary is real.
+**Every gate in it is a margin between two slots rather than an absolute ratio**, which is
+the defect that declined the largest hypothesis in the backlog on rental 46. Run it with
+`--dump-install int4_mlp_torch_dequant`: the MLP slot's generated code is what says why,
+whichever way it goes.
+
+Two pre-rental fixes went with it, both latent rental-voiders no CPU test would have shown
+before: `int4_mlp_torch_dequant` was registered against `decode_step`, which made it
+**impossible to compose with the head** (one champion per operation) — the Triton kernel on
+the same 96 sites has always said `swiglu_mlp`; and `DF_MIN_CUDA` still defaulted to
+**12.8**, the value that is 3 for 3 on `Error 804` (§8, and `docs/GPU-ACCESS.md` blocker 11).
 
 **Rental 54 (2026-09-30): `gamma` exists.** A `k+1`-token verify costs **1.316 at k=2 and
 1.404 at k=4**, and the two points say the cost is a **step** — ~23% for entering the

@@ -27,6 +27,7 @@ from .batches import (
     BATCH_007,
     BATCH_008,
     BATCH_009,
+    BATCH_011,
     BATCHES,
     get_batch,
 )
@@ -1370,6 +1371,203 @@ def test_009_predictions_are_registered_with_real_rationales():
     for hyp in BATCH_009:
         assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
         assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+# -- batch 011 ------------------------------------------------------------------------
+
+
+def test_batch_011_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_011) <= 12
+    assert not BATCH_011.is_calibration
+    assert BATCH_011.hypotheses[0].is_identity
+    assert BATCH_011.calibration_slug == "000-identity"
+    assert get_batch("011-bytes-not-kernels") is BATCH_011
+
+
+def test_batch_011_names_registered_kernels_with_installers_and_checks():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_011:
+        for name in hyp.kernels:
+            assert REGISTRY.get(name) is not None, name
+            assert name in INSTALLERS, name
+            if hyp.correctness == "sequence":
+                # A decode *loop* has no layer-1 probe to build: there is no reference
+                # callable with its signature to compare against, which is why entry 10
+                # gates it on the token sequence instead. `rollback_state` is in the same
+                # position — it records states the loop reads and computes nothing new.
+                continue
+            assert name in CHECK_BUILDERS, f"{name} has no layer-1 checks"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_011), ids=lambda h: h.slug)
+def test_every_011_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = {name: type(module) for name, module in model.named_modules()}
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    after = {name: type(module) for name, module in model.named_modules()}
+
+    if hypothesis.is_identity:
+        assert not applied and after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels), hypothesis.slug
+        assert after != before or type(model) is not before[""], hypothesis.slug
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_011), ids=lambda h: h.slug)
+def test_installing_an_011_hypothesis_is_idempotent(hypothesis, model):
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    once = {name: type(module) for name, module in model.named_modules()}
+
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    assert {name: type(module) for name, module in model.named_modules()} == once
+
+
+def test_every_ingredient_of_every_011_composition_is_measured_alone_first():
+    order = [hyp.slug for hyp in BATCH_011]
+    alone = {hyp.kernels[0]: hyp.slug for hyp in BATCH_011 if len(hyp.kernels) == 1}
+
+    for hyp in BATCH_011:
+        if len(hyp.kernels) < 2:
+            continue
+        if hyp.correctness == "sequence":
+            # A speculative slot is `rollback_state` plus one loop configuration, and
+            # neither half measures anything alone: a loop with no recorder cannot roll a
+            # rejected draft back, and a recorder with no loop records states nothing
+            # reads. The pair *is* the ingredient, and `070` names its contrast with `069`.
+            continue
+        for name in hyp.kernels:
+            assert name in alone, f"{hyp.slug} composes {name}, which no slot measures alone"
+            assert order.index(alone[name]) < order.index(hyp.slug), (
+                f"{hyp.slug} runs before {alone[name]}, which measures its ingredient"
+            )
+
+
+def test_the_011_quantisation_ladder_rises_in_byte_share_and_in_ceiling():
+    """A dose-response ladder, in the order batch 003 established and 006 broke.
+
+    Each rung installs the construction `056` measured on strictly more bytes than the rung
+    below, and each is gated on the one below it. That ordering is what lets a shortfall be
+    attributed: if `074` sits under `072`, the difference is the sites added, because
+    nothing else changed.
+    """
+    rungs = [
+        "067-int4-head-torch-dequant",
+        "071-int4-mlp-torch-dequant",
+        "072-int4-mlp-and-head",
+        "074-int4-wide-and-head",
+    ]
+    shares = [BATCH_011.get(slug).byte_share for slug in rungs]
+    assert shares == sorted(shares), shares
+    assert shares[0] == 0.1480 and shares[-1] == 0.9785
+    order = [hyp.slug for hyp in BATCH_011]
+    assert [order.index(slug) for slug in rungs] == sorted(order.index(slug) for slug in rungs)
+
+
+def test_every_011_gate_is_a_margin_between_two_slots_not_an_absolute_ratio():
+    """Rental 46's defect, refused by construction.
+
+    `061-int4-mlp-torch-dequant` -- 52.75% of per-token bytes -- declined because its gate
+    asked whether the head slot reached **1.02 absolute**, a quantity that moves with how
+    fast the card is that hour. The head returned 1.0171 and answered the proposition the
+    gate existed to test with an unambiguous yes. Every precondition in this batch is on a
+    difference between two slots measured in the same process, which is the one quantity
+    here that does not move with the hour.
+    """
+    gated = [hyp for hyp in BATCH_011 if hyp.requires is not None]
+    assert {h.slug for h in gated} == {
+        "071-int4-mlp-torch-dequant",
+        "072-int4-mlp-and-head",
+        "073-conv-mlp-and-head",
+        "074-int4-wide-and-head",
+    }
+    for hyp in gated:
+        assert hyp.requires.versus is not None, f"{hyp.slug}'s gate is an absolute ratio"
+        assert hyp.requires.floor == 0.0, hyp.slug
+        assert len(hyp.requires.reason) > 60, f"{hyp.slug}'s floor has a number and no reason"
+
+
+def test_the_011_verify_instruments_are_ungated_and_one_variable_apart():
+    """gamma's shape is the measurement, so neither point may be declined.
+
+    Rental 54 fitted two points and concluded a ~23% step at the seq=1 -> seq>1 boundary.
+    `069` is the point that separates that reading from a smooth one, and `070` is the
+    point rental 54 already measured, which is what places `069` on a card this project has
+    not characterised. A gate on either would leave the pair unreadable.
+    """
+    k1, k2 = BATCH_011.get("069-verify-inflation-k1"), BATCH_011.get("070-verify-inflation-k2")
+    assert k1.requires is None and k2.requires is None
+    assert k2.contrast_with == k1.slug
+    assert k1.kernels == ("rollback_state", "speculative_fixed_k1")
+    for hyp in (k1, k2):
+        assert hyp.correctness == "sequence"
+        # Above the 0.28125 that `oracle_test.py:264` measures for 1-2 bf16 ULP at this
+        # model's logit magnitude: a ceiling below it fails every reduction-order
+        # divergence the gate will ever see.
+        assert hyp.divergence_gap_ceiling == 0.3
+        assert hyp.prediction == "loss"
+
+
+def test_the_011_quantised_bars_are_derived_from_measured_points():
+    """Every bar here is a count a rental has landed on, not a round number.
+
+    `030-int4-mlp` measured 237/264 at 0.04868 nats on the same weights and the same
+    grouping; `022-int4-head` has measured 246/264 at 0.01674 on five rentals; and
+    `014-int4-full` -- a strict superset of `074`'s sites -- measured 226/264 at 0.09185.
+    """
+    expected = {
+        "067-int4-head-torch-dequant": (240 / 264, 0.06),
+        "071-int4-mlp-torch-dequant": (232 / 264, 0.06),
+        "072-int4-mlp-and-head": (224 / 264, 0.09),
+        "073-conv-mlp-and-head": (224 / 264, 0.09),
+        "074-int4-wide-and-head": (220 / 264, 0.12),
+    }
+    for slug, (top1, kl) in expected.items():
+        hyp = BATCH_011.get(slug)
+        assert hyp.top1_threshold == top1, slug
+        assert hyp.kl_threshold == kl, slug
+        assert hyp.correctness_positions == 264, slug
+    # The conv changes no arithmetic, so it carries the bit-identical bars `045` measured.
+    conv = BATCH_011.get("066-inline-causal-conv")
+    assert conv.top1_threshold == 1.0 and conv.kl_threshold == 1e-06
+
+
+def test_the_011_slots_claim_the_bytes_they_re_encode():
+    """`weight_bits` is what the bench divides by, so a missing region reports a fiction."""
+    expected = {
+        "000-identity": {},
+        "066-inline-causal-conv": {},
+        "067-int4-head-torch-dequant": {"head": 4},
+        "068-champion-pair": {"head": 4},
+        "069-verify-inflation-k1": {},
+        "070-verify-inflation-k2": {},
+        "071-int4-mlp-torch-dequant": {"mlp": 4},
+        "072-int4-mlp-and-head": {"mlp": 4, "head": 4},
+        "073-conv-mlp-and-head": {"mlp": 4, "head": 4},
+        "074-int4-wide-and-head": {"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+    }
+    assert {hyp.slug: hyp.weight_bits for hyp in BATCH_011} == expected
+
+
+def test_011_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_011:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+def test_batch_011_installs_no_fusion_barrier():
+    """The finding this batch is built on, asserted about the batch itself.
+
+    A `custom_op` costs its own kernel plus everything inductor can no longer fuse around
+    it: 37% at the conv, 3.2% at the head. Nothing in this batch is one, and that is the
+    design rather than an accident -- `barrier_preflight` would otherwise demand a
+    barrier-free twin for every slot that carried one.
+    """
+    from .fusion import opaque_kernels
+
+    for hyp in BATCH_011:
+        assert opaque_kernels(list(hyp.kernels)) == (), hyp.slug
 
 
 def test_every_batch_from_010_on_is_a_set_of_controlled_contrasts():

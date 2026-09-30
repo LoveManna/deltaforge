@@ -23,7 +23,6 @@ from torch import Tensor
 
 from ..reference import STATE_DTYPE, GatedDeltaNet, recurrent_gated_delta_rule
 
-
 #: Longest forward this layer will record per-step versions for.
 #:
 #: `install_speculative_loop` lowers this to the block size it was built with. The default

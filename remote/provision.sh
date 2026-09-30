@@ -60,7 +60,15 @@ DF_MIN_GPU_RAM="${DF_MIN_GPU_RAM:-24000}"
 # reached the box, installed torch, and died at the first CUDA call with "Error 804:
 # forward compatibility was attempted on non supported HW". Keep this in step with the
 # --index-url in run_remote.sh.
-DF_MIN_CUDA="${DF_MIN_CUDA:-12.8}"
+#
+# **12.9, not 12.8, and the extra tenth is bought with four rentals.** A host advertising
+# `cuda_max_good` *exactly* 12.8 -- sitting on the floor rather than above it -- has failed
+# with Error 804 every time one has been taken: rentals 33, 41 and 42, and rental 51 was
+# cancelled by hand on sight for $0.005 after someone recognised the number. The floor a
+# cu128 build needs is therefore "above 12.8", and a `>=` comparison expresses that as 12.9.
+# It tightens the market: the 4090 pool emptied at the default $0.45 ceiling when rental 42
+# tried it, so raise `--max-rate` with it rather than lowering this back.
+DF_MIN_CUDA="${DF_MIN_CUDA:-12.9}"
 # Two filters bought with rented time rather than reasoning. The cheapest single RTX 5090
 # on the market was an unverified consumer host that never finished pulling the container
 # image across three provisioning attempts, and whose ssh proxy was unreachable from

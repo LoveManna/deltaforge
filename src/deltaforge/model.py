@@ -460,8 +460,17 @@ register_installer("tiled_int4_head_deep", _install_tiled_int4_head_deep)
 register_installer("tiled_int4_head_narrow", _install_tiled_int4_head_narrow)
 register_installer("inline_causal_conv", _install_inline_causal_conv)
 register_installer("int4_head_triton_op", _install_int4_head_triton_op)
+
+
+def _install_int4_wide_torch_dequant(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_wide_torch_dequant  # noqa: PLC0415
+
+    install_int4_wide_torch_dequant(model, entry)
+
+
 register_installer("int4_head_torch_dequant", _install_int4_head_torch_dequant)
 register_installer("int4_mlp_torch_dequant", _install_int4_mlp_torch_dequant)
+register_installer("int4_wide_torch_dequant", _install_int4_wide_torch_dequant)
 
 
 def _install_rollback_state(model: ReferenceModel, entry: KernelEntry) -> None:
@@ -498,6 +507,17 @@ def _install_speculative_fixed_k2(model: ReferenceModel, entry: KernelEntry) -> 
 
 
 register_installer("speculative_fixed_k2", _install_speculative_fixed_k2)
+
+
+def _install_speculative_fixed_k1(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .speculative import AcceptanceRecord, FixedTokenDrafter, install_speculative_loop  # noqa: PLC0415
+
+    install_speculative_loop(
+        model, FixedTokenDrafter(), block_size=1, acceptance=AcceptanceRecord(block_size=1)
+    )
+
+
+register_installer("speculative_fixed_k1", _install_speculative_fixed_k1)
 
 
 def _install_speculative_ngram_k2(model: ReferenceModel, entry: KernelEntry) -> None:

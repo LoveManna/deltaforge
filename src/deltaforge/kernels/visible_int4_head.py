@@ -52,6 +52,16 @@ nibbles it read to build it, and the slot cannot beat 1.0 however good the matmu
 it fuses the unpack into the matmul's prologue, the slot collects the same 1.1249x ceiling
 the champion collects. **There is no middle outcome that is hard to read**, which is what
 makes it worth three minutes.
+
+## Rental 46 answered it, and batch 011 spends the answer
+
+It fuses. `056` returned **1.0171** against the hand-written kernel's **0.9851** in the same
+process, and the dump holds one reduction kernel carrying the grouped unpack, the `mm`, the
+final RMSNorm and the residual add together, with no weight-sized buffer in the graph. So
+this module stopped being a two-slot experiment about registrations and became the way this
+project quantises: `install_int4_mlp_torch_dequant` takes the same construction to **52.75%
+of per-token bytes** and `install_int4_wide_torch_dequant` to **97.85%**, neither of them
+containing a kernel of ours.
 """
 
 from __future__ import annotations
@@ -79,9 +89,11 @@ __all__ = [
     "install_int4_head_torch_dequant",
     "install_int4_head_triton_op",
     "install_int4_mlp_torch_dequant",
+    "install_int4_wide_torch_dequant",
     "int4_head_torch_dequant_correctness_checks",
     "int4_head_triton_op_correctness_checks",
     "int4_mlp_torch_dequant_correctness_checks",
+    "int4_wide_torch_dequant_correctness_checks",
     "tiled_gemv_int4_visible",
     "torch_dequant_gemv_int4",
 ]
@@ -238,15 +250,49 @@ def install_int4_mlp_torch_dequant(model, entry=None) -> None:
         linear.__class__ = DequantInt4Linear
 
 
-def int4_mlp_torch_dequant_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
-    """Every distinct MLP shape: 9216x2560 and 2560x9216."""
+def install_int4_wide_torch_dequant(model, entry=None) -> None:
+    """Every layer projection except the 32-channel gates, **and the tied head**, in torch.
+
+    `tiled_gemv.install_tiled_int4_wide`'s sites with `tiled_gemv.install_tiled_int4_wide`'s
+    quantisation, and none of its Triton: 200 projections plus the head, **97.85% of what
+    the compiled column moves at a 3.7578x ceiling**. The head is inside this installer
+    rather than composed beside it for the reason the Triton version gives — both would
+    claim `decode_step` in the registry, and one champion per operation is the invariant
+    that makes "what does `model.py` assemble?" answerable.
+
+    The gates are excluded deliberately. `in_proj_a` and `in_proj_b` are 7.86 MB/token
+    between them — **0.09% of the bytes and the whole of the numerical risk**, because they
+    feed an exponential through `A_log`, so quantising them buys nothing measurable and
+    puts the slot's correctness gate at the mercy of the one site that cannot repay it.
+    """
+    from .tiled_gemv import _wide_linears  # noqa: PLC0415
+
+    if getattr(model, "_deltaforge_int4_wide_torch_dequant", False):
+        return
+    model._deltaforge_int4_wide_torch_dequant = True
+    for linear in _wide_linears(model):
+        quantised = quantise_int4_k_major(linear.weight.detach())
+        linear.register_buffer("w_k_major", quantised.qweight, persistent=False)
+        linear.register_buffer("qscale", quantised.scale, persistent=False)
+        linear.qgroup = quantised.group_size
+        linear.__class__ = DequantInt4Linear
+    _install_alternative_head(model, DequantInt4LMHead)
+
+
+def _torch_dequant_checks(probes, *, device, seed):
+    """One `check_kernel` per (shape, decode shape) over ``probes``.
+
+    Shared by the MLP and the wide installers so the two report the same check names and
+    the same reference expression. A second copy of this loop is how batch 003 ended up
+    with a layer-1 reference whose rounding differed from the implementation it was
+    checking, and reported a relative error of 0.45 for correct code.
+    """
     from ..harness.correctness import check_kernel  # noqa: PLC0415
     from .quantised_linear import _decode_shapes  # noqa: PLC0415
-    from .tiled_gemv import _mlp_linears, _shape_probes  # noqa: PLC0415
 
     checks = []
     generator = torch.Generator(device=device).manual_seed(seed)
-    for weight, label in _shape_probes(_mlp_linears(model)):
+    for weight, label in probes:
         quantised = quantise_int4_k_major(weight.detach())
         packed, scale, group = quantised.qweight, quantised.scale, quantised.group_size
         k = packed.shape[0] * 2
@@ -270,6 +316,21 @@ def int4_mlp_torch_dequant_correctness_checks(model, *, device="cuda", dtype=Non
                 )
             )
     return tuple(checks)
+
+
+def int4_mlp_torch_dequant_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """Every distinct MLP shape: 9216x2560 and 2560x9216."""
+    from .tiled_gemv import _mlp_linears, _shape_probes  # noqa: PLC0415
+
+    return _torch_dequant_checks(_shape_probes(_mlp_linears(model)), device=device, seed=seed)
+
+
+def int4_wide_torch_dequant_correctness_checks(model, *, device="cuda", dtype=None, seed: int = 0):
+    """Every distinct shape among the 200 wide projections, plus the tied head."""
+    from .tiled_gemv import _shape_probes, _wide_linears  # noqa: PLC0415
+
+    probes = _shape_probes(_wide_linears(model), head=model.lm_head_weight)
+    return _torch_dequant_checks(probes, device=device, seed=seed)
 
 
 def _install_alternative_head(model, head_cls: type) -> None:

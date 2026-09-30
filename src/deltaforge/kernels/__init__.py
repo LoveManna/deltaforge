@@ -928,7 +928,14 @@ register_checks("int4_head_torch_dequant", _visible_int4_head.int4_head_torch_de
 REGISTRY.register(
     "int4_mlp_torch_dequant",
     impl=_visible_int4_head.torch_dequant_gemv_int4,
-    replaces="decode_step",
+    # `swiglu_mlp`, not `decode_step`, and the difference is load-bearing: this installer
+    # patches `layer.mlp.{gate,up,down}_proj` and nothing else, and one champion per
+    # operation means a kernel registered against `decode_step` **cannot be composed with
+    # the head**, which is registered there too. It said `decode_step` from batch 009 until
+    # batch 011, where `072` tried to compose the two and `scoped_registry` refused on a
+    # laptop. `tiled_int4_mlp` -- the Triton kernel on the same 96 sites -- has always said
+    # `swiglu_mlp`, which is what made `031-int4-mlp-and-head` constructible.
+    replaces="swiglu_mlp",
     hypothesis="061-int4-mlp-torch-dequant",
     notes=(
         "The same compiler-generated dequantise-GEMV on the 96 MLP projections: **52.75% "
@@ -937,10 +944,33 @@ REGISTRY.register(
         "closed the tile question, so the open possibility is that the code we should be "
         "running at those sites is inductor's own. Gated on the head slot, because this is "
         "the same question asked of a bigger prize and it is only worth asking once the "
-        "cheap version has shown the compiler can fuse a grouped dequantisation at all."
+        "cheap version has shown the compiler can fuse a grouped dequantisation at all. "
+        "**Never executed**: `061` declined on rental 46 with `precondition_failed`, on an "
+        "absolute floor of 1.02 that the head slot missed by 0.3% while answering the "
+        "proposition the floor existed to test. Re-registered as `071-int4-mlp-torch-dequant` "
+        "in batch 011, gated on the comparison instead."
     ),
 )
 register_checks("int4_mlp_torch_dequant", _visible_int4_head.int4_mlp_torch_dequant_correctness_checks)
+
+REGISTRY.register(
+    "int4_wide_torch_dequant",
+    impl=_visible_int4_head.torch_dequant_gemv_int4,
+    replaces="decode_step",
+    hypothesis="074-int4-wide-and-head",
+    notes=(
+        "The same compiler-generated dequantise-GEMV on **every layer projection except "
+        "the 32-channel gates, plus the tied head**: 200 sites, **97.85% of what the "
+        "compiled column moves, a 3.7578x ceiling** -- the largest byte share this project "
+        "can attack without quantising the two projections that feed an exponential. "
+        "`tiled_int4_wide`'s sites and `tiled_int4_wide`'s quantisation with none of its "
+        "Triton. The only measurement of these sites at 4 bits is `014-int4-full`, rental "
+        "37, which used a row-major packing and a hand-written kernel and measured "
+        "**0.8561 agreement at 0.09185 nats** -- the bar here is derived from that, and "
+        "its ratio (a loss) is not, because the kernel that produced it ran at 141 GB/s."
+    ),
+)
+register_checks("int4_wide_torch_dequant", _visible_int4_head.int4_wide_torch_dequant_correctness_checks)
 
 from . import rollback_state as _rollback_state  # noqa: E402
 
@@ -989,6 +1019,24 @@ REGISTRY.register(
     notes=(
         "The same instrument as `speculative_fixed_k4` at block_size=2: measures gamma(2) "
         "for the same reason, at half the block. "
+        "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
+    ),
+)
+
+REGISTRY.register(
+    "speculative_fixed_k1",
+    impl=_speculative.install_speculative_loop,
+    replaces="decode_step",
+    status=KernelStatus.CANDIDATE,
+    hypothesis="069-verify-inflation-k1",
+    notes=(
+        "The same instrument at block_size=1 -- a **two-token** verify, the shortest one "
+        "that is not ordinary decode. Rental 54 measured gamma(2)=1.316 and gamma(4)=1.404 "
+        "and the two points say the cost is a step at the seq=1 -> seq>1 boundary rather "
+        "than a per-token tax: the fit gives 4.4% per token and a fixed 1.184, while a "
+        "model with no step has to pass through (1 token, gamma=1.000). The two read this "
+        "slot 10% apart -- 1.272 against 1.158 -- against an identity band of 0.0001, so "
+        "one slot decides which of them is right. "
         "See docs/superpowers/specs/2026-09-24-speculative-decoding-design.md."
     ),
 )

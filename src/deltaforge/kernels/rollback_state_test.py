@@ -277,7 +277,9 @@ def test_a_verify_length_forward_still_records_every_step():
     with torch.no_grad():
         net(torch.randn(1, 3, config.hidden_size), _fresh_cache(config))
 
-    assert len(net._deltaforge_rollback.states) == 4, "a 3-token verify has 4 states: before, and one per token"
+    assert len(net._deltaforge_rollback.states) == 4, (
+        "a 3-token verify has 4 states: before, and one per token"
+    )
     assert len(net._deltaforge_rollback.conv_windows) == 4
 
 

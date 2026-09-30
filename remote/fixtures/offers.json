@@ -8,7 +8,8 @@
     "reliability below 0.98, 9004 is over the rate ceiling, 9005 is not rentable, and 9006",
     "is a fallback-generation card. Only 9007 and 9008 should survive, and 9008 is cheaper,",
     "so provision.sh must select 9008.",
-    "9011 is the cheapest offer here and passes every other filter, but its driver tops out at CUDA 12.2 -- too old for the cu128 wheels run_remote.sh installs. Rental 25 died on such a host with 'Error 804: forward compatibility was attempted on non supported HW', so it must be rejected and 9008 must still win."
+    "9011 is the cheapest offer here and passes every other filter, but its driver tops out at CUDA 12.2 -- too old for the cu128 wheels run_remote.sh installs. Rental 25 died on such a host with 'Error 804: forward compatibility was attempted on non supported HW', so it must be rejected and 9008 must still win.",
+    "9006 is the fallback-generation card AND advertises `cuda_max_good` exactly 12.8 -- on the floor rather than above it, which has produced Error 804 on every rental that took such a host (33, 41, 42; 51 was cancelled by hand on sight). DF_MIN_CUDA is 12.9 for that reason, so 9006 must now be rejected and 9012 -- the same card one driver newer, and $0.02 dearer -- is what the fallback search must select."
   ],
   "offers": [
     {
@@ -186,6 +187,22 @@
       "inet_down": 900.0,
       "static_ip": true,
       "machine_id": 100011
+    },
+    {
+      "id": 9012,
+      "gpu_name": "RTX 4090",
+      "num_gpus": 1,
+      "rentable": true,
+      "is_bid_only": false,
+      "reliability2": 0.9962,
+      "dph_total": 0.295,
+      "gpu_ram": 24564,
+      "cuda_max_good": 13.0,
+      "geolocation": "Sweden",
+      "verified": true,
+      "inet_down": 780.0,
+      "static_ip": true,
+      "machine_id": 100012
     }
   ]
 }

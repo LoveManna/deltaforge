@@ -271,6 +271,30 @@ to them is now `int4_head_torch_dequant`'s, applied to the MLP — `061`, 52.75%
 bytes at a 1.6545x ceiling, registered and **declined on a floor that tested the wrong
 proposition** (see the graveyard note below). It is the first slot of the next batch.
 
+**Registered as a ladder, batch 011 (2026-09-30).** This entry stops being a kernel backlog
+and becomes a byte-share ladder, because the code that collects it is inductor's:
+
+| slot | sites | share of per-token bytes | ceiling | predicted |
+|---|---|---:|---:|---|
+| `067-int4-head-torch-dequant` | the tied head | 14.80% | 1.1249x | win, 1.01-1.04 |
+| `071-int4-mlp-torch-dequant` | 96 MLP projections | **52.75%** | **1.6545x** | win, 1.25-1.55 |
+| `072-int4-mlp-and-head` | both | 67.55% | 2.0269x | win, 1.35-1.75 |
+| `074-int4-wide-and-head` | 200 projections + head | **97.85%** | **3.7578x** | win, 1.5-2.4 |
+
+Each rung is one install on top of a rung measured alone in the same process, and each is
+gated on the rung below it **as a margin over the identity slot**, never as an absolute
+ratio — `061`'s decline is what that fixes. `074` excludes `in_proj_a` and `in_proj_b`
+deliberately: 0.09% of the bytes and the whole of the numerical risk, since they feed an
+exponential through `A_log`.
+
+Two readings are registered in advance. If the ratio **falls** as the ladder rises, the
+fusion `056` found is **width-dependent** — the head is 248320 channels and the MLP 9216,
+while every site `074` adds is narrower — and the boundary is a statable fact about
+inductor's GEMV prologue. If inductor **materialises** the dequantised weight at these
+sites instead, the bandwidth budget puts the slot near 0.6 and says so unambiguously: the
+MLP's bf16 weight is 4529.85 MB/token against the 1132.46 MB of nibbles read to build it.
+`--dump-install int4_mlp_torch_dequant` is set for the rental either way.
+
 **Measured on rental 45: the regime is settled, and the next obstacle is not arithmetic at
 all.** Three encodings ran at the tied head in one process — int4 **1.0105**, int8
 **0.9865**, fp8 **0.9562** — and int4 ahead of int8 on time while moving half the bytes is
@@ -1002,6 +1026,18 @@ looks strict.**
 histogram that says why — `{0: 2108, 1: 0, 2: 17}` over 2125 cycles. Never one token, 0.8%
 of the time the whole block: prompt-lookup finds a literal repeat or nothing. At k=4 the
 counts at 3 and 4 are zero, so a longer block bought no acceptance and cost 6.7% more γ.
+
+**Registered, batch 011 (2026-09-30): the step is tested with one slot.** `069-verify-inflation-k1`
+is the same instrument at `block_size=1` — a **two-token** verify, the shortest one that is
+not ordinary decode. The step model (γ = 1.184 + 0.044·tokens) predicts γ(1) = 1.272 and a
+ratio of **0.786**; a model with no step, through (1 token, γ=1.000) and (3 tokens, 1.316),
+predicts 1.158 and **0.864**. Rental 54's identity IQR was 0.0001 and its verify slots'
+0.005, so the two readings are ~15 band-widths apart and one slot decides between them.
+**0.786 is what is on the record**, because both ranked suspects are fixed costs of leaving
+seq=1 rather than per-token ones. `070-verify-inflation-k2` re-measures rental 54's own
+point beside it, which is what places `069` on a card nothing else has characterised — and
+if it returns materially above 0.7596 on a 5090, part of the step was the 4090's shared
+memory.
 
 **Open, and the cheapest next step is not a drafter.** Every candidate compile on the 4090
 logged `No valid triton configs ... Required: 110592 Hardware limit: 101376` on the verify's
