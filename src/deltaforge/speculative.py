@@ -234,6 +234,8 @@ class SpeculativeLoop:
             cache.rewind(before + accepted + 1)
             for state in states:
                 state.keep(accepted + 1)
+                # The cycle is committed; the versions it chose from are dead weight now.
+                state.release()
             if self.acceptance is not None:
                 self.acceptance.observe(accepted)
 
@@ -256,3 +258,18 @@ def install_speculative_loop(
     counterpart. Keeping them off the module tree leaves that check exactly as strict.
     """
     model.decode_loop = SpeculativeLoop(drafter, block_size, acceptance)
+
+    # Tell the rollback layers how long a verify is, so they record per-step versions for a
+    # verify and for nothing else. Without this they record for any forward, including the
+    # 2048-token prefill the benchmark runs before every round -- 2048 sequential scan
+    # launches per layer and 2049 cloned states, which cost rental 53 three slots to an OOM
+    # at 23.03 GiB. `rollback_state.records` has the full argument.
+    # Tolerant of the rollback kernel not being installed. A hypothesis names its kernels
+    # and the two are separate entries, so `_build_candidate` can legitimately install this
+    # loop alone -- the no-op guard's test does exactly that. A loop that then *ran* would
+    # fail in `__call__`, where it asks for the states it needs; refusing here instead would
+    # only move a real error away from the code that depends on it.
+    for module in model.modules():
+        state = getattr(module, "_deltaforge_rollback", None)
+        if state is not None:
+            state.max_recorded_steps = block_size + 1

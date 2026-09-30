@@ -218,3 +218,111 @@ def test_installing_it_changes_the_linear_attention_classes_and_nothing_else():
     changed = {name for name in after if after[name] != before[name]}
     assert changed
     assert all("linear_attn" in name for name in changed)
+
+
+def test_a_prefill_length_forward_records_nothing_and_still_computes_the_reference():
+    """Rental 53 lost three slots to an OOM at 23.03 GiB, in the benchmark's prefill.
+
+    The per-step recording is one `recurrent_gated_delta_rule` call and one cloned state per
+    token. At a verify's `k+1` tokens that is the whole point of this class; at the
+    benchmark's 2048-token prefill it is thousands of sequential launches per layer and
+    thousands of live clones. The peak was *identical* at k=4 and k=2 -- 23.03 GiB both
+    times -- which is the proof it never scaled with the block at all.
+
+    A forward longer than a verify must therefore take the parent's path: record nothing,
+    and still produce the reference's arithmetic.
+    """
+    config = tiny_config()
+    torch.manual_seed(0)
+
+    reference_model = ReferenceModel(config).eval()
+    patched_model = ReferenceModel(config).eval()
+    patched_model.load_state_dict(reference_model.state_dict())
+    install_rollback_state(patched_model)
+
+    reference_net = _delta_net(reference_model)
+    patched_net = _delta_net(patched_model)
+    rollback = patched_net._deltaforge_rollback
+
+    long_seq = rollback.max_recorded_steps + 8
+    hidden_states = torch.randn(1, long_seq, config.hidden_size)
+    reference_cache = _fresh_cache(config)
+    patched_cache = _fresh_cache(config)
+
+    with torch.no_grad():
+        reference_out = reference_net(hidden_states, reference_cache)
+        patched_out = patched_net(hidden_states, patched_cache)
+
+    assert rollback.states == [], f"recorded {len(rollback.states)} states for a prefill"
+    assert rollback.conv_windows == [], f"recorded {len(rollback.conv_windows)} windows for a prefill"
+
+    torch.testing.assert_close(reference_out, patched_out, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(reference_cache.recurrent, patched_cache.recurrent, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(reference_cache.conv, patched_cache.conv, rtol=1e-5, atol=1e-6)
+
+
+def test_a_verify_length_forward_still_records_every_step():
+    """The bound must not switch off the thing the kernel exists for.
+
+    A test that only checked the prefill path would pass on a module that recorded nothing
+    ever -- and then `keep()` would raise on the first rejected draft, on a rented card.
+    """
+    config = tiny_config()
+    torch.manual_seed(0)
+    model = ReferenceModel(config).eval()
+    install_rollback_state(model)
+    net = _delta_net(model)
+    net._deltaforge_rollback.max_recorded_steps = 3
+
+    with torch.no_grad():
+        net(torch.randn(1, 3, config.hidden_size), _fresh_cache(config))
+
+    assert len(net._deltaforge_rollback.states) == 4, "a 3-token verify has 4 states: before, and one per token"
+    assert len(net._deltaforge_rollback.conv_windows) == 4
+
+
+def test_the_loop_releases_each_cycle_s_versions_once_it_has_committed():
+    """Rental 53 held 20.77 GiB *after* a failed slot released.
+
+    `RollbackState` kept the last forward's states and windows referenced for the rest of
+    the candidate's life, so every slot after a failure started against a lower ceiling.
+    Asserted through the loop rather than through `keep`, because committing a cycle is the
+    event that ends the record's life -- `keep` only copies out of it, and the property
+    tests above read the record through `keep` on purpose.
+    """
+    from ..speculative import FixedTokenDrafter, install_speculative_loop
+
+    config = tiny_config()
+    torch.manual_seed(0)
+    model = ReferenceModel(config).eval()
+    install_rollback_state(model)
+    install_speculative_loop(model, FixedTokenDrafter(0), block_size=2)
+
+    prompt = torch.randint(0, config.vocab_size, (1, 4))
+    with torch.no_grad():
+        model.decode_loop(model, prompt, 6, model.new_cache(1, 32))
+
+    for state in rollback_states(model):
+        assert state.states == [], "a committed cycle must not keep its versions alive"
+        assert state.conv_windows == []
+
+
+def test_installing_the_loop_bounds_recording_to_the_block_it_was_built_with():
+    """The bound has to arrive from the loop, or it defaults to something merely safe.
+
+    `install_rollback_state` cannot know `k` -- the two are separate kernels, installed by
+    name in the order the hypothesis lists them -- so the loop's installer is what lowers
+    it. A default that is merely safe would record 17 steps for a k=2 verify and let
+    `keep()` index versions no cycle asked for.
+    """
+    from ..speculative import FixedTokenDrafter, install_speculative_loop
+
+    config = tiny_config()
+    model = ReferenceModel(config).eval()
+    install_rollback_state(model)
+    install_speculative_loop(model, FixedTokenDrafter(0), block_size=2)
+
+    for state in rollback_states(model):
+        assert state.max_recorded_steps == 3, "a k=2 verify is 3 tokens"
+        assert not state.records(4), "4 tokens is longer than any verify this loop runs"
+        assert state.records(3)
