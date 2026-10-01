@@ -386,6 +386,61 @@ def test_falls_back_to_the_second_generation_card_when_none_match(workdir):
     assert "RTX 4090" in result.stderr
 
 
+def test_a_driver_newer_than_our_toolchain_is_never_selected(workdir):
+    """Rental 56 is why there is a ceiling as well as a floor.
+
+    An RTX 5090 advertising `cuda_max_good` 13.3 -- host driver 610.43.02 -- ran the reference
+    at **441 GB/s**, 0.34x the best this project has recorded, against 1197-1283 GB/s for
+    every 5090 on a driver it has seen twice. Nothing else in the environment record differed:
+    same GPU, same compute capability, same torch, same Triton, no throttle flags, and the
+    *highest*-clocked card in the project's history is the second-slowest, so clock is not it.
+
+    The fixture's 13.3 host is cheaper than the one that works, so a price-ordered search
+    walks into it exactly as it walked into the stale-driver host blocker 11 is about.
+    """
+    offers = json.loads((REMOTE / "fixtures" / "offers.json").read_text())["offers"]
+    too_new = [o for o in offers if float(o.get("cuda_max_good") or 0) > _cuda_ceiling()]
+    assert too_new, "the fixture must contain a host whose driver runs ahead of the ceiling"
+    assert min(o["dph_total"] for o in too_new) < 0.324, (
+        "and it must undercut the offer that works, or the test proves nothing about price order"
+    )
+
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "too-new",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    for offer in too_new:
+        assert f"selected offer {offer['id']}" not in result.stderr
+    assert "selected offer 9008" in result.stderr
+
+
+def test_the_cuda_window_is_a_window_and_the_log_says_so(workdir):
+    """A filter nobody can see in the log is a filter nobody will think to question."""
+    result = run(
+        "provision.sh",
+        "--dry-run",
+        "--session-id",
+        "window",
+        "--ledger",
+        str(workdir / "ledger" / "spend.jsonl"),
+        "--state-file",
+        str(workdir / "state"),
+    )
+
+    assert f"CUDA {_min_cuda_floor()}-{_cuda_ceiling()}" in result.stderr
+
+
+def _min_cuda_floor_placeholder() -> None:
+    pass
+
+
 def test_a_host_sitting_exactly_on_the_cuda_floor_is_never_selected(workdir):
     """Rentals 33, 41 and 42 each took a host advertising `cuda_max_good` **exactly 12.8**
     and each died at the first CUDA call with Error 804; rental 51 was cancelled by hand for
@@ -1955,12 +2010,22 @@ def _passing_offer() -> dict:
         and (o.get("reliability2") or 0) > 0.98
         and (o.get("dph_total") or 1e9) <= 0.45
         and (o.get("gpu_ram") or 0) >= 24000
-        and float(o.get("cuda_max_good") or 0) >= _min_cuda_floor()
+        and _min_cuda_floor() <= float(o.get("cuda_max_good") or 0) <= _cuda_ceiling()
         and (o.get("inet_down") or 0) > 300
         and o.get("verified") is not False
     ]
     assert passing, "the fixture must contain at least one fully-passing RTX 5090 offer"
     return sorted(passing, key=lambda o: o["dph_total"])[0]
+
+
+def _cuda_ceiling() -> float:
+    """provision.sh's own `DF_MAX_CUDA` default, read rather than copied. See `_min_cuda_floor`."""
+    import re
+
+    text = (REMOTE / "provision.sh").read_text()
+    match = re.search(r'DF_MAX_CUDA="\$\{DF_MAX_CUDA:-([0-9.]+)\}"', text)
+    assert match, "provision.sh no longer sets a DF_MAX_CUDA default"
+    return float(match.group(1))
 
 
 def _min_cuda_floor() -> float:

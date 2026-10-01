@@ -1,0 +1,589 @@
+{
+  "schema_version": 1,
+  "kind": "batch",
+  "batch_id": "011-bytes-not-kernels",
+  "session_id": "batch011-20261001T000909Z",
+  "description": "**Ten batches have answered the question this project registered, and the answer is no.** The premise was that a hand-written Triton kernel can beat what `torch.compile(mode='max-autotune')` generates on this decode path. Every kernel written here has now been measured against the compiler at the two sites most favourable to it, and the compiler won both: `045` beat `044` by **37%** on the causal conv, and `056` beat `054` by **3.2%** on the int4 head -- each time the *same function*, the win going to the version with no kernel of ours in it. Both champions are kernels this project deleted. **So this batch stops contesting codegen and starts contesting the program.** The compiler chooses instructions; it does not choose how many bytes the weights occupy, and it does not choose how many forward passes a token costs. Those two are still ours, and this batch measures both: the grouped int4 dequantise-GEMV that `056` proved inductor fuses, taken from 14.80% of per-token bytes to **52.75%** (`071`), **67.55%** (`072`) and **97.85%** (`074`) -- a dose-response ladder whose every rung is one install on top of a measured one -- and the **two-token verify** (`069`), which decides whether rental 54's 23% step at the seq=1 -> seq>1 boundary is real. It also measures **the pair this repository ships**: `apply_champions` installs `inline_causal_conv` beside `int4_head_torch_dequant` and no rental has ever benchmarked that combination -- rental 46's `058` composed the conv with the kernel that has since been retired. Every composition sits above its own ingredients in the same process, and every gate is on a **comparison** rather than an absolute ratio, which is the defect that cost rental 46 the largest slot in the batch.",
+  "timestamp": "2026-10-01T01:46:46.276405+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "random"
+  },
+  "phases": {
+    "000-identity.candidate_build": 0.13101876201108098,
+    "000-identity.correctness": 45.69096755993087,
+    "000-identity.compile_candidate_compiled": 0.009103939984925091,
+    "000-identity.bench": 234.34151227306575,
+    "066-inline-causal-conv.candidate_build": 0.10292304598260671,
+    "066-inline-causal-conv.correctness": 28.580475233960897,
+    "066-inline-causal-conv.compile_candidate_compiled": 0.009063691017217934,
+    "066-inline-causal-conv.bench": 559.3155610579997,
+    "067-int4-head-torch-dequant.candidate_build": 0.281654981081374,
+    "067-int4-head-torch-dequant.correctness": 29.902791131986305,
+    "067-int4-head-torch-dequant.compile_candidate_compiled": 0.008586014970205724,
+    "067-int4-head-torch-dequant.bench": 462.13959494105075,
+    "068-champion-pair.candidate_build": 0.162793883937411,
+    "068-champion-pair.correctness": 29.022959992056713,
+    "068-champion-pair.compile_candidate_compiled": 0.04883755790069699,
+    "068-champion-pair.bench": 467.87502508610487,
+    "069-verify-inflation-k1.candidate_build": 0.14315797702874988,
+    "069-verify-inflation-k1.correctness": 52.91918727802113,
+    "069-verify-inflation-k1.compile_candidate_compiled": 0.048911463003605604,
+    "069-verify-inflation-k1.bench": 749.7773099769838,
+    "070-verify-inflation-k2.candidate_build": 0.1239991900511086,
+    "070-verify-inflation-k2.correctness": 58.984553489950486,
+    "070-verify-inflation-k2.compile_candidate_compiled": 0.009269488975405693,
+    "070-verify-inflation-k2.bench": 716.138506515068
+  },
+  "calibrated": true,
+  "counts": {
+    "inconclusive": 2,
+    "win": 2,
+    "loss": 2,
+    "precondition_failed": 4
+  },
+  "predictions": [
+    {
+      "slug": "000-identity",
+      "predicted": "identity",
+      "outcome": "inconclusive",
+      "correct": true
+    },
+    {
+      "slug": "066-inline-causal-conv",
+      "predicted": "win",
+      "outcome": "win",
+      "correct": true
+    },
+    {
+      "slug": "067-int4-head-torch-dequant",
+      "predicted": "win",
+      "outcome": "inconclusive",
+      "correct": false
+    },
+    {
+      "slug": "068-champion-pair",
+      "predicted": "win",
+      "outcome": "win",
+      "correct": true
+    },
+    {
+      "slug": "069-verify-inflation-k1",
+      "predicted": "loss",
+      "outcome": "loss",
+      "correct": true
+    },
+    {
+      "slug": "070-verify-inflation-k2",
+      "predicted": "loss",
+      "outcome": "loss",
+      "correct": true
+    },
+    {
+      "slug": "071-int4-mlp-torch-dequant",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "072-int4-mlp-and-head",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "073-conv-mlp-and-head",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    },
+    {
+      "slug": "074-int4-wide-and-head",
+      "predicted": "win",
+      "outcome": "precondition_failed",
+      "correct": null
+    }
+  ],
+  "prediction_record": {
+    "correct": 5,
+    "scored": 6
+  },
+  "slots": [
+    {
+      "slug": "000-identity",
+      "outcome": "inconclusive",
+      "prediction": "identity",
+      "category": "calibration",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [],
+      "mechanism": "Install nothing. The candidate is the reference, so the ratio is the harness's own noise floor rather than a property of any kernel.",
+      "rationale": "Must return 1.00 within the noise band or every other number here is void. Nine rentals have got this far: 1.0009, 1.0018, 1.0024, 0.9913, 1.0008, 1.0053, 1.0101, 0.9972 and -- with 15 scoring rounds instead of 5 -- **1.0002 at an IQR of 0.0001**, the tightest this project has recorded. Read its *sign* before any margin below it (rental 43 carried +1.01%, rental 45 \u22120.28%), and read the reference column's achieved bandwidth before any of them: 1282, 800, 1197 and 849 GB/s on four cards reporting the same clocks. **This slot is also the divisor for four gates in this batch**, which is new: every precondition here is a margin against this slot rather than an absolute ratio, so a drifting card cannot decline a hypothesis for reasons that have nothing to do with it.",
+      "median_ratio": 1.0235992942379535,
+      "iqr_ratio": 0.025970606024237508,
+      "error": null,
+      "duration_s": 280.222430036054,
+      "peak_memory_mb": 9143,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for graph without symints",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.13101876201108098,
+        "correctness": 45.69096755993087,
+        "compile_candidate_compiled": 0.009103939984925091,
+        "bench": 234.34151227306575
+      },
+      "card": {
+        "sm_mhz": 2355,
+        "memory_mhz": 13801,
+        "power_w": 152.04,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T00:53:51.600458+00:00"
+      },
+      "acceptance": {},
+      "prediction_correct": true
+    },
+    {
+      "slug": "066-inline-causal-conv",
+      "outcome": "win",
+      "prediction": "win",
+      "category": "A",
+      "byte_share": 0.00055,
+      "replaces": [
+        "causal_conv"
+      ],
+      "kernels": [
+        "inline_causal_conv"
+      ],
+      "mechanism": "The champion of `causal_conv`: the four-tap depthwise convolution at seq_len 1 written as torch operations -- four multiplies, a round to bf16, a silu and a shifted history -- instead of `F.conv1d`. Inductor folds it into the kernels either side and all 24 cuDNN calls disappear.",
+      "rationale": "**An ingredient, measured alone, because three slots below compose it.** Measured 1.0765 (IQR 0.0552) on rental 45 and **1.0650** on rental 46 at 15 rounds, bit-identical both times (264/264, 0.00000 nats). Predicted **win, 1.03-1.09**. It attacks 0.055% of the bytes and returns 6%, which is the one place in this repository where the byte ceiling is not the binding constraint: the saving is 24 cuDNN dispatches and the fusion either side of them, not traffic. Bars are `045`'s and are exact by construction -- `inline_causal_conv_test` asserts bit-identity with the reference at rtol=0, atol=0 on a CPU, so anything but 264/264 at 0 nats is a harness fault rather than a kernel property.",
+      "median_ratio": 1.0777939659207596,
+      "iqr_ratio": 0.03224434333205228,
+      "error": null,
+      "duration_s": 588.0652474140516,
+      "peak_memory_mb": 9143,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.10292304598260671,
+        "correctness": 28.580475233960897,
+        "compile_candidate_compiled": 0.009063691017217934,
+        "bench": 559.3155610579997
+      },
+      "card": {
+        "sm_mhz": 2355,
+        "memory_mhz": 13801,
+        "power_w": 153.71,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T01:03:40.257937+00:00"
+      },
+      "acceptance": {},
+      "prediction_correct": true
+    },
+    {
+      "slug": "067-int4-head-torch-dequant",
+      "outcome": "inconclusive",
+      "prediction": "win",
+      "category": "A",
+      "byte_share": 0.148,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int4_head_torch_dequant"
+      ],
+      "mechanism": "The champion of `decode_step`: the group-128 int4 dequantise-GEMV on the tied 248320 x 2560 head, written as torch operations -- unpack the nibbles, apply the group scales, round to bf16, accumulate in fp32 -- and handed whole to `max-autotune`, which fuses the entire unpack, the `mm`, the final RMSNorm and the residual add into one reduction kernel.",
+      "rationale": "**The ingredient every quantised slot below is read against, and the only in-batch evidence that inductor fuses a grouped dequantisation at all.** Measured **1.0171 (IQR 0.0130)** on rental 46 against a 1.1249x byte ceiling, with the hand-written kernel at 0.9851 in the same process. Predicted **win, 1.01-1.04**. Its margin over `000` is the quantity four gates below read, and that is the whole point of running it first: rental 46 gated the MLP on this slot reaching **1.02 absolute** and declined the largest prize in the backlog by 0.3%, on a number that moves with how fast the card is that hour and with what fraction of the step the head happens to be. Bars are `054`'s and the layer-2 numbers must come back **0.9318 and 0.01674** -- five rentals have returned exactly that, and a different number means the weights or the rounding changed, not the card.",
+      "median_ratio": 0.9970513205148916,
+      "iqr_ratio": 0.022974310583312896,
+      "error": null,
+      "duration_s": 492.3927302820375,
+      "peak_memory_mb": 14987,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.281654981081374,
+        "correctness": 29.902791131986305,
+        "compile_candidate_compiled": 0.008586014970205724,
+        "bench": 462.13959494105075
+      },
+      "card": {
+        "sm_mhz": 2362,
+        "memory_mhz": 13801,
+        "power_w": 141.42,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T01:11:54.904743+00:00"
+      },
+      "acceptance": {},
+      "prediction_correct": false
+    },
+    {
+      "slug": "068-champion-pair",
+      "outcome": "win",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.1486,
+      "replaces": [
+        "causal_conv",
+        "decode_step"
+      ],
+      "kernels": [
+        "inline_causal_conv",
+        "int4_head_torch_dequant"
+      ],
+      "mechanism": "Both champions at once, which is what `apply_champions` installs: 953.55 MB/token removed from one matmul, and 24 cuDNN dispatches removed from 24 layers, on disjoint parts of the step.",
+      "rationale": "**The shipped configuration, and it has never been benchmarked.** Rental 46's `058` measured the conv with the *retired* Triton head, so the pair this repository actually assembles has no number at all -- an unmeasured default is the one thing a project like this may not ship. Predicted **win, 1.06-1.12**: `066` and `067` compose to ~1.08 if their savings are independent, which they should be -- one is bytes inside the last matmul and the other is dispatches inside 24 layers. **The reading that matters is 068 against 066 and 067 separately.** A shortfall would put this pair in the same class as `060`, where two dispatch savings competed for the same microseconds and the static cache was worth +1.5% alone and +0.0% on top of the conv. Bars are `067`'s: the conv changes no arithmetic.",
+      "median_ratio": 1.2179195528971873,
+      "iqr_ratio": 0.02807523631054365,
+      "error": null,
+      "duration_s": 497.15783588099293,
+      "peak_memory_mb": 14987,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.162793883937411,
+        "correctness": 29.022959992056713,
+        "compile_candidate_compiled": 0.04883755790069699,
+        "bench": 467.87502508610487
+      },
+      "card": {
+        "sm_mhz": 2355,
+        "memory_mhz": 13801,
+        "power_w": 161.71,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T01:20:16.058116+00:00"
+      },
+      "acceptance": {},
+      "prediction_correct": true
+    },
+    {
+      "slug": "069-verify-inflation-k1",
+      "outcome": "loss",
+      "prediction": "loss",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_fixed_k1"
+      ],
+      "mechanism": "The speculative loop at block_size=1 with a drafter that always proposes the same token: acceptance is 0 by construction, every cycle runs one **two-token** verify, and the ratio is 1/gamma(1).",
+      "rationale": "**One slot that separates two models of rental 54's number, and they are 10% apart.** gamma(2)=1.316 and gamma(4)=1.404 fit a line with slope 4.4% per token and intercept 1.184 -- but a one-token verify *is* ordinary decode at gamma=1.000, so either there is a **~23% step at the seq=1 -> seq>1 boundary itself** or the two points are on a curve. The step model predicts gamma(1)=1.272 and a ratio of **0.786**; a model with no step, through (1 token, 1.000) and (3 tokens, 1.316), predicts 1.158 and **0.864**. Rental 54's identity IQR was 0.0001 and these slots' were 0.005, so the separation is 15 band-widths. Predicted **loss** either way, and the prediction that is on the record is the *number*: **0.786, the step**, because the step is what the suspects predict -- `reference.py`'s `if seq_len > 1` mask branch and a `k+1` autotune pool that the reference column never compiles are both **fixed costs of leaving seq=1**, not per-token ones. 0.864 would refute both and make the verify a traffic problem the spec's own model already prices. **This is the cheapest decisive slot in the batch**: no new arithmetic, no new kernel, and it governs whether entry 10 is alive.",
+      "median_ratio": 0.4955513580523752,
+      "iqr_ratio": 0.01970965996260937,
+      "error": null,
+      "duration_s": 802.944669508026,
+      "peak_memory_mb": 9911,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key 2049",
+        "Recording cudagraph tree for symint key 2050",
+        "Recording cudagraph tree for symint key 2051",
+        "Recording cudagraph tree for symint key 2052",
+        "Recording cudagraph tree for symint key 2053",
+        "Recording cudagraph tree for symint key 2054"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.14315797702874988,
+        "correctness": 52.91918727802113,
+        "compile_candidate_compiled": 0.048911463003605604,
+        "bench": 749.7773099769838
+      },
+      "card": {
+        "sm_mhz": 2385,
+        "memory_mhz": 13801,
+        "power_w": 100.89,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T01:33:43.283924+00:00"
+      },
+      "acceptance": {
+        "block_size": 1,
+        "cycles": 2159,
+        "mean_accepted": 0.0,
+        "histogram": {
+          "0": 2159,
+          "1": 0
+        }
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "070-verify-inflation-k2",
+      "outcome": "loss",
+      "prediction": "loss",
+      "category": "C",
+      "byte_share": 0.0,
+      "replaces": [],
+      "kernels": [
+        "rollback_state",
+        "speculative_fixed_k2"
+      ],
+      "mechanism": "The same instrument at block_size=2: a three-token verify, gamma(2).",
+      "rationale": "**One variable from 069, and the only number in this batch that can be compared with another rental's.** Rental 54 measured 0.7596 for exactly this slot on an **RTX 4090**, where every candidate compile logged `No valid triton configs ... Required: 110592 Hardware limit: 101376` on the verify's `k+1` shape -- a shape the reference column never compiles. A 5090 has more shared memory per SM and offers a wider pool, so **if this returns materially above 0.7596 on a 5090 the 23% step is partly that card's shared-memory limit and not this model's decode graph.** Predicted **loss, 0.76-0.85**, the range spanning both readings. Without this slot, 069's number could not be placed: 069 alone measures gamma(1) against a card nothing else has characterised, and the pair measures the *shape* of gamma on one card, which is the quantity the step model is about. Run it whatever 069 returns.",
+      "median_ratio": 0.47077920530727047,
+      "iqr_ratio": 0.009678011299753153,
+      "error": null,
+      "duration_s": 775.315608120989,
+      "peak_memory_mb": 9909,
+      "graphs_compiled": 2,
+      "cudagraph_nodes": 0,
+      "cudagraph_skips": 128,
+      "cudagraph_skip_reasons": [
+        "Recording cudagraph tree for symint key (2048, 2048)",
+        "skipping cudagraphs due to mutated inputs (64 instances). Found from : File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 808, in forward hidden_states = layer(hidden_states, cos, sin, cache, cache_offset) File \"/workspace/deltaforge/src/deltaforge/reference.py\", line 726, in forward hidden_states = self.linear_attn(hidden_states, layer_cache) File \"/workspace/deltaforge/src/deltaforge",
+        "Recording cudagraph tree for symint key (3, 2049)",
+        "Recording cudagraph tree for symint key (3, 2050)",
+        "Recording cudagraph tree for symint key (3, 2051)",
+        "Recording cudagraph tree for symint key (3, 2052)",
+        "Recording cudagraph tree for symint key (3, 2053)",
+        "Recording cudagraph tree for symint key (3, 2054)"
+      ],
+      "launch_shapes": {},
+      "phases_s": {
+        "candidate_build": 0.1239991900511086,
+        "correctness": 58.984553489950486,
+        "compile_candidate_compiled": 0.009269488975405693,
+        "bench": 716.138506515068
+      },
+      "card": {
+        "sm_mhz": 2385,
+        "memory_mhz": 13801,
+        "power_w": 100.93,
+        "power_limit_w": 400.0,
+        "throttle_reasons": "0x0000000000000000",
+        "observed_at": "2026-10-01T01:46:42.014799+00:00"
+      },
+      "acceptance": {
+        "block_size": 2,
+        "cycles": 2159,
+        "mean_accepted": 0.0,
+        "histogram": {
+          "0": 2159,
+          "1": 0,
+          "2": 0
+        }
+      },
+      "prediction_correct": true
+    },
+    {
+      "slug": "071-int4-mlp-torch-dequant",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.5275,
+      "replaces": [
+        "swiglu_mlp"
+      ],
+      "kernels": [
+        "int4_mlp_torch_dequant"
+      ],
+      "mechanism": "The construction `056` proved fuses, on the 96 MLP projections: **52.75% of per-token bytes at a 1.6545x ceiling**, the largest homogeneous block in the model, at group-128 int4 with no hand-written kernel in it.",
+      "rationale": "**The prize, and the first slot in eleven batches to attack it with code we did not write.** Three hand-written kernels have failed on these sites at ~66 GB/s across three rentals; rental 43 refuted register pressure and latency; rental 45 closed the tile at five measured points. What was never tried is that the right code for these sites is inductor's own. Predicted **win, 1.25-1.55** against a 1.6545x ceiling -- the head collected 1.0171 of 1.1249, 14% of its ceiling, and if this collects the same fraction it returns 1.09; if it collects what the *bytes* say, 1.45. The honest range spans them, and the wide sites are the reason to expect the upper half: gate_proj and up_proj are 9216 channels and down_proj 2560, against the 32 that starved every kernel batches 003 and 004 measured. **A bandwidth budget reads a loss just as clearly.** If inductor materialises the dequantised weight at these sites, the candidate moves 4529.85 MB/token of bf16 *plus* the 1132.46 MB of packed nibbles it read to build it, and lands near 0.6 -- there is no middle outcome that is hard to read, which is what made `056` worth three minutes and makes this worth six. Bars are derived from a measured point: `030-int4-mlp` is the same weights, the same k-major grouping and the same rounding through a Triton kernel, and returned **237/264 agreement at 0.04868 nats** -- and `054` against `056` showed two authors of one function return layer-2 numbers identical to the digit, so a number far from 0.04868 here is a registration bug rather than a quantisation effect. `--dump-install int4_mlp_torch_dequant` is set for this rental, so whatever this slot returns, the generated code says why.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "067-int4-head-torch-dequant - 000-identity measured 0.9971 - 1.0236 = -0.0265 against a floor of 0.0: the proposition this slot depends on is that a grouped int4 dequantise-GEMV written in torch is worth something at a site inductor compiles -- and that proposition is a *comparison* between the head slot and the unmodified reference, measured in the same process on the same card in the same interleaved rounds. Rental 46 put the floor on the head's absolute ratio at 1.02, the head returned 1.0171 while answering the question with an unambiguous yes, and this slot -- 52.75% of per-token bytes, the largest prize in the backlog -- declined by 0.3% of a quantity that depends on the hour's card",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "card": {},
+      "acceptance": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "072-int4-mlp-and-head",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.6755,
+      "replaces": [
+        "swiglu_mlp",
+        "decode_step"
+      ],
+      "kernels": [
+        "int4_mlp_torch_dequant",
+        "int4_head_torch_dequant"
+      ],
+      "mechanism": "Both quantised installs at once: 67.55% of per-token bytes at 4 bits, **a 2.0269x ceiling** -- the MLP's 96 projections and the tied head, which between them are every wide matmul the decode step performs.",
+      "rationale": "**The rung that says whether the construction adds.** One variable from 071, and the quantity is `072 - 071` against `067 - 000`: if the head's margin survives being stacked on the MLP's, the mechanism is byte-count and byte-counts add. If it does not, then something shared is saturating -- the same non-additivity `060` found for two dispatch savings, but for traffic, which would be a more interesting result than the ratio. Predicted **win, 1.35-1.75**. Bars come from two measured points and a superset: KL is roughly additive over independent perturbations, so 0.04868 (`030`, the MLP) + 0.01674 (`022`, the head) ~ 0.065, and `014-int4-full` -- a strict superset of these sites -- measured **226/264 at 0.09185**, which bounds it from above. The bar sits at 224/264 and 0.09, between the sum and the bound.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "071-int4-mlp-torch-dequant - 000-identity measured no ratio - 1.0236 against a floor of 0.0: this is the MLP install plus a second one measured alone two slots above it, so with the MLP below the reference there is nothing here the batch does not already hold -- adding a second install on top of a composition that lost is what batch 003 spent five slots doing, and batch 004 two more. The floor is on the margin over identity because that is the proposition: did quantising the MLP in torch beat bf16 on *this* card",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "card": {},
+      "acceptance": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "073-conv-mlp-and-head",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.6761,
+      "replaces": [
+        "causal_conv",
+        "swiglu_mlp",
+        "decode_step"
+      ],
+      "kernels": [
+        "inline_causal_conv",
+        "int4_mlp_torch_dequant",
+        "int4_head_torch_dequant"
+      ],
+      "mechanism": "The configuration this repository would ship if 071 wins: bytes removed from every wide matmul, and 24 cuDNN dispatches removed from 24 layers.",
+      "rationale": "**One variable from 072: the conv, whose value was measured alone in 066 and in one composition in 068.** Predicted **win, 1.40-1.85**, and the reading is `073 - 072` against `068 - 067`: the conv saved 24 dispatches next to a bf16 MLP, and this asks whether it still saves them next to an MLP whose own kernels changed. It is the promotable configuration, so it has to exist as a number before anything promotes it -- `058` is on the record as the last time this project shipped a pair no rental had run. Bars are 072's: the conv is bit-identical to the reference.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "072-int4-mlp-and-head - 000-identity measured no ratio - 1.0236 against a floor of 0.0: this is 072 with the conv added, and the conv's own value is measured in 066 and 068. With 072 below the reference the batch already holds every part of this slot separately and the composition would only stack a third install on a loss",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "card": {},
+      "acceptance": {},
+      "prediction_correct": null
+    },
+    {
+      "slug": "074-int4-wide-and-head",
+      "outcome": "precondition_failed",
+      "prediction": "win",
+      "category": "B",
+      "byte_share": 0.9785,
+      "replaces": [
+        "decode_step"
+      ],
+      "kernels": [
+        "int4_wide_torch_dequant"
+      ],
+      "mechanism": "Every layer projection except the two 32-channel gates, plus the tied head, at group-128 int4 in torch: 200 sites, **97.85% of what the compiled column moves, a 3.7578x ceiling** -- the whole weight stream bar 7.86 MB/token.",
+      "rationale": "**The largest byte share this project can attack, and the riskiest install in the batch, so it runs last with everything cheaper already on disk.** Predicted **win, 1.5-2.4**. The 48 excluded sites are `in_proj_a` and `in_proj_b` -- 0.09% of the bytes and the whole of the numerical risk, because they feed an exponential through `A_log` -- so this buys 97.85% of the stream at none of that cost. **What it can find that 072 cannot**: the head is 248320 channels wide and the MLP 9216, and every site added here is narrower -- 2560, 4096, the full-attention projections. If the ratio falls below 072's, the fusion `056` discovered is **width-dependent**, and the boundary is a fact about inductor's GEMV prologue that this project could state in one table. That reading is worth a slot on its own. The one measurement of these sites at 4 bits is `014-int4-full` (rental 37): **226/264 at 0.09185 nats, gate passed** -- through a row-major packing and a hand-written kernel running at 141 GB/s, so its correctness transfers and its ratio does not. Bars sit at 220/264 and 0.12, one measurement's headroom above that point rather than on top of it, and **this slot excludes the gates 014 included**, so it should be no worse.",
+      "median_ratio": null,
+      "iqr_ratio": null,
+      "error": "072-int4-mlp-and-head - 071-int4-mlp-torch-dequant measured no ratio - no ratio against a floor of 0.0: this slot's whole content above 072 is *more sites*, so the proposition it rests on is that adding sites to this construction keeps paying -- which is exactly what 072 minus 071 measures, in one process on one card. If putting the head's sites on top of the MLP's took the ratio down, putting another 2602 MB/token of narrower projections on top will take it down further, and the batch will already know why. The floor is on the margin between two slots rather than on either one's absolute value, because a card that drifts moves both together",
+      "duration_s": null,
+      "peak_memory_mb": null,
+      "graphs_compiled": null,
+      "cudagraph_nodes": null,
+      "cudagraph_skips": null,
+      "cudagraph_skip_reasons": [],
+      "launch_shapes": {},
+      "phases_s": {},
+      "card": {},
+      "acceptance": {},
+      "prediction_correct": null
+    }
+  ],
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
+    "hostname": "6487e9c5368f",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "610.43.02",
+    "gpu_memory_total_mb": 32149,
+    "gpu_clocks_mhz": {
+      "sm": 2392,
+      "memory": 13801,
+      "observed_at": "2026-10-01T01:46:46.382121+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0",
+    "gpu_power": {
+      "draw_w": 62.97,
+      "limit_w": 400.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "cost": {
+    "instance_id": "53608223",
+    "hourly_rate_usd": 0.4675555555555556,
+    "gpu_model": null,
+    "actual_minutes": null,
+    "actual_cost_usd": null
+  },
+  "notes": ""
+}

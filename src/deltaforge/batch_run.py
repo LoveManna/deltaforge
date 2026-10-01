@@ -977,6 +977,24 @@ def device_name() -> str:
     return ""
 
 
+def host_driver_version() -> str:
+    """The host NVIDIA driver, or ``""`` where it cannot be read.
+
+    Rental 56 is why this is read at slot 0 rather than only written into the record: seven
+    identity slots separate into healthy and slow on this field alone, and the field has
+    been captured since the first rental. `harness.report.capture_environment` is the one
+    that reads it, and this reuses that rather than adding a second way to ask -- two
+    accessors for one fact is how they drift. Suppressed exactly as `device_name` is: a
+    pre-flight that can raise is a pre-flight that can fail a batch.
+    """
+    try:
+        from .harness.report import capture_environment  # noqa: PLC0415
+
+        return str(capture_environment().get("driver_version") or "")
+    except Exception:  # noqa: BLE001 - a diagnostic must never end a paid run
+        return ""
+
+
 def reference_gbps(result: SlotResult) -> float | None:
     """The `compiled` column's achieved bandwidth in a finished slot, if it declared bytes."""
     achieved = (result.bench or {}).get("achieved_gbps") or {}
@@ -1060,7 +1078,7 @@ def run_batch(
             # 0.66 of rental 40's and flattened every effect in the batch, and the figure
             # that would have said so was already in this slot. It reports and never
             # decides — see `card_baseline`.
-            log(card_report(device_name(), reference_gbps(result)))
+            log(card_report(device_name(), reference_gbps(result), host_driver_version()))
         if result.duration_s is not None and result.outcome != "not_run":
             budget.record(result.duration_s)
         log(

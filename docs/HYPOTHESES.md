@@ -271,8 +271,32 @@ to them is now `int4_head_torch_dequant`'s, applied to the MLP — `061`, 52.75%
 bytes at a 1.6545x ceiling, registered and **declined on a floor that tested the wrong
 proposition** (see the graveyard note below). It is the first slot of the next batch.
 
-**Registered as a ladder, batch 011 (2026-09-30).** This entry stops being a kernel backlog
-and becomes a byte-share ladder, because the code that collects it is inductor's:
+**MEASURED, rental 56 (2026-10-01): the fusion is site-dependent and does not reach the
+MLP. The ladder below is SUSPENDED.** `--dump-install int4_mlp_torch_dequant` cost one step
+and refuted the ladder's premise without a slot running. At the 96 MLP projections inductor
+emits a **pointwise kernel that writes two complete `(2560, 9216)` fp32 weight tensors** and
+a **separate** reduction kernel for the matmul — 94.4 MB a site, 34 such allocations in the
+graph, **zero `extern_kernels.mm`**, so it is not a cuBLAS fallback but a deliberate
+materialisation. That is **18.12 GB/token** against a reference moving 8587.80, and
+`071-int4-mlp-torch-dequant` would have measured **~0.37** against its registered 1.25-1.55.
+
+**So `056`'s win was narrower than this entry recorded it.** Not "inductor fuses a grouped
+dequantisation into a GEMV prologue" but "it fused at the one site where materialising was
+unaffordable": the head's dequantised fp32 operand would be **2.54 GB** where the MLP's is
+94.4 MB. The ranked reading is that **inductor materialises when it can afford to.**
+
+**What reopens it, and it is one line.** `torch_dequant_gemv_int4` asks for an **fp32**
+matmul — `flat.float() @ dense.float()` — which is what makes the materialised operand fp32
+and plausibly what selects a `mm` template over a reduction that could carry the prologue. A
+bf16 matmul with fp32 accumulation is what the Triton kernel does and what the correctness
+reference means. Two slots, one variable apart, in one process; no new kernel. **Dump the
+generated code at the new site before extending any fusion result to it**, and do not read
+fusion off a kernel *name* — four kernels in that dump carry both the nibble unpack and `mm`
+in their names and none performs a matmul.
+
+**Registered as a ladder, batch 011 (2026-09-30), and four rungs declined unmeasured.** The
+card ran at 0.34x, so `067` fell below the identity slot and every gate behind it read
+`precondition_failed`. The ladder as registered:
 
 | slot | sites | share of per-token bytes | ceiling | predicted |
 |---|---|---:|---:|---|
@@ -1026,6 +1050,27 @@ looks strict.**
 histogram that says why — `{0: 2108, 1: 0, 2: 17}` over 2125 cycles. Never one token, 0.8%
 of the time the whole block: prompt-lookup finds a literal repeat or nothing. At k=4 the
 counts at 3 and 4 are zero, so a longer block bought no acceptance and cost 6.7% more γ.
+
+**CONFIRMED on a second card and generation, rental 56 (2026-10-01): γ(1) = 2.018,
+γ(2) = 2.124 — a 91% step and a 10.6%/token slope.** A smooth per-token model has to pass
+through (1 token, γ=1.000) and predicts 1.158 at two tokens; measured 2.018. **The no-step
+model is now refuted on both cards and the step is independently confirmed**, with the
+two-token verify batch 010 never ran. The registered prediction here was 0.786 — the step
+model's own number — and it was wrong by 59%, so the *shape* survived and the *magnitude*
+did not.
+
+**And the magnitude is the clue: it moved 4x with the card.** 91% here against the 4090's
+23%, on a card at 0.34x of this project's best bandwidth. A traffic cost scales with
+bandwidth; a launch cost scales with clock and fixed per-kernel overhead, and this went up as
+bandwidth went down. The candidate column ran at **204 GB/s against the reference's 422**
+while moving essentially the same weight bytes.
+
+**Suspect 3 is dead.** The `No valid triton configs ... Required: 110592 Hardware limit:
+101376` on the verify's `k+1` shape was ranked as the 4090's narrower shared memory, with
+"any decision that turns on γ's exact value needs a 5090 first". A 5090 reports **the same
+101376-byte limit** and the same empty pool. The remaining ranked suspect is `reference.py`'s
+`if seq_len > 1` mask branch, which is a fixed cost of leaving seq=1 and therefore the right
+shape for a step.
 
 **Registered, batch 011 (2026-09-30): the step is tested with one slot.** `069-verify-inflation-k1`
 is the same instrument at `block_size=1` — a **two-token** verify, the shortest one that is

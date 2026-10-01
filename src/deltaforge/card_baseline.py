@@ -1,10 +1,31 @@
 """What this GPU model has run the reference at before, and whether today's card matches.
 
-**Rental 43 is why this file exists.** Two RTX 5090s reporting the same memory clock, the
-same driver and the same torch ran the reference **1.61x apart**: 1282.6 GB/s on rental
-40 against 845.3 on rental 43. Every prediction in batch 007 was derived from the first
-number, every one of them was wrong by roughly that factor, and the batch found out in
-the writeup rather than at minute 27 — even though the instrument was already in the run.
+**Rental 43 is why this file exists.** Two RTX 5090s reporting the same memory clock and
+the same torch ran the reference **1.61x apart**: 1282.6 GB/s on rental 40 against 845.3 on
+rental 43. Every prediction in batch 007 was derived from the first number, every one of
+them was wrong by roughly that factor, and the batch found out in the writeup rather than at
+minute 27 — even though the instrument was already in the run.
+
+**Rental 56 found the variable, and this file had been writing it down and not comparing
+it: the host driver.** Said "the same driver" here until 2026-10-01, which was wrong —
+rental 40 ran 580.159.03 and rental 43 ran 580.159.04. Seven identity slots now separate
+cleanly on that field and on nothing else:
+
+| driver | rentals | reference |
+|---|---|---:|
+| 580.159.03 | 40, 42 | 1283, 1223 GB/s |
+| 580.173.02 | 45, 46 | 1214, 1197 GB/s |
+| 580.159.04 | 43 | **845 GB/s** |
+| 610.43.02 | 56 | **441 GB/s** |
+
+Same GPU, same compute capability 12.0, same torch 2.11.0+cu128, same Triton 3.6.0, and
+rental 56 reported **no throttle flags at all**. SM clock is refuted as the explanation:
+rental 43 had the highest clock of all seven (2925 MHz) and the second-worst bandwidth.
+Every driver seen twice lands within 7%; the two outliers are the two seen once.
+
+`cuda_max_good` is the *advertised* form of the same field, so the decision now lives in
+`remote/provision.sh` (`DF_MIN_CUDA`/`DF_MAX_CUDA`) where it can refuse a host **before**
+the rental is paid for. This module still only reports.
 
 `000-identity` measures the reference column's achieved bandwidth before any kernel slot
 starts, so the comparison costs nothing. This module is that comparison, and the rule it
@@ -50,6 +71,10 @@ class ReferenceObservation:
     date: str
     gbps: float
     note: str = ""
+    #: `environment.driver_version` from the same record. Recorded from the start and never
+    #: compared until rental 56, which is the whole lesson: seven observations separate on
+    #: this field and on nothing else the record holds.
+    driver: str = ""
 
 
 #: Keyed by `torch.cuda.get_device_name()`, which is what `summary.json` records.
@@ -59,28 +84,57 @@ class ReferenceObservation:
 #: table, because it silently turns a normal card into an outlier.
 RECORDED_REFERENCE_GBPS: dict[str, tuple[ReferenceObservation, ...]] = {
     "NVIDIA GeForce RTX 5090": (
-        ReferenceObservation(40, "2026-09-19", 1282.6, "the champion's rental; 6.70 ms/token"),
-        ReferenceObservation(42, "2026-09-20", 1223.2, "7.17 ms/token"),
+        ReferenceObservation(40, "2026-09-19", 1282.6, "the champion's rental; 6.70 ms/token", "580.159.03"),
+        ReferenceObservation(42, "2026-09-20", 1223.2, "7.17 ms/token", "580.159.03"),
         ReferenceObservation(
             43,
             "2026-09-20",
             845.3,
             "HiveOS host, machine 9105, reliability 0.9808; every measured effect went to zero",
+            "580.159.04",
         ),
         ReferenceObservation(
             45,
             "2026-09-23",
             1197.0,
             "healthy at slot 0 and downclocked 2910 -> 2400 MHz by slot 4; see below",
+            "580.173.02",
         ),
         ReferenceObservation(
             46,
             "2026-09-23",
             1214.0,
             "machine 140734 again -- the same host as rental 45, and it drifted the same way",
+            "580.173.02",
+        ),
+        ReferenceObservation(
+            56,
+            "2026-10-01",
+            440.8,
+            "0.34x, no throttle flags, SM 2377 MHz; machine 147874, offer advertised CUDA 13.3",
+            "610.43.02",
+        ),
+    ),
+    "NVIDIA GeForce RTX 4090": (
+        ReferenceObservation(
+            54,
+            "2026-09-30",
+            848.6,
+            "the first 4090 here; batch 010's five slots, identity 1.0002 +- 0.0001",
+            "580.159.03",
         ),
     ),
 }
+
+
+def drivers_seen(gpu_name: str) -> dict[str, tuple[float, ...]]:
+    """Driver version -> the reference bandwidths recorded under it, for this GPU model."""
+    seen: dict[str, list[float]] = {}
+    for observation in recorded_for(gpu_name):
+        if observation.driver:
+            seen.setdefault(observation.driver, []).append(observation.gbps)
+    return {driver: tuple(values) for driver, values in seen.items()}
+
 
 #: **A pre-flight tests the card you were given, not the card you will still have.**
 #: Rental 45 reported 1197 GB/s here and passed, then lost 17% of its SM clock at slot 4
@@ -120,7 +174,7 @@ def recorded_for(gpu_name: str) -> tuple[ReferenceObservation, ...]:
     return RECORDED_REFERENCE_GBPS.get(gpu_name, ())
 
 
-def card_report(gpu_name: str, measured_gbps: float | None) -> str:
+def card_report(gpu_name: str, measured_gbps: float | None, driver: str = "") -> str:
     """One block of text for the run log, said before any kernel slot is read.
 
     Returns a string rather than logging, so the CPU suite can assert on what a given
@@ -135,6 +189,7 @@ def card_report(gpu_name: str, measured_gbps: float | None) -> str:
 
     recorded = recorded_for(gpu_name)
     line = f"{head} ran the reference at {measured_gbps:.0f} GB/s in the identity slot."
+    line += _driver_line(gpu_name, driver)
     if not recorded:
         return (
             f"{line} **This project has never recorded this GPU model before**, so there "
@@ -146,10 +201,39 @@ def card_report(gpu_name: str, measured_gbps: float | None) -> str:
     best = max(o.gbps for o in recorded)
     fraction = measured_gbps / best
     verdict = f"{fraction:.2f}x the best recorded ({best:.0f} GB/s). Previously: {history} GB/s."
-    if fraction < SLOW_FRACTION:
+    if fraction < SLOW_FRACTION:  # noqa: RET505 - the branches read as a ladder, not a chain
         return (
             f"{line} WARNING -- this card is SLOW: {verdict} Rental 43 sat at 0.66 here and "
             "every mechanism in that batch measured zero against an identity slot carrying "
             f"+1.01%. Read every slot below against this rental's own identity. {CARD_SPREAD_NOTE}"
         )
     return f"{line} In family: {verdict} {CARD_SPREAD_NOTE}"
+
+
+def _driver_line(gpu_name: str, driver: str) -> str:
+    """What this host's driver has produced before, in one clause.
+
+    Rental 56's whole lesson: the field was in every record and nothing read it. An
+    unrecognised driver is the condition under which both of this project's slow cards
+    appeared, so it is said out loud at slot 0 rather than reconstructed in a writeup.
+    """
+    if not driver:
+        return ""
+    seen = drivers_seen(gpu_name)
+    if driver not in seen:
+        known = ", ".join(sorted(seen)) or "none"
+        return (
+            f" **Host driver {driver} is new to this project** (known: {known}) -- both cards "
+            "that ever ran slow here were on a driver seen once, so treat an absolute number "
+            "from this rental as uncorroborated."
+        )
+    history = ", ".join(f"{value:.0f}" for value in seen[driver])
+    best = max(max(values) for values in seen.values())
+    if max(seen[driver]) < best * SLOW_FRACTION:
+        return (
+            f" **Host driver {driver} has run this model slowly before: {history} GB/s against "
+            f"{best:.0f} on the fastest driver recorded.** Recording the observation is what "
+            "stopped this reading as an unknown driver, so the warning has to survive being "
+            "recorded -- which is the only reason this branch exists."
+        )
+    return f" Host driver {driver} has previously run this model at {history} GB/s."

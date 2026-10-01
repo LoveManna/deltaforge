@@ -69,6 +69,30 @@ DF_MIN_GPU_RAM="${DF_MIN_GPU_RAM:-24000}"
 # It tightens the market: the 4090 pool emptied at the default $0.45 ceiling when rental 42
 # tried it, so raise `--max-rate` with it rather than lowering this back.
 DF_MIN_CUDA="${DF_MIN_CUDA:-12.9}"
+# And a **ceiling**, which this project did not have until rental 56 paid for one.
+#
+# `cuda_max_good` is the host *driver's* maximum supported CUDA, so it is the advertised
+# proxy for the driver branch -- and the driver is the first variable in seven rentals'
+# environment records that separates a fast card from a slow one. Every RTX 5090 on a driver
+# this project has seen more than once ran the reference between 1197 and 1283 GB/s, a 7%
+# spread. The two that did not are the only two on a different driver:
+#
+#   580.159.03  (cuda_max_good 13.0)   1283, 1223 GB/s   rentals 40, 42
+#   580.173.02  (cuda_max_good 13.0)   1214, 1197 GB/s   rentals 46, 45
+#   580.159.04                          845 GB/s         rental 43
+#   610.43.02   (cuda_max_good 13.3)    441 GB/s         rental 56  <-- 0.34x
+#
+# SM clock is **refuted** as the explanation: rental 43 had the highest clock of all seven
+# (2925 MHz) and the second-worst bandwidth, and rental 56 reported no throttle flags at all.
+# Blocker 18 -- "the card is an uncontrolled variable the size of the effects being
+# measured" -- has been open since rental 43 with nothing in the record to show it. This is
+# the field that shows it, and it was being captured the whole time without being compared.
+#
+# **One data point at the top end, so this is a default and not a law.** It is set because a
+# slow card does not merely cost a rental: it moves every ratio and it declined four slots of
+# batch 011 through a precondition that was reading the card rather than the hypothesis.
+# Raise it when a 13.1+ host runs the reference in family, and record that it did.
+DF_MAX_CUDA="${DF_MAX_CUDA:-13.0}"
 # Two filters bought with rented time rather than reasoning. The cheapest single RTX 5090
 # on the market was an unverified consumer host that never finished pulling the container
 # image across three provisioning attempts, and whose ssh proxy was unreachable from
@@ -201,6 +225,7 @@ select_offers() {
         --argjson minrel "$DF_MIN_RELIABILITY" \
         --argjson minram "$DF_MIN_GPU_RAM" \
         --argjson mincuda "$DF_MIN_CUDA" \
+        --argjson maxcuda "$DF_MAX_CUDA" \
         --argjson mindown "$DF_MIN_INET_DOWN" \
         --argjson wantverified "$DF_REQUIRE_VERIFIED" \
         --arg excluded "$DF_EXCLUDE_MACHINES" \
@@ -218,6 +243,9 @@ select_offers() {
             # A driver older than the torch build cannot run it: forward compatibility is
             # a data-centre-only feature and these are GeForce cards.
             and (((.cuda_max_good // 0) | tonumber? // 0) >= $mincuda)
+            # And not far *ahead* of them either: see DF_MAX_CUDA. A driver newer than the
+            # toolchain the wheels were built for has cost this project a 0.34x card.
+            and (((.cuda_max_good // 0) | tonumber? // 1e9) <= $maxcuda)
             and (.inet_down // 0) > $mindown
             # The query filters on `verified`, but the offer objects come back with the
             # field null, so a client-side `== true` rejects the entire market. Reject an
@@ -258,7 +286,7 @@ trap 'rm -f "$DF_CANDIDATES_FILE"' EXIT INT TERM
 
 for gpu in "$DF_GPU" "$DF_FALLBACK_GPU"; do
     [ -n "$gpu" ] || continue
-    df_log "searching for on-demand $gpu, 1 GPU, reliability > $DF_MIN_RELIABILITY, <= \$$DF_MAX_RATE/hr"
+    df_log "searching for on-demand $gpu, 1 GPU, reliability > $DF_MIN_RELIABILITY, <= \$$DF_MAX_RATE/hr, CUDA $DF_MIN_CUDA-$DF_MAX_CUDA"
     # stderr is deliberately NOT suppressed: it carries the dry-run fixture notice and
     # whatever the API said when a search fails, and a silent search is how you spend a
     # session wondering why the market looks empty.

@@ -49,10 +49,10 @@ has least to gain. That is close to a closed argument.
 
 **What is not closed is the program.** The compiler picks instructions; it does not pick
 
-* **how many bytes the weights occupy** — quantisation and layout are ours, and `056`
-  proved inductor will fuse a *grouped* nibble unpack into a 248320-wide GEMV prologue with
-  no weight-sized buffer in the graph, which this file assumed for nine batches it could
-  not. 91.85% of per-token bytes sit behind that one fact.
+* **how many bytes the weights occupy** — quantisation and layout are ours. **Read the
+  correction in §1.2 before building on this**: rental 56 showed `056`'s fusion does not
+  generalise past the one site it was measured at, so the 91.85% is not behind one fact, it
+  is behind one fact *per site shape*.
 * **how many forward passes a token costs** — speculative decoding changes it under a
   property of greedy decoding no scheduler can observe. γ is measured now (§5) and the open
   question is a 23% step, not the drafter.
@@ -69,6 +69,38 @@ what it emitted — and the bar is now quantitative rather than rhetorical: a ha
 replacement has to beat it by **more than the fusion it destroys**, which the table above
 prices at 3-37% depending on what sits next to it. Every slot reports achieved GB/s beside
 its ratio, so any batch can notice this; none has yet.
+
+### 1.2 Correction (rental 56): the compiler's dequant fusion is site-dependent
+
+§1.1 generalised from `056` — the int4 head written in torch, which inductor compiled into
+one reduction carrying the whole grouped unpack with **no weight-sized buffer in the graph**
+— to "write the quantisation in torch and inductor will fuse it". **That generalisation is
+wrong, and the dump that cost nothing says so.**
+
+At the 96 MLP projections, the same source expression produces a **pointwise kernel that
+writes two complete `(2560, 9216)` fp32 weight tensors** and a **separate** reduction kernel
+for the matmul. 94.4 MB a site, 34 such allocations in the graph, zero `extern_kernels.mm`:
+inductor is not falling back to cuBLAS, it is choosing to materialise. That is
+**18.12 GB/token** of extra traffic against a reference that moves 8.59, so
+`071-int4-mlp-torch-dequant` would have returned **~0.37** against its registered 1.25-1.55.
+
+The operands differ by 27x — the head's dequantised fp32 weight would be **2.54 GB**, the
+MLP's is 94.4 MB — so the ranked reading is that **inductor materialises when it can afford
+to, and the head's fusion was forced rather than chosen.**
+
+**How to apply.** "Express it in torch and let the compiler fuse it" is not a law, it is a
+measurement that holds at one site shape. Before extending a fusion result to a new site,
+**dump the generated code at that site** and look for an allocation the size of the operand —
+`--dump-install <kernel>` does it for the price of one step, needs no slot, and answered a
+declined hypothesis here. And do not read fusion off a kernel *name*: inductor names a fused
+node after its origins, so four kernels in rental 56's dump carry both the nibble unpack and
+`mm` in their names and none of them performs a matmul. The allocation and the grid size are
+the evidence.
+
+The live experiment is one line and two slots: `torch_dequant_gemv_int4` asks for an **fp32**
+matmul (`flat.float() @ dense.float()`), which is what makes the materialised operand fp32
+and plausibly what selects the `mm` template over a reduction. The bf16 variant beside it,
+one variable apart, in one process.
 
 ## 2. The arithmetic that decides whether your hypothesis is worth trying
 
@@ -295,6 +327,18 @@ file rather than `argv`, and `remote/scripts_test.py` asserts that.
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
 **Fifty-three instances created, fifty-three destroyed, $9.954 lifetime, zero leaked. Both
 champions are kernels this project deleted rather than wrote.**
+
+**Rental 56 (2026-10-01): batch 011 ran six of ten slots and the two findings are both
+corrections.** The MLP ladder declined on a card running at **0.34x**, and the dump refuted
+its central prediction anyway (§1.2). γ is confirmed as a **step** on a second card and
+generation — 91% at the seq=1 → seq>1 boundary here against the 4090's 23%, with a two-token
+verify batch 010 never ran — and batch 010's suspect 3 is dead, because a 5090 reports the
+same 101376-byte shared-memory limit. **The shipped pair is finally measured at 1.2179**,
+16% above the product of its ingredients, flagged cross-slot and unconfirmed. And **the card
+variable has a name**: the host driver separates seven identity slots where clock, GPU model
+and toolchain do not, so `DF_MAX_CUDA` now refuses a too-new driver at the offer line.
+$0.769, and $1.147 across the session's two rentals. See
+[`results/batches/011-bytes-not-kernels/`](results/batches/011-bytes-not-kernels/).
 
 **Batch 011 is registered (2026-09-30): `011-bytes-not-kernels`, ten slots.** It is the
 first batch built on §1.1: nothing in it writes a kernel. The pair this repository *ships*

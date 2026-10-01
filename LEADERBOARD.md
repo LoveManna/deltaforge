@@ -8,13 +8,28 @@
 |---|---|---|
 | Replaces | `causal_conv` | `decode_step` |
 | Kernel | `inline_causal_conv` | `int4_head_torch_dequant` |
-| Median ratio | **1.0765** (rental 45), **1.0650** (rental 46) | **1.0171** (rental 46) |
-| IQR | 0.0552; **0.0213** | **0.0130** |
+| Median ratio | **1.0765** (r45), **1.0650** (r46), **1.0778** (r56) | **1.0171** (r46), **0.9971** (r56) |
+| IQR | 0.0552; **0.0213**; 0.0322 | **0.0130**; 0.0230 |
 | Correctness | **bit-identical** — 264/264, 0.00000 nats | 0.9318 agreement, 0.01674 nats |
 | Result record | [`008`](results/batches/008-ingredients-and-barriers/) | [`009`](results/batches/009-visible-kernels/) |
 
 **Both were obtained by deleting a hand-written kernel rather than writing one, and each
 beat the Triton kernel it replaced in the same process on the same card.**
+
+**Rental 56 (2026-10-01) measured the pair for the first time: `068-champion-pair` returned
+1.2179**, the largest raw margin this project has recorded, and **16% above the product of
+its two ingredients** measured alone in the same process (1.0778 x 0.9971 = 1.0747). Read it
+with two caveats and this file will not promote on it: the identity slot carried **+2.36%**,
+and the comparison against the ingredients is *cross-slot* on a card whose reference column
+moved 423 → 432 GB/s between the two. **That card ran the reference at 441 GB/s — 0.34x the
+best recorded** — which is also why `067` came back at 0.9971 where rental 46 measured
+1.0171. The driver, not the kernel: see `docs/GPU-ACCESS.md` blocker 22.
+
+**And the generalisation this block invited is refuted.** `056` was read as "inductor fuses
+a grouped dequantisation into a GEMV prologue", and rental 56's dump shows it does **not** do
+so at the 96 MLP projections — it materialises a 94.4 MB fp32 weight per site and runs the
+matmul separately. The fusion is site-dependent; `AGENT.md` §1.2 has the correction and
+[`011`](results/batches/011-bytes-not-kernels/) has the generated code.
 
 ### `056` beat the champion it replaced by 3.2%, and the champion was ours
 

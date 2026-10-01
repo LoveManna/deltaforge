@@ -29,7 +29,8 @@ exposing the next problem in the chain:
 | 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | `card_baseline.card_report` — the identity slot's achieved bandwidth against every rental that measured this GPU model, said in the run log at slot 0 | **partly — it reported correctly on rental 45 (1197 GB/s, "In family"), and it cannot see blocker 19** |
 | 19 | **A card can pass the pre-flight and then downclock mid-rental** | rental 45 | nothing — ratios survive it, resolution does not | **no.** SM clock fell 2910 → 2400 MHz at slot 4 and held; the reference drifted 7.17 → 7.92 ms/token and six of eleven slots came back `inconclusive` |
 | 20 | **The compile-cache push costs an order of magnitude more than the compile it saves** | rental 45 | `DF_CACHE_MAX_PUSH_MB` (512) refuses an oversized push and compiles cold instead | **yes — rental 46, same host, fixed cost ~72 min → ~22** |
-| 21 | **A guard that bounds silence cannot bound a step whose healthy state is silent** | rental 55 | `fetch-weights` watches its own destination's byte total and exits 3 when it stops growing | **no — the watchdog is tested on a laptop, and only a rental can say whether the Xet opt-out addresses the cause** |
+| 21 | **A guard that bounds silence cannot bound a step whose healthy state is silent** | rental 55 | `fetch-weights` watches its own destination's byte total and exits 3 when it stops growing | **yes — rental 56.** The heartbeat showed 2.05 GB on disk while the bar sat at `4/6`, and with Xet out of the path 9.32 GB landed in ~2 min against rental 55's 40-minute stall |
+| 22 | **The uncontrolled card variable is the host driver** | rental 56 | `DF_MAX_CUDA` (13.0) refuses a too-new driver at the offer line, via its advertised `cuda_max_good`; `ReferenceObservation.driver` and the slot-0 pre-flight name it | **partly — the correlation is 7 observations and the filter is tested, but only a rental on a 13.1+ host that runs *in family* can falsify the ceiling** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -539,6 +540,7 @@ project have not been the loud ones.
 | 53 | 2026-09-30 | **first 4090**; identity 1.0001, three slots OOM'd on a prefill-scale recording | 20.40 min | $0.1186 |
 | 54 | 2026-09-30 | **batch 010: all five slots measured**; γ(2)=1.316, γ(4)=1.404 | 25.08 min | $0.1516 |
 | 55 | 2026-09-30 | RTX 5090, CUDA 13.0. `fetch-weights` sat silent at **4/6 files** and the step guard gave up at 2400 s — blocker 21 | 55.32 min | $0.3778 |
+| 56 | 2026-10-01 | **batch 011: six of ten slots measured**; blocker 21 fixed and proven, and the card ran at **0.34x** — blocker 22 | 98.65 min | $0.7686 |
 
 Forty-eight rentals, $9.954, **zero leaked instances** — every one destroyed cleanly by the
 trap, including three cancelled mid-flight with SIGTERM.
@@ -777,6 +779,59 @@ that this is the knob's name in the version the box installs — if it is wrong 
 is ignored and only the watchdog above changes anything. `_snapshot_download` therefore
 prints the accelerator the hub actually resolved, *before* the download, because a stalled
 fetch never reaches an "after". **The next rental's log is the test.**
+
+
+## The twenty-second blocker: the card variable was in the record all along
+
+**Rental 56 (2026-10-01), machine 147874, RTX 5090 at $0.4676/hr.** The identity slot ran the
+reference at **440.8 GB/s — 0.34x the best this project has recorded**, the worst figure in
+its history, and carried a **+2.36% offset at an IQR of 0.0260** where rental 54 had
+calibrated at 1.0002 ± 0.0001 eight days earlier. Four of ten slots declined as a direct
+consequence.
+
+**Nothing in the usual suspects explains it.** Same GPU model, same compute capability 12.0,
+same torch 2.11.0+cu128, same Triton 3.6.0, memory clock at the nominal 13801 MHz,
+`throttle_reasons` **0x0**, and 63 W drawn against a 400 W limit. One field separates seven
+identity slots:
+
+| driver | rentals | reference |
+|---|---|---:|
+| 580.159.03 | 40, 42 | 1283, 1223 GB/s |
+| 580.173.02 | 45, 46 | 1214, 1197 GB/s |
+| 580.159.04 | 43 | **845 GB/s** |
+| **610.43.02** | **56** | **441 GB/s** |
+
+**Every driver seen twice lands inside 7%. The two outliers are the two seen once.** And
+**SM clock is refuted**: rental 43 had the highest clock of all seven (2925 MHz) and the
+second-worst bandwidth, and 2377 MHz is not 0.34x of 2827.
+
+**Blocker 18 has been open since rental 43 on the grounds that "there is nothing in the
+environment record to show it".** There was. `capture_environment` has written
+`driver_version` since the first rental and nothing ever compared it —
+`card_baseline.py`'s own docstring asserted rental 40 and rental 43 shared "the same
+driver", which was false (580.159.03 against 580.159.04). A field captured and never read is
+worse than a field absent, because it looks like diligence.
+
+**The fix, in the one place it can be made before money is spent.** `cuda_max_good` is the
+*advertised* form of the driver branch, so `DF_MAX_CUDA` (13.0) rejects a too-new host in the
+offer search — this one advertised **13.3**, every healthy one advertised 13.0. That costs
+nothing at the offer line against $0.77 at the writeup. The fixture carries the case (9013,
+cheaper than the offer that works, so a price-ordered search would take it) and
+`scripts_test.py` reads the ceiling out of `provision.sh` rather than restating it.
+
+**One data point at the ceiling, so this is a default with its evidence beside it, not a
+law.** It is deliberately falsifiable: a 13.1+ host that runs the reference in family should
+raise it, and the writeup that does so should say which rental earned the change. Raising the
+floor to 12.9 took three.
+
+**`card_baseline` now names the driver at slot 0**, including the case that only appears once
+an observation is recorded: a driver whose *recorded* history is slow still warns, because
+writing the observation down is what stops it reading as unknown. The RTX 4090 has a row now
+too (rental 54, 848.6 GB/s), so it is no longer the stand-in for an unrecorded model.
+
+**How to apply:** when a variable has been "uncontrolled and invisible" for several rentals,
+check whether the record already holds it and nobody has grouped by it. The instrument was
+`sort by driver`, and it was available from rental 43 onwards.
 
 
 ## Current status

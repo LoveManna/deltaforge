@@ -1,0 +1,255 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-10-01T01:33:46.584025+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "069-verify-inflation-k1",
+    "batch": "011-bytes-not-kernels",
+    "statement": "The speculative loop at block_size=1 with a drafter that always proposes the same token: acceptance is 0 by construction, every cycle runs one **two-token** verify, and the ratio is 1/gamma(1).",
+    "prediction": "loss",
+    "rationale": "**One slot that separates two models of rental 54's number, and they are 10% apart.** gamma(2)=1.316 and gamma(4)=1.404 fit a line with slope 4.4% per token and intercept 1.184 -- but a one-token verify *is* ordinary decode at gamma=1.000, so either there is a **~23% step at the seq=1 -> seq>1 boundary itself** or the two points are on a curve. The step model predicts gamma(1)=1.272 and a ratio of **0.786**; a model with no step, through (1 token, 1.000) and (3 tokens, 1.316), predicts 1.158 and **0.864**. Rental 54's identity IQR was 0.0001 and these slots' were 0.005, so the separation is 15 band-widths. Predicted **loss** either way, and the prediction that is on the record is the *number*: **0.786, the step**, because the step is what the suspects predict -- `reference.py`'s `if seq_len > 1` mask branch and a `k+1` autotune pool that the reference column never compiles are both **fixed costs of leaving seq=1**, not per-token ones. 0.864 would refute both and make the verify a traffic problem the spec's own model already prices. **This is the cheapest decisive slot in the batch**: no new arithmetic, no new kernel, and it governs whether entry 10 is alive.",
+    "category": "C",
+    "byte_share": 0.0,
+    "kernels": [
+      "rollback_state",
+      "speculative_fixed_k1"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "random"
+  },
+  "phases": {
+    "candidate_build": 0.14315797702874988,
+    "correctness": 52.91918727802113,
+    "compile_candidate_compiled": 0.048911463003605604,
+    "bench": 749.7773099769838
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
+    "hostname": "6487e9c5368f",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "610.43.02",
+    "gpu_memory_total_mb": 32149,
+    "gpu_clocks_mhz": {
+      "sm": 2392,
+      "memory": 13801,
+      "observed_at": "2026-10-01T01:33:46.688082+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0",
+    "gpu_power": {
+      "draw_w": 62.79,
+      "limit_w": 400.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        2510.634765625,
+        2608.665283203125,
+        2594.493408203125,
+        2598.012451171875,
+        2581.122802734375,
+        2588.746826171875,
+        2615.81396484375,
+        2538.691650390625,
+        2681.912109375,
+        2803.33203125,
+        2619.183349609375,
+        2601.215087890625,
+        2694.406494140625,
+        2603.632568359375,
+        2696.685546875,
+        2604.975830078125,
+        2670.734130859375
+      ],
+      "candidate_compiled": [
+        599810.4375,
+        5365.20751953125,
+        5226.9140625,
+        5308.54833984375,
+        5208.587890625,
+        5289.986328125,
+        5486.38330078125,
+        5539.77685546875,
+        5411.80615234375,
+        5458.45068359375,
+        5496.90185546875,
+        5533.90966796875,
+        5306.44482421875,
+        5405.6220703125,
+        5390.49853515625,
+        5235.20068359375,
+        5235.30078125
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        2594.493408203125,
+        2598.012451171875,
+        2581.122802734375,
+        2588.746826171875,
+        2615.81396484375,
+        2538.691650390625,
+        2681.912109375,
+        2803.33203125,
+        2619.183349609375,
+        2601.215087890625,
+        2694.406494140625,
+        2603.632568359375,
+        2696.685546875,
+        2604.975830078125,
+        2670.734130859375
+      ],
+      "candidate_compiled": [
+        5226.9140625,
+        5308.54833984375,
+        5208.587890625,
+        5289.986328125,
+        5486.38330078125,
+        5539.77685546875,
+        5411.80615234375,
+        5458.45068359375,
+        5496.90185546875,
+        5533.90966796875,
+        5306.44482421875,
+        5405.6220703125,
+        5390.49853515625,
+        5235.20068359375,
+        5235.30078125
+      ]
+    },
+    "median_ms": {
+      "compiled": 2604.975830078125,
+      "candidate_compiled": 5390.49853515625
+    },
+    "achieved_gbps": {
+      "compiled": 421.9765333880403,
+      "candidate_compiled": 203.92152287341958
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.4963719275235597,
+        0.48940167534545687,
+        0.4955513580523752,
+        0.48936739446913446,
+        0.4767829408622003,
+        0.45826604872802457,
+        0.4955669205212598,
+        0.5135765061825812,
+        0.4764835571884198,
+        0.47005015332052114,
+        0.5077611439288475,
+        0.48165271905678353,
+        0.500266446468264,
+        0.49758853337593856,
+        0.5101395779253968
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.4955513580523752
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.01970965996260937
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "random"
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "069-verify-inflation-k1",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [],
+    "layer2_end_to_end": null,
+    "layer2_distribution": null,
+    "layer2_sequence": {
+      "kind": "sequence",
+      "num_prompts": 5,
+      "first_divergence": 28,
+      "reference_top2_gap": 0.125,
+      "gap_ceiling": 0.3,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "passed": true
+    },
+    "layer2_policy": "sequence",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}
