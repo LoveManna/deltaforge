@@ -312,6 +312,16 @@ before: `int4_mlp_torch_dequant` was registered against `decode_step`, which mad
 the same 96 sites has always said `swiglu_mlp`; and `DF_MIN_CUDA` still defaulted to
 **12.8**, the value that is 3 for 3 on `Error 804` (§8, and `docs/GPU-ACCESS.md` blocker 11).
 
+**Rental 55 (2026-09-30) bought nothing: $0.378 for 55.32 minutes, batch 011 never reached
+slot 0.** `fetch-weights` sat silent at **4/6 files** and the step guard gave up after
+2400 s — the same signature rental 47 recorded at 8:07, which is `huggingface_hub` retrying
+a CAS error internally and without a word. **The guard bounds silence, and this is the one
+step here whose healthy state is silent**: `snapshot_download`'s bar ticks once per
+completed file and the last two files are the safetensors shards. `fetch-weights` now
+watches its destination's byte total instead, exits 3 when it stops growing
+(`--stall-seconds`, default 300), and takes Xet out of the path by default because both
+recorded stalls were CAS retries. See `docs/GPU-ACCESS.md` blocker 21.
+
 **Rental 54 (2026-09-30): `gamma` exists.** A `k+1`-token verify costs **1.316 at k=2 and
 1.404 at k=4**, and the two points say the cost is a **step** — ~23% for entering the
 seq>1 path at all, then 4.4% per token. Batch 010's two registered kill criteria were both

@@ -29,6 +29,7 @@ exposing the next problem in the chain:
 | 18 | **A host can run the reference 1.61x slow with nothing in the environment to show it** | rental 43 | `card_baseline.card_report` — the identity slot's achieved bandwidth against every rental that measured this GPU model, said in the run log at slot 0 | **partly — it reported correctly on rental 45 (1197 GB/s, "In family"), and it cannot see blocker 19** |
 | 19 | **A card can pass the pre-flight and then downclock mid-rental** | rental 45 | nothing — ratios survive it, resolution does not | **no.** SM clock fell 2910 → 2400 MHz at slot 4 and held; the reference drifted 7.17 → 7.92 ms/token and six of eleven slots came back `inconclusive` |
 | 20 | **The compile-cache push costs an order of magnitude more than the compile it saves** | rental 45 | `DF_CACHE_MAX_PUSH_MB` (512) refuses an oversized push and compiles cold instead | **yes — rental 46, same host, fixed cost ~72 min → ~22** |
+| 21 | **A guard that bounds silence cannot bound a step whose healthy state is silent** | rental 55 | `fetch-weights` watches its own destination's byte total and exits 3 when it stops growing | **no — the watchdog is tested on a laptop, and only a rental can say whether the Xet opt-out addresses the cause** |
 | — | ~~Some hosts never answer sshd at all~~ **Withdrawn — this was blocker 7** | rentals 11, 17 | — | n/a |
 
 Blockers 1-9 and 12-15 are fixed and proven on a GPU. **Blocker 11 regressed** — it was
@@ -537,6 +538,7 @@ project have not been the loud ones.
 | 52 | 2026-09-30 | container refused the account ssh key — blocker 2 recurred | 1.27 min | $0.0082 |
 | 53 | 2026-09-30 | **first 4090**; identity 1.0001, three slots OOM'd on a prefill-scale recording | 20.40 min | $0.1186 |
 | 54 | 2026-09-30 | **batch 010: all five slots measured**; γ(2)=1.316, γ(4)=1.404 | 25.08 min | $0.1516 |
+| 55 | 2026-09-30 | RTX 5090, CUDA 13.0. `fetch-weights` sat silent at **4/6 files** and the step guard gave up at 2400 s — blocker 21 | 55.32 min | $0.3778 |
 
 Forty-eight rentals, $9.954, **zero leaked instances** — every one destroyed cleanly by the
 trap, including three cancelled mid-flight with SIGTERM.
@@ -731,6 +733,51 @@ Two things this cost beyond the four cents. The teardown's cache pull ran with
 excluding it emptied the market. The run that succeeded went back to the same machine with
 the retry in place, which is the right order — the fix addresses the failure, and widening
 `--max-rate` to buy a different host would have been paying to route around a socket.
+
+## The twenty-first blocker: a step whose healthy behaviour is silence
+
+**Rental 55 (2026-09-30), instance 53599400, RTX 5090 at $0.4096/hr — 55.32 minutes,
+$0.3778, nothing measured.** Batch 011 never reached slot 0. The log ends:
+
+```
+Fetching 6 files:  67%|██████▋   | 4/6 [00:07<00:04,  2.31s/it]
+[deltaforge] ERROR: remote step 9 produced nothing for 2400s; giving up on it
+```
+
+Teardown ran, results were pulled, the instance was destroyed, and the vast API confirmed
+it. Nothing leaked. What was lost was the 40 minutes the guard spent waiting.
+
+**The signature is already in this repository.** `remote/run_remote.sh:628`, written after
+rental 47: *"the weights fetch sat 8:07 at `4/6` while huggingface_hub retried a CAS error
+internally."* Same stage, same count, twice — 8:07 then 40:00.
+
+**The bug is the guard's premise, not its budget.** `DF_STEP_STALL_S` stops believing in a
+step that has printed nothing for 2400 s, which is correct for every step here except one.
+`snapshot_download`'s progress bar ticks **once per completed file**, and the checkpoint's
+last two entries are the safetensors shards — so a *healthy* fetch is silent for as long as
+they take, and an unhealthy one that retries CAS internally is silent in exactly the same
+way. Raising the budget cannot separate them; only watching something that grows can. That
+is the distinction this file already drew for the image pull ("a stalled pull is
+indistinguishable from a slow one if you only wait") and the same answer applies.
+
+**The fix: `fetch-weights` now watches its own destination.** A thread prints the byte total
+every 30 s and exits the process with code **3** if that total has not moved for
+`--stall-seconds` (default 300). So the guard's signal is the download's real progress; a
+stall costs ~5 minutes and says what it was, and a slow-but-live download is no longer
+killed for being quiet. `DiskProgress` takes its clock and its sizer as arguments and
+`cli_test.py` covers the three cases that matter: growth is never a stall, the bound fires
+exactly where it was registered, and a directory total that *dips* — a `.part` file renamed
+into place — is not read as absence of progress. The watchdog's stop event is set in a
+`finally`, because a watchdog that can call `os._exit` must not outlive its subject.
+
+**And one cause-level lever, marked unverified.** Both recorded stalls were **CAS** retry
+storms, and CAS is Xet, so `HF_HUB_DISABLE_XET=1` is now set by default (`--xet` puts it
+back). `huggingface_hub` is not a local dependency, so nothing in the test suite can assert
+that this is the knob's name in the version the box installs — if it is wrong the variable
+is ignored and only the watchdog above changes anything. `_snapshot_download` therefore
+prints the accelerator the hub actually resolved, *before* the download, because a stalled
+fetch never reaches an "after". **The next rental's log is the test.**
+
 
 ## Current status
 

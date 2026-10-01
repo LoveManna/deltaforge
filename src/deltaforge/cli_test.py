@@ -170,18 +170,27 @@ def test_the_fast_download_is_used_when_available(tmp_path, monkeypatch):
     from . import cli
 
     calls = []
-    monkeypatch.setattr(cli, "_snapshot_download", lambda repo, dest: calls.append(repo) or True)
+
+    def fake_snapshot(repo, dest, *, use_xet):
+        calls.append((repo, use_xet))
+        return True
+
+    monkeypatch.setattr(cli, "_snapshot_download", fake_snapshot)
     monkeypatch.setattr(cli, "_download", lambda *a: pytest.fail("fell back unnecessarily"))
 
     assert cli.cmd_fetch_weights(_fetch_args(tmp_path)) == 0
-    assert calls == ["Qwen/Qwen3.5-4B"]
+    # Xet off unless asked for: the only two silent stalls this project has recorded
+    # (rentals 47 and 55, both at 4/6 files) were CAS retry storms, and CAS is Xet.
+    assert calls == [("Qwen/Qwen3.5-4B", False)]
+    assert cli.cmd_fetch_weights(_fetch_args(tmp_path, xet=True)) == 0
+    assert calls[-1] == ("Qwen/Qwen3.5-4B", True)
 
 
 def test_a_missing_huggingface_hub_falls_back_rather_than_failing(tmp_path, monkeypatch):
     """The fallback is slow, not broken. A box without the library must still work."""
     from . import cli
 
-    monkeypatch.setattr(cli, "_snapshot_download", lambda repo, dest: False)
+    monkeypatch.setattr(cli, "_snapshot_download", lambda repo, dest, **kw: False)
     fetched = []
 
     def fake_download(url, path):
@@ -417,3 +426,135 @@ def test_cmd_batch_builds_its_prompt_through_the_shared_workload_helper():
     source = inspect.getsource(cmd_batch)
     assert "_workload_prompt(" in source
     assert "torch.randint(" not in source
+
+
+# -- fetch-weights: the disk progress watchdog -----------------------------------------
+#
+# Rental 55 (2026-09-30) is why this exists. `fetch-weights` sat at `4/6` for 40 minutes
+# while `huggingface_hub` retried a CAS error internally and silently; the step guard in
+# `remote/run_remote.sh` bounds *silence*, not *stalling*, so it waited out its whole
+# 2400 s budget and the rental was destroyed having measured nothing, for $0.378. Rental 47
+# sat 8:07 at the same `4/6`. The guard's premise -- a healthy step prints something -- is
+# false for exactly this step, because `snapshot_download`'s bar ticks once per completed
+# file and the last two files are the safetensors shards.
+
+
+def test_a_growing_download_is_never_reported_as_stalled():
+    from .cli import DiskProgress
+
+    now = [0.0]
+    size = [0]
+    progress = DiskProgress(300.0, lambda: size[0], lambda: now[0])
+
+    for _ in range(40):
+        now[0] += 30.0
+        size[0] += 1
+        line, stalled = progress.poll()
+        assert not stalled, line
+
+    assert "GB" in line
+
+
+def test_a_download_that_stops_growing_stalls_at_the_registered_bound():
+    """Exactly at the bound, not after it: the bound is what the caller paid to choose."""
+    from .cli import DiskProgress
+
+    now = [0.0]
+    progress = DiskProgress(300.0, lambda: 4_600_000_000, lambda: now[0])
+
+    # The first poll is where these bytes are first *observed*, so that is where the clock
+    # starts -- not at construction. A fetch whose first heartbeat lands 30 s in has not
+    # been stalled for 30 s; it has been running for 30 s.
+    now[0] = 30.0
+    assert progress.poll() == ("  weights on disk: 4.60 GB (static 0s)", False)
+
+    now[0] = 329.0
+    assert progress.poll()[1] is False
+    now[0] = 330.0
+    assert progress.poll()[1] is True
+
+
+def test_a_directory_total_that_dips_is_not_read_as_a_stall():
+    """A resumable download renames `.part` files into place, so the total can dip.
+
+    Reading a dip as absence of progress would abort a healthy fetch — which would make
+    this watchdog the cause of the failure it exists to bound. `_largest` is what makes
+    that impossible.
+    """
+    from .cli import DiskProgress
+
+    now = [0.0]
+    size = [1_000]
+    progress = DiskProgress(100.0, lambda: size[0], lambda: now[0])
+
+    now[0] = 10.0
+    progress.poll()
+    size[0] = 900  # a .part file renamed away mid-walk
+    now[0] = 20.0
+    line, stalled = progress.poll()
+
+    assert not stalled
+    assert "0.00 GB" in line
+    # and the clock still runs from the last real growth, so a genuine stall after the dip
+    # is still caught on time
+    now[0] = 110.0
+    assert progress.poll()[1] is True
+
+
+def test_the_directory_sizer_counts_part_files_because_they_are_the_download(tmp_path):
+    from .cli import _directory_bytes
+
+    (tmp_path / "config.json").write_bytes(b"x" * 10)
+    nested = tmp_path / "blobs"
+    nested.mkdir()
+    (nested / "model-00001-of-00002.safetensors.part").write_bytes(b"y" * 500)
+
+    assert _directory_bytes(tmp_path) == 510
+
+
+def test_the_stall_exit_code_is_distinct_from_a_crash():
+    """A log reader must never have to guess whether a fetch crashed or went quiet."""
+    from .cli import STALLED_EXIT_CODE
+
+    assert STALLED_EXIT_CODE not in (0, 1, 2)
+
+
+def test_the_watchdog_stops_when_the_download_does(tmp_path):
+    """A watchdog that can call `os._exit` must not outlive its subject.
+
+    It watches a directory for growth and kills the process when growth stops -- which is
+    exactly what a *finished* download looks like. Left running, it would sit in whatever
+    the process does next (a pytest session, say) and eventually exit it.
+    """
+    from . import cli
+
+    stop = cli._watch_disk(tmp_path, stall_seconds=0.01, interval=3600.0)
+
+    assert not stop.is_set()
+    stop.set()
+    assert stop.is_set()
+
+
+def test_fetch_weights_stops_watching_even_when_the_download_raises(tmp_path, monkeypatch):
+    from . import cli
+
+    events = []
+    monkeypatch.setattr(cli, "_watch_disk", lambda *a, **kw: events.append("start") or _Recorder(events))
+
+    def boom(args, repo_id, dest):
+        raise RuntimeError("hub exploded")
+
+    monkeypatch.setattr(cli, "_fetch_weights", boom)
+
+    with pytest.raises(RuntimeError, match="hub exploded"):
+        cli.cmd_fetch_weights(_fetch_args(tmp_path))
+
+    assert events == ["start", "stop"]
+
+
+class _Recorder:
+    def __init__(self, events):
+        self._events = events
+
+    def set(self):
+        self._events.append("stop")

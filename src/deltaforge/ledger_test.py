@@ -318,9 +318,17 @@ def test_the_ledger_is_append_only(tmp_path):
 
 def test_a_realistic_session_stays_well_under_budget(tmp_path):
     """The economics the spec claims: the 60-minute gate caps a session near $0.35 at the
-    observed market rate, giving well over 75 sessions inside $50."""
+    observed market rate, giving well over 75 sessions inside $50.
+
+    The instant is **fixed**, not `now()`. Ten rows one minute apart from a real clock
+    straddle a month boundary whenever the suite runs in the last ten minutes of a month,
+    and `month_to_date_usd` correctly drops the ones that landed in the next month — so the
+    test failed at 23:56 UTC on 2026-09-30 having found nothing wrong with the code. A
+    gate that resets at midnight UTC is the intended behaviour; a test that can only be
+    trusted on 29 days out of 30 is not.
+    """
     path = tmp_path / "spend.jsonl"
-    now = datetime.now(timezone.utc)
+    now = datetime(2026, 9, 15, 12, 0, tzinfo=timezone.utc)
     for i in range(10):
         stamp = (now + timedelta(minutes=i)).strftime("%Y-%m-%dT%H:%M:%SZ")
         epoch = int((now + timedelta(minutes=i)).timestamp())

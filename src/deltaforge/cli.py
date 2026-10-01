@@ -11,6 +11,8 @@ import argparse
 import json
 import os
 import sys
+import threading
+import time
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
@@ -62,7 +64,110 @@ def _download(url: str, dest: Path) -> None:
     tmp.replace(dest)
 
 
-def _snapshot_download(repo_id: str, dest: Path) -> bool:
+class DiskProgress:
+    """Turns "is this download alive?" into a question about bytes, not about chattiness.
+
+    `remote/run_remote.sh`'s step guard stops believing in a step that has printed nothing
+    for `DF_STEP_STALL_S` (2400 s). That premise -- a healthy step says something -- is
+    false for exactly one step in this pipeline. `snapshot_download` prints a bar that ticks
+    **once per completed file**, and the checkpoint's last two entries are the safetensors
+    shards, so a healthy fetch is silent for as long as they take. Worse, `huggingface_hub`
+    retries a CAS error *internally and without a word*: rental 47 sat 8:07 at `4/6` doing
+    that, and rental 55 sat **40 minutes** at `4/6` before the guard killed the rental at
+    $0.378 with nothing measured. Same signature, twice.
+
+    So this reports the destination's byte total on a timer, which makes the guard's signal
+    the download's actual progress, and it **gives up on its own** when that total stops
+    moving. The distinction is the one `run_remote.sh` already draws for the image pull: a
+    stalled transfer is indistinguishable from a slow one if all you do is wait, and the fix
+    is to watch the thing that grows. A stall now costs ~5 minutes and names itself instead
+    of costing 40 and looking like a dead box.
+
+    Pure enough to test on a laptop: the clock and the sizer are injected, and
+    `poll` returns the line to print (or `None`) plus whether the fetch has stalled.
+    """
+
+    def __init__(self, stall_seconds: float, sizer, clock):
+        self.stall_seconds = stall_seconds
+        self._sizer = sizer
+        self._clock = clock
+        self._largest = -1
+        self._grew_at = clock()
+
+    def poll(self) -> tuple[str, bool]:
+        """One heartbeat: ``(line to print, stalled)``.
+
+        ``_largest`` rather than "current", because a resumable download renames `.part`
+        files into place and a directory total can legitimately dip for an instant. A dip
+        read as progress is harmless; a dip read as *absence* of progress would abort a
+        healthy fetch, which is the failure this class exists to avoid causing.
+        """
+        now = self._clock()
+        total = self._sizer()
+        if total > self._largest:
+            self._largest = total
+            self._grew_at = now
+        static_for = now - self._grew_at
+        line = f"  weights on disk: {self._largest / 1e9:.2f} GB (static {static_for:.0f}s)"
+        return line, static_for >= self.stall_seconds
+
+
+def _directory_bytes(path: Path) -> int:
+    """Every byte under ``path``, `.part` files included -- they are the download in flight."""
+    total = 0
+    for child in path.rglob("*"):
+        try:
+            if child.is_file():
+                total += child.stat().st_size
+        except OSError:  # pragma: no cover - a file the downloader renamed mid-walk
+            continue
+    return total
+
+
+def _watch_disk(dest: Path, stall_seconds: float, interval: float = 30.0) -> threading.Event:
+    """Print the byte total every ``interval`` seconds; kill the process if it stops growing.
+
+    `os._exit` rather than an exception, and deliberately: the download is blocked inside
+    `huggingface_hub`'s own retry loop, on a thread this one cannot interrupt and with no
+    timeout parameter to pass it. Nothing here holds state worth unwinding -- stdout is
+    flushed first -- and the alternative is paying by the minute for a box that is not
+    downloading. The exit code is distinct so a log reader can tell this from a crash.
+
+    **Returns the stop event, and the caller must set it.** A watchdog that can call
+    `os._exit` has to stop existing the moment the thing it is watching finishes, or it
+    outlives its subject and kills whatever the process does next. A daemon flag is not
+    enough: inside a test session the process lives for minutes after `cmd_fetch_weights`
+    returns, watching a directory that is no longer growing because the download is *over*.
+    """
+    progress = DiskProgress(stall_seconds, lambda: _directory_bytes(dest), time.monotonic)
+    stop = threading.Event()
+
+    def run() -> None:
+        while not stop.wait(interval):
+            line, stalled = progress.poll()
+            print(line, flush=True)
+            if stalled:
+                print(
+                    f"  STALLED: nothing has landed in {dest} for {stall_seconds:.0f}s. "
+                    "huggingface_hub retries a CAS error internally and silently -- rentals "
+                    "47 and 55 both sat at 4/6 doing it, the second for 40 minutes. Giving "
+                    "up here rather than paying out the step guard's budget.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                sys.stdout.flush()
+                os._exit(STALLED_EXIT_CODE)
+
+    threading.Thread(target=run, name="deltaforge-fetch-progress", daemon=True).start()
+    return stop
+
+
+#: `fetch-weights` exit code for "the download stopped making progress". Distinct from 1 so
+#: a log reader is never left deciding whether a fetch crashed or went quiet.
+STALLED_EXIT_CODE = 3
+
+
+def _snapshot_download(repo_id: str, dest: Path, *, use_xet: bool = False) -> bool:
     """Fetch the checkpoint with ``huggingface_hub``. Returns False if it is unavailable.
 
     Worth the dependency: the fallback below is a single HTTP connection, sequential, with
@@ -81,6 +186,16 @@ def _snapshot_download(repo_id: str, dest: Path) -> bool:
     """
     os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
     os.environ.setdefault("HF_XET_HIGH_PERFORMANCE", "1")
+    if not use_xet:
+        # **Unverified from this repository, and said so on purpose**: `huggingface_hub` is
+        # not a local dependency, so nothing here can assert that this is the knob's name in
+        # the version the box installs. If it is wrong the variable is ignored and behaviour
+        # is unchanged; if it is right the download takes the plain HTTP + `hf_transfer`
+        # path, which is the one that measured 2-5 minutes for 9.32 GB. It is set by default
+        # because the only two silent stalls this project has recorded were both *CAS* retry
+        # storms, and CAS is Xet. `--xet` puts it back, and the next rental's log is the
+        # test: `_snapshot_download` prints which accelerator the hub actually resolved.
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     try:
         from huggingface_hub import snapshot_download  # noqa: PLC0415 - optional dependency
     except ImportError:
@@ -88,6 +203,18 @@ def _snapshot_download(repo_id: str, dest: Path) -> bool:
 
     # Only the decode path. The vision tower and MTP head are excluded from the benchmark
     # (see the README), and on Qwen3.5-4B they are ~0.9 GB of the checkpoint.
+    # Printed before the download rather than after it, because it is the evidence that
+    # decides whether the Xet opt-out above did anything -- and a stalled fetch never
+    # reaches an "after".
+    from huggingface_hub import constants  # noqa: PLC0415 - optional dependency
+
+    print(
+        "  hub: hf_transfer="
+        f"{getattr(constants, 'HF_HUB_ENABLE_HF_TRANSFER', 'unknown')} "
+        f"xet_disabled={os.environ.get('HF_HUB_DISABLE_XET', '0')} "
+        f"version={getattr(__import__('huggingface_hub'), '__version__', 'unknown')}",
+        flush=True,
+    )
     snapshot_download(
         repo_id=repo_id,
         local_dir=str(dest),
@@ -102,11 +229,18 @@ def cmd_fetch_weights(args: argparse.Namespace) -> int:
     dest = Path(args.dest)
     dest.mkdir(parents=True, exist_ok=True)
     repo_id = args.model
-    print(f"fetching {repo_id} into {dest}")
+    print(f"fetching {repo_id} into {dest}", flush=True)
+    stop_watching = _watch_disk(dest, float(args.stall_seconds))
+    try:
+        return _fetch_weights(args, repo_id, dest)
+    finally:
+        stop_watching.set()
 
+
+def _fetch_weights(args: argparse.Namespace, repo_id: str, dest: Path) -> int:
     if not args.no_hf_transfer:
         try:
-            if _snapshot_download(repo_id, dest):
+            if _snapshot_download(repo_id, dest, use_xet=args.xet):
                 shards = sorted(dest.glob("*.safetensors"))
                 total = sum(f.stat().st_size for f in shards)
                 print(f"done: {len(shards)} shards, {total / 1e9:.2f} GB in {dest}")
@@ -792,6 +926,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-hf-transfer",
         action="store_true",
         help="skip huggingface_hub and use the single-connection urllib fallback",
+    )
+    fetch.add_argument(
+        "--xet",
+        action="store_true",
+        help=(
+            "leave huggingface_hub's Xet transfer enabled. Off by default: the only two "
+            "silent stalls this project has recorded (rentals 47 and 55) were CAS retry "
+            "storms at 4/6 files, and CAS is Xet"
+        ),
+    )
+    fetch.add_argument(
+        "--stall-seconds",
+        type=float,
+        default=300.0,
+        help=(
+            "give up if nothing lands in --dest for this long (default 300). A stall then "
+            "costs five minutes and names itself, instead of the step guard's 2400 and "
+            "looking like a dead box"
+        ),
     )
     fetch.set_defaults(func=cmd_fetch_weights)
 
