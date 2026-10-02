@@ -972,6 +972,76 @@ REGISTRY.register(
 )
 register_checks("int4_wide_torch_dequant", _visible_int4_head.int4_wide_torch_dequant_correctness_checks)
 
+REGISTRY.register(
+    "int4_mlp_torch_dequant_bf16",
+    impl=_visible_int4_head.torch_dequant_gemv_int4_bf16,
+    replaces="swiglu_mlp",
+    hypothesis="079-int4-mlp-torch-dequant-bf16",
+    notes=(
+        "`int4_mlp_torch_dequant` with the matmul left in bf16: **one operator**, and "
+        "rental 56's dump says it is the operator that decides these sites. The fp32 "
+        "spelling makes inductor write two complete `(2560, 9216)` fp32 weights per site "
+        "and run the `mm` separately -- 94.4 MB a site, **18.12 GB/token** against a "
+        "reference moving 8587.80 -- where the same source at the 248320-wide head fuses "
+        "the whole grouped unpack into the matmul prologue. An fp32 operand is twice the "
+        "bytes of a bf16 one and cannot use the tensor cores a bf16 `mm` does, so the "
+        "dtype plausibly both doubles the materialisation and selects the template. "
+        "**bf16 in with fp32 accumulation is what `tiled_gemv_int4` did**, so this is the "
+        "torch spelling of the kernel rental 46 retired; the fp32 expression was written "
+        "as that kernel's correctness reference and became the candidate without anyone "
+        "asking whether a reference's dtype belongs in a benchmark. 52.75% of per-token "
+        "bytes at a 1.6545x ceiling."
+    ),
+)
+register_checks(
+    "int4_mlp_torch_dequant_bf16",
+    _visible_int4_head.int4_mlp_torch_dequant_bf16_correctness_checks,
+)
+
+REGISTRY.register(
+    "int4_head_torch_dequant_bf16",
+    impl=_visible_int4_head.torch_dequant_gemv_int4_bf16,
+    replaces="decode_step",
+    hypothesis="077-int4-head-torch-dequant-bf16",
+    notes=(
+        "The champion's site and weights with the bf16 matmul. **This is the control the "
+        "MLP pair needs**, not a candidate for promotion: the head is where the fp32 "
+        "expression already wins (1.0171, rental 46, against the hand-written kernel's "
+        "0.9851), so a batch that measures the dtype only at the MLP cannot tell a "
+        "materialisation that bf16 made affordable from a matmul that bf16 made faster. "
+        "If bf16 is neutral here and decisive there, the effect is the materialisation. "
+        "The two expressions are not quite the same function -- the matmuls block the "
+        "reduction differently -- but on CPU they agree to **0.0077 relative at every real "
+        "site shape**, inside the harness's 1e-2 rtol and about one bf16 ULP at these "
+        "magnitudes, so layer 2 is expected to reproduce 0.9318 / 0.01674 closely and the "
+        "bars are not loosened for the dtype."
+    ),
+)
+register_checks(
+    "int4_head_torch_dequant_bf16",
+    _visible_int4_head.int4_head_torch_dequant_bf16_correctness_checks,
+)
+
+REGISTRY.register(
+    "int4_wide_torch_dequant_bf16",
+    impl=_visible_int4_head.torch_dequant_gemv_int4_bf16,
+    replaces="decode_step",
+    hypothesis="081-int4-wide-torch-dequant-bf16",
+    notes=(
+        "`int4_wide_torch_dequant`'s 200 sites and tied head with the bf16 matmul: "
+        "**97.85% of what the compiled column moves, a 3.7578x ceiling.** Every site it "
+        "adds over the MLP is *narrower* -- 2560, 4096, the full-attention projections -- "
+        "so with the MLP pair measured beside it this slot is what says whether the "
+        "dtype's effect is width-dependent in the same way the fusion is. The two "
+        "32-channel gates stay in bf16: 0.09% of the bytes and the whole of the numerical "
+        "risk, because they feed an exponential through `A_log`."
+    ),
+)
+register_checks(
+    "int4_wide_torch_dequant_bf16",
+    _visible_int4_head.int4_wide_torch_dequant_bf16_correctness_checks,
+)
+
 from . import rollback_state as _rollback_state  # noqa: E402
 
 REGISTRY.register(

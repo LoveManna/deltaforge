@@ -28,6 +28,7 @@ from .batches import (
     BATCH_008,
     BATCH_009,
     BATCH_011,
+    BATCH_012,
     BATCHES,
     get_batch,
 )
@@ -1568,6 +1569,174 @@ def test_batch_011_installs_no_fusion_barrier():
 
     for hyp in BATCH_011:
         assert opaque_kernels(list(hyp.kernels)) == (), hyp.slug
+
+
+# -- batch 012 ------------------------------------------------------------------------
+
+
+def test_batch_012_is_a_full_batch_and_opens_with_calibration():
+    assert 7 <= len(BATCH_012) <= 12
+    assert not BATCH_012.is_calibration
+    assert BATCH_012.hypotheses[0].is_identity
+    assert BATCH_012.calibration_slug == "000-identity"
+    assert get_batch("012-the-matmul-dtype") is BATCH_012
+
+
+def test_batch_012_names_registered_kernels_with_installers_and_checks():
+    from .model import INSTALLERS
+
+    for hyp in BATCH_012:
+        for name in hyp.kernels:
+            assert REGISTRY.get(name) is not None, name
+            assert name in INSTALLERS, name
+            assert name in CHECK_BUILDERS, f"{name} has no layer-1 checks"
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_012), ids=lambda h: h.slug)
+def test_every_012_hypothesis_installs_and_actually_changes_the_model(hypothesis, model):
+    before = {name: type(module) for name, module in model.named_modules()}
+
+    applied = apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    after = {name: type(module) for name, module in model.named_modules()}
+
+    if hypothesis.is_identity:
+        assert not applied and after == before
+    else:
+        assert set(applied) == set(hypothesis.kernels), hypothesis.slug
+        assert after != before or type(model) is not before[""], hypothesis.slug
+
+
+@pytest.mark.parametrize("hypothesis", list(BATCH_012), ids=lambda h: h.slug)
+def test_installing_a_012_hypothesis_is_idempotent(hypothesis, model):
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+    once = {name: type(module) for name, module in model.named_modules()}
+
+    apply_champions(model, scoped_registry(hypothesis, REGISTRY))
+
+    assert {name: type(module) for name, module in model.named_modules()} == once
+
+
+def test_the_012_pairs_differ_only_in_the_matmul_dtype(model):
+    """The whole batch: each pair installs on the *same* modules, in a different class.
+
+    A pair one operator apart is only that if both arms reach the same sites. If a bf16
+    installer patched a different set of modules than its fp32 arm -- `_mlp_linears` versus
+    `_wide_linears`, say -- the slot would still install, still change the model, and
+    measure two variables while the manifest claimed one.
+    """
+    from .model import ReferenceModel  # noqa: PLC0415
+
+    def patched_sites(slug):
+        fresh = ReferenceModel(model.config)
+        hyp = BATCH_012.get(slug)
+        before = {name: type(module) for name, module in fresh.named_modules()}
+        apply_champions(fresh, scoped_registry(hyp, REGISTRY))
+        after = {name: type(module) for name, module in fresh.named_modules()}
+        # The head installer *adds* `tiled_lm_head` rather than swapping a class, so the
+        # union is the right domain: a name only one side holds is a site that changed.
+        names = set(before) | set(after)
+        return {name for name in names if before.get(name) is not after.get(name)}, after
+
+    for fp32_slug, bf16_slug in (
+        ("075-int4-head-torch-dequant", "076-int4-head-torch-dequant-bf16"),
+        ("077-int4-mlp-torch-dequant", "078-int4-mlp-torch-dequant-bf16"),
+    ):
+        fp32_sites, fp32_classes = patched_sites(fp32_slug)
+        bf16_sites, bf16_classes = patched_sites(bf16_slug)
+        assert fp32_sites == bf16_sites, f"{fp32_slug} and {bf16_slug} patch different sites"
+        assert fp32_sites, f"{fp32_slug} patched nothing"
+        # Same sites, and at least one of them a different class. Not *every* site: the
+        # head installer also re-bases the model on the shared `TiledHeadModel` wrapper,
+        # which both arms are supposed to share -- the dispatch is not the variable, the
+        # `forward` behind it is.
+        assert any(fp32_classes.get(name) is not bf16_classes.get(name) for name in fp32_sites), (
+            f"{fp32_slug} and {bf16_slug} install the same classes: the pair measures nothing"
+        )
+
+
+def test_the_012_mechanism_slots_are_not_gated_on_beating_the_reference():
+    """Rental 46's defect, asserted so it cannot recur in this batch.
+
+    `061` and `071` each declined once -- 52.75% of per-token bytes, never executed -- on
+    floors that tested something the slot was not asking about. The slots here whose content
+    is a *mechanism* either run ungated (`077`, `078`) or are gated on the **dtype margin**
+    (`081`). Only `079` and `080`, whose content is profitability, are gated on beating the
+    reference, because stacking an install on a composition that lost measures nothing.
+    """
+    ungated = ("077-int4-mlp-torch-dequant", "078-int4-mlp-torch-dequant-bf16")
+    for slug in ungated:
+        assert BATCH_012.get(slug).requires is None, f"{slug} is a control and must always run"
+
+    wide = BATCH_012.get("081-int4-wide-torch-dequant-bf16").requires
+    assert wide is not None
+    assert (wide.slug, wide.versus) == (
+        "078-int4-mlp-torch-dequant-bf16",
+        "077-int4-mlp-torch-dequant",
+    ), "the wide slot must be gated on the dtype margin, not on either arm's absolute ratio"
+
+    for slug in ("079-int4-mlp-and-head-bf16", "080-conv-mlp-and-head-bf16"):
+        gate = BATCH_012.get(slug).requires
+        assert gate is not None and gate.versus == "000-identity", slug
+
+
+def test_every_012_gate_reads_slots_that_run_before_it():
+    """A precondition on a later slot is a precondition that never holds."""
+    order = [hyp.slug for hyp in BATCH_012]
+    for index, hyp in enumerate(BATCH_012):
+        if hyp.requires is None:
+            continue
+        for slug in hyp.requires.slugs:
+            assert slug in order, f"{hyp.slug} gates on unknown slot {slug}"
+            assert order.index(slug) < index, f"{hyp.slug} gates on {slug}, which runs later"
+
+
+def test_the_012_slots_claim_the_bytes_they_re_encode():
+    expected = {
+        "000-identity": {},
+        "075-int4-head-torch-dequant": {"head": 4},
+        "076-int4-head-torch-dequant-bf16": {"head": 4},
+        "077-int4-mlp-torch-dequant": {"mlp": 4},
+        "078-int4-mlp-torch-dequant-bf16": {"mlp": 4},
+        "079-int4-mlp-and-head-bf16": {"mlp": 4, "head": 4},
+        "080-conv-mlp-and-head-bf16": {"mlp": 4, "head": 4},
+        "081-int4-wide-torch-dequant-bf16": {"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+    }
+    assert {hyp.slug: hyp.weight_bits for hyp in BATCH_012} == expected
+
+
+def test_the_012_pairs_carry_identical_correctness_bars():
+    """The dtype is not a licence to loosen a bar.
+
+    The two expressions agree to 0.0077 relative at every real site shape on a CPU -- inside
+    the harness's own 1e-2 rtol, about one bf16 ULP at these magnitudes -- so a bf16 arm that
+    needed a looser bar than its fp32 arm would be reporting a bug, not a dtype.
+    """
+    for fp32_slug, bf16_slug in (
+        ("075-int4-head-torch-dequant", "076-int4-head-torch-dequant-bf16"),
+        ("077-int4-mlp-torch-dequant", "078-int4-mlp-torch-dequant-bf16"),
+    ):
+        fp32, bf16 = BATCH_012.get(fp32_slug), BATCH_012.get(bf16_slug)
+        assert (fp32.top1_threshold, fp32.kl_threshold) == (bf16.top1_threshold, bf16.kl_threshold)
+        assert fp32.correctness_positions == bf16.correctness_positions == 264
+
+
+def test_012_predictions_are_registered_with_real_rationales():
+    for hyp in BATCH_012:
+        assert hyp.prediction in ("win", "loss", "inconclusive", "identity")
+        assert len(hyp.rationale) > 80, f"{hyp.slug!r} has a label, not a rationale"
+
+
+def test_batch_012_predicts_a_loss_for_the_slot_it_most_wants_to_win():
+    """The registered call, asserted so a later edit cannot quietly soften it.
+
+    Rental 56's own mechanism -- inductor materialises when it can afford to -- says a 47.2
+    MB bf16 operand is *more* affordable than the 94.4 MB fp32 one that was materialised, so
+    the ranked outcome for the batch's own hypothesis is a loss at ~0.60 and a win is what
+    refutes that reading. A prediction rewritten after the number arrives is not a prediction.
+    """
+    assert BATCH_012.get("078-int4-mlp-torch-dequant-bf16").prediction == "loss"
+    assert BATCH_012.get("077-int4-mlp-torch-dequant").prediction == "loss"
+    assert BATCH_012.get("076-int4-head-torch-dequant-bf16").prediction == "inconclusive"
 
 
 def test_every_batch_from_010_on_is_a_set_of_controlled_contrasts():

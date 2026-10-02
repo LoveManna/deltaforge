@@ -3219,6 +3219,349 @@ BATCH_011 = Batch(
     ),
 )
 
+BATCH_012 = Batch(
+    batch_id="012-the-matmul-dtype",
+    description=(
+        "**One operator, measured at three site widths in both dtypes.** Rental 56 refuted the "
+        "generalisation batch 011 was built on. `056` was read as 'inductor fuses a grouped int4 "
+        "dequantisation into a GEMV prologue'; at the 96 MLP projections it does not -- it emits a "
+        "pointwise kernel writing two complete `(2560, 9216)` **fp32** weights and a separate "
+        "reduction for the `mm`, 94.4 MB a site and **18.12 GB/token** against a reference moving "
+        "8587.80, which is why `071` would have returned ~0.37 against a registered 1.25-1.55. "
+        "**The dump also names a variable nobody chose.** `torch_dequant_gemv_int4` asks for "
+        "`flat.float() @ dense.float()`, and that fp32 is the reason the materialised operand is "
+        "fp32. It is there because the expression was written as the *hand-written kernel's "
+        "correctness reference*, where fp32 accumulation is a virtue, and it became the shipped "
+        "candidate on rental 46 without anyone asking whether a reference's dtype belongs in a "
+        "benchmark. **bf16 in with fp32 accumulation is what `tiled_gemv_int4` did**, so the bf16 "
+        "spelling -- not the fp32 one -- is the torch version of the kernel this project retired. "
+        "So this batch is three pairs one operator apart, at **14.80%**, **52.75%** and **97.85%** "
+        "of per-token bytes, and the arithmetic makes each pair's outcome read itself. At the MLP, "
+        "fp32 materialisation lands near **0.37**, bf16 materialisation near **0.60**, and fusion "
+        "between **1.09 and 1.45** -- three zones far enough apart that the ratio names the "
+        "mechanism without a dump, and the dump is set anyway. "
+        "**The ranked prediction is that bf16 still materialises.** Rental 56's own reading is that "
+        "inductor materialises *when it can afford to*, and halving the operand to 47.2 MB makes it "
+        "more affordable, not less -- so the ranked outcome at the MLP is 0.60, a loss, and the win "
+        "branch is what would refute that reading in favour of the dtype selecting the template. "
+        "Either number is worth six minutes; the one thing that is not worth another rental is the "
+        "fp32 arm going unmeasured, which is what `061` and `071` have each done once. "
+        "**The head pair is the control that makes the MLP pair readable**: the head is where the "
+        "fp32 expression already wins, so if bf16 is neutral at 248320 channels and decisive at "
+        "9216, the effect is the materialisation and not the matmul. Gates follow rental 46's "
+        "lesson in both directions: the mechanism slots are gated on the **dtype margin** or not at "
+        "all, and only the two slots whose content is profitability are gated on beating the "
+        "reference."
+    ),
+    hypotheses=(
+        Hypothesis(
+            slug="000-identity",
+            kernels=(),
+            category="calibration",
+            byte_share=0.0,
+            mechanism=(
+                "Install nothing. The candidate is the reference, so the ratio is the "
+                "harness's own noise floor rather than a property of any kernel."
+            ),
+            prediction="identity",
+            rationale=(
+                "Must return 1.00 within the noise band or every other number here is void. "
+                "Ten rentals have got this far: 1.0009, 1.0018, 1.0024, 0.9913, 1.0008, 1.0053, "
+                "1.0101, 0.9972, 1.0002 (IQR 0.0001, 15 rounds) and **+2.36%** on rental 56, "
+                "which is the largest calibration offset this project has recorded and the reason "
+                "`068`'s 1.2179 is still flagged. **Read its sign before any margin below it, and "
+                "read the reference column's achieved bandwidth before any of them**: 1282, 800, "
+                "1197, 849 and **441 GB/s** on cards reporting the same clocks, the last of them "
+                "separating on the host driver rather than the card. Two gates in this batch are "
+                "margins against this slot."
+            ),
+        ),
+        Hypothesis(
+            slug="075-int4-head-torch-dequant",
+            kernels=("int4_head_torch_dequant",),
+            category="A",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The champion of `decode_step` and the **fp32 arm of the head pair**: the "
+                "group-128 int4 dequantise-GEMV on the tied 248320 x 2560 head, asking for "
+                "`flat.float() @ dense.float()`, which inductor fuses whole -- unpack, `mm`, final "
+                "RMSNorm and residual add in one reduction, no weight-sized buffer in the graph."
+            ),
+            prediction="win",
+            rationale=(
+                "**The cheap slot that anchors the batch to two previous rentals and opens the "
+                "first pair.** Measured **1.0171 (IQR 0.0130)** on rental 46 against a 1.1249x byte "
+                "ceiling, and **0.9971 (IQR 0.0230)** on rental 56's 441 GB/s card -- the spread "
+                "between those two is the card, not the kernel, which is why this runs again rather "
+                "than being quoted. Predicted **win, 1.00-1.04**, the range spanning both. Layer 2 "
+                "must come back **0.9318 and 0.01674 nats**: five rentals have returned exactly "
+                "that, and a different number means the weights or the rounding changed rather than "
+                "the card. Its value here is as `076`'s control, not as a candidate -- it is "
+                "already champion."
+            ),
+        ),
+        Hypothesis(
+            slug="076-int4-head-torch-dequant-bf16",
+            kernels=("int4_head_torch_dequant_bf16",),
+            category="A",
+            byte_share=0.1480,
+            replaces=("decode_step",),
+            contrast_with="075-int4-head-torch-dequant",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=240 / 264,
+            kl_threshold=0.06,
+            weight_bits={"head": 4},
+            mechanism=(
+                "The same site, the same weights, the same grouped unpack, with the matmul left in "
+                "**bf16** -- one operator from `075`, and bf16 with fp32 accumulation is what the "
+                "retired Triton kernel did."
+            ),
+            prediction="inconclusive",
+            rationale=(
+                "**The control, and it is predicted to find nothing.** This is the one site where "
+                "the fp32 expression is already known to fuse with no weight-sized buffer in the "
+                "graph, so there is no materialisation for the dtype to make cheaper and the only "
+                "thing left for it to change is the matmul itself -- which, inside a reduction that "
+                "already carries the unpack and the RMSNorm, is not where this step's time is. "
+                "Predicted **inconclusive, 0.99-1.04**, overlapping `075`. **Its value is entirely "
+                "in the contrast**: without it, a win at the MLP cannot distinguish 'bf16 stopped "
+                "inductor materialising' from 'bf16 matmuls are simply faster here', and those have "
+                "different consequences for every other site in the model. A win *here* would be "
+                "the second reading and would make the MLP result unsurprising. Bars are `075`'s and "
+                "are **not loosened for the dtype**: on CPU the two expressions agree to 0.0077 "
+                "relative at every real site shape, inside the harness's own 1e-2 rtol and about "
+                "one bf16 ULP at these magnitudes, so layer 2 should reproduce 0.9318 / 0.01674 "
+                "closely. CUDA blocks the reduction differently, so that figure bounds the "
+                "expression rather than the kernel -- a *large* move is a registration bug."
+            ),
+        ),
+        Hypothesis(
+            slug="077-int4-mlp-torch-dequant",
+            kernels=("int4_mlp_torch_dequant",),
+            category="B",
+            byte_share=0.5275,
+            replaces=("swiglu_mlp",),
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=232 / 264,
+            kl_threshold=0.06,
+            weight_bits={"mlp": 4},
+            mechanism=(
+                "The fp32 arm at the 96 MLP projections: **52.75% of per-token bytes, a 1.6545x "
+                "ceiling, the largest homogeneous block in the model.** Rental 56's dump says "
+                "inductor materialises two complete fp32 weights a site here rather than fusing."
+            ),
+            prediction="loss",
+            rationale=(
+                "**Registered a win twice and never executed either time, and this batch spends a "
+                "slot measuring it as a predicted loss.** `061` declined on rental 46 to an absolute "
+                "floor the head missed by 0.3%; `071` declined on rental 56 to a card running at "
+                "0.34x. A declined slot is an *unexecuted* slot, and this one has become the control "
+                "the whole batch is read against, so it runs **ungated**. Predicted **loss, "
+                "0.33-0.45**, derived rather than guessed: the candidate moves "
+                "(8587.80 - 4529.85) + 1132.46 of nibbles + 9059.70 written + 9059.70 read back = "
+                "**23309.81 MB/token** against the reference's 8587.80, which is **0.3685**. If it "
+                "comes back near 0.37 the dump is confirmed and `078` is the whole question; if it "
+                "comes back anywhere near its old registered 1.25-1.55, then the dump was read "
+                "wrongly and `AGENT.md` §1.2 is the entry that needs correcting. Layer 2 bars are "
+                "`030`'s measured point -- the same weights, grouping and rounding through a Triton "
+                "kernel returned **237/264 at 0.04868 nats** -- and `054` against `056` showed two "
+                "authors of one function agree to the digit, so a number far from 0.04868 is a "
+                "registration bug rather than a quantisation effect."
+            ),
+        ),
+        Hypothesis(
+            slug="078-int4-mlp-torch-dequant-bf16",
+            kernels=("int4_mlp_torch_dequant_bf16",),
+            category="B",
+            byte_share=0.5275,
+            replaces=("swiglu_mlp",),
+            contrast_with="077-int4-mlp-torch-dequant",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=232 / 264,
+            kl_threshold=0.06,
+            weight_bits={"mlp": 4},
+            mechanism=(
+                "**The batch's hypothesis, and one operator from `077`.** The same 96 sites and the "
+                "same group-128 nibbles with the matmul in bf16: the materialised operand, if there "
+                "still is one, halves from 94.4 MB a site to 47.2, and a bf16 `mm` reaches tensor "
+                "cores an fp32 `mm` cannot, which may select a template that carries the unpack as "
+                "a prologue the way the head's does."
+            ),
+            prediction="loss",
+            rationale=(
+                "**Three landing zones, far enough apart that the ratio names the mechanism.** "
+                "~0.37: the dtype changed nothing and inductor materialises fp32 regardless of what "
+                "was asked for. ~**0.60**: it materialises **bf16** -- 184.65 + 1132.46 + 4529.85 "
+                "written + 4529.85 read = 14250.11 MB/token, **0.6026** -- so the dtype halved the "
+                "bill without removing it. **>=1.09**: it fuses, and the floor of that zone is the "
+                "13.7% of its excess ceiling the head collected (1.0171 of 1.1249) applied to "
+                "1.6545, with the upper end at 1.45 if it collects what the bytes say. "
+                "**Ranked outcome: loss at 0.60**, and the reason is rental 56's own mechanism "
+                "rather than pessimism -- 'inductor materialises when it can afford to' is the "
+                "ranked reading of why 2.54 GB fused at the head and 94.4 MB did not at the MLP, and "
+                "a **47.2 MB** operand is more affordable still. So the honest prediction is that "
+                "this slot improves the number by 63% and stays a loss. "
+                "**A win refutes that reading** and replaces it with the dtype selecting the "
+                "template, which would be the more useful finding of the two: it would mean 91.85% "
+                "of this model's bytes are behind one operator rather than behind a site-shape "
+                "threshold, and `081` is registered to test exactly that. Run it whatever `077` "
+                "returns -- the pair is the measurement, and `--dump-install "
+                "int4_mlp_torch_dequant_bf16` is set so the generated code says why either way. "
+                "Bars are `077`'s, for the reason `076`'s are `075`'s."
+            ),
+        ),
+        Hypothesis(
+            slug="079-int4-mlp-and-head-bf16",
+            kernels=("int4_mlp_torch_dequant_bf16", "int4_head_torch_dequant_bf16"),
+            category="B",
+            byte_share=0.6755,
+            replaces=("swiglu_mlp", "decode_step"),
+            contrast_with="078-int4-mlp-torch-dequant-bf16",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=224 / 264,
+            kl_threshold=0.09,
+            weight_bits={"mlp": 4, "head": 4},
+            requires=Precondition(
+                slug="078-int4-mlp-torch-dequant-bf16",
+                floor=0.0,
+                versus="000-identity",
+                reason=(
+                    "this slot's content is **profitability, not mechanism** -- it stacks a second "
+                    "install on the first -- so unlike `077`, `078` and `081` it is gated, and the "
+                    "proposition is whether quantising the MLP in torch beat the reference on this "
+                    "card at all. Adding a second install on top of a composition that lost is what "
+                    "batch 003 spent five slots doing and batch 004 two more. The floor is on the "
+                    "margin over the identity slot rather than on an absolute ratio, because that "
+                    "is the quantity that does not move when the card drifts mid-rental"
+                ),
+            ),
+            mechanism=(
+                "Both bf16 installs at once: **67.55% of per-token bytes at a 2.0269x ceiling** -- "
+                "the MLP's 96 projections and the tied head, every wide matmul the decode step "
+                "performs."
+            ),
+            prediction="win",
+            rationale=(
+                "**The rung that says whether the construction adds**, and it only exists as a "
+                "question on the branch where `078` wins. The quantity is `079 - 078` against "
+                "`076 - 000`: if the head's margin survives being stacked on the MLP's, the "
+                "mechanism is byte-count and byte-counts add; if it does not, something shared is "
+                "saturating, which is the non-additivity `060` found for two dispatch savings but "
+                "for traffic, and a more interesting result than the ratio. Predicted **win, "
+                "1.35-1.75** on that branch. Bars: KL is roughly additive over independent "
+                "perturbations, so 0.04868 (`030`, the MLP) + 0.01674 (`022`, the head) ~ 0.065, and "
+                "`014-int4-full` -- a strict superset of these sites -- measured **226/264 at "
+                "0.09185**, which bounds it from above. The bar sits between the sum and the bound."
+            ),
+        ),
+        Hypothesis(
+            slug="080-conv-mlp-and-head-bf16",
+            kernels=("inline_causal_conv", "int4_mlp_torch_dequant_bf16", "int4_head_torch_dequant_bf16"),
+            category="B",
+            byte_share=0.6761,
+            replaces=("causal_conv", "swiglu_mlp", "decode_step"),
+            contrast_with="079-int4-mlp-and-head-bf16",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=224 / 264,
+            kl_threshold=0.09,
+            weight_bits={"mlp": 4, "head": 4},
+            requires=Precondition(
+                slug="079-int4-mlp-and-head-bf16",
+                floor=0.0,
+                versus="000-identity",
+                reason=(
+                    "this is `079` with the conv added and the conv's own value is already measured "
+                    "on three rentals, so with `079` below the reference the batch holds every part "
+                    "of this slot separately and the composition would only stack a third install "
+                    "on a loss. Gated for the same reason `079` is: its content is the shippable "
+                    "configuration rather than a mechanism"
+                ),
+            ),
+            mechanism=(
+                "The configuration this repository would ship if `078` wins: bytes removed from "
+                "every wide matmul, and 24 cuDNN dispatches removed from 24 layers."
+            ),
+            prediction="win",
+            rationale=(
+                "**One variable from `079`: the conv**, whose value alone is 1.0765 (r45), 1.0650 "
+                "(r46) and 1.0778 (r56), bit-identical every time. The reading is `080 - 079` "
+                "against `068 - 067`: the conv saved 24 dispatches next to an fp32 head, and this "
+                "asks whether it still saves them next to an MLP whose kernels changed. Predicted "
+                "**win, 1.40-1.85** on this branch. It is the promotable configuration, so it has "
+                "to exist as a number before anything promotes it -- `058` is on the record as the "
+                "last time this project shipped a pair no rental had run, and `068` as the rental "
+                "that finally measured it. Bars are `079`'s: the conv is bit-identical to the "
+                "reference and contributes nothing to layer 2."
+            ),
+        ),
+        Hypothesis(
+            slug="081-int4-wide-torch-dequant-bf16",
+            kernels=("int4_wide_torch_dequant_bf16",),
+            category="B",
+            byte_share=0.9785,
+            replaces=("decode_step",),
+            contrast_with="078-int4-mlp-torch-dequant-bf16",
+            correctness="approximate",
+            correctness_positions=264,
+            top1_threshold=220 / 264,
+            kl_threshold=0.12,
+            weight_bits={"mlp": 4, "linear_attn": 4, "full_attn": 4, "head": 4},
+            requires=Precondition(
+                slug="078-int4-mlp-torch-dequant-bf16",
+                floor=0.0,
+                versus="077-int4-mlp-torch-dequant",
+                reason=(
+                    "the proposition this slot extends is **the dtype's**, not the construction's "
+                    "profitability, so the floor is on the dtype margin `078 - 077` and on nothing "
+                    "else. That margin is two slots three minutes apart in one process on one card, "
+                    "which is the only quantity here a drifting card cannot move. **Deliberately "
+                    "not gated on `078` beating the reference**: on the ranked branch `078` returns "
+                    "0.60 and is a loss, and declining this slot on that would repeat rental 46 "
+                    "exactly -- the largest byte share in the model declined for failing a test of "
+                    "something it was not asking about. If bf16 helped at 9216 channels, whether it "
+                    "still helps at 2560 and 4096 is a fact about inductor worth a slot on its own"
+                ),
+            ),
+            mechanism=(
+                "Every layer projection except the two 32-channel gates, plus the tied head, at "
+                "group-128 int4 with the bf16 matmul: 200 sites, **97.85% of what the compiled "
+                "column moves, a 3.7578x ceiling** -- the whole weight stream bar 7.86 MB/token."
+            ),
+            prediction="loss",
+            rationale=(
+                "**The width question, which is the one `AGENT.md` §1.2 says is now open.** The "
+                "fusion `056` found held at 248320 channels and failed at 9216; every site this "
+                "slot adds over `078` is *narrower still* -- 2560, 4096, the full-attention "
+                "projections -- so with the MLP pair measured beside it, this says whether the "
+                "**dtype's** effect follows width the way the fusion does. The zones again read "
+                "themselves: fp32-style materialisation lands at **0.24** "
+                "(184.65 + 2100.79 + 2x16806.30 = 35898.04 MB/token), bf16 materialisation at "
+                "**0.45**, and fusion up to 3.76. Predicted **loss, 0.40-0.55** -- the bf16 "
+                "materialisation zone -- for the same reason `078` is: a narrower site makes a "
+                "materialised operand cheaper, not dearer. **It is the riskiest install in the "
+                "batch and runs last of the mechanism slots**: 200 sites including the two that "
+                "feed an exponential through `A_log` are excluded, and the one measurement of these "
+                "sites at 4 bits is `014-int4-full` (rental 37), **226/264 at 0.09185 nats, gate "
+                "passed**, through a row-major packing and a 141 GB/s kernel -- so its correctness "
+                "transfers and its ratio does not. Bars sit at 220/264 and 0.12, one measurement's "
+                "headroom above that point, and this slot excludes the gates `014` included."
+            ),
+        ),
+    ),
+)
+
+
 BATCHES: dict[str, Batch] = {
     BATCH_001.batch_id: BATCH_001,
     BATCH_002.batch_id: BATCH_002,
@@ -3231,6 +3574,7 @@ BATCHES: dict[str, Batch] = {
     BATCH_009.batch_id: BATCH_009,
     BATCH_010.batch_id: BATCH_010,
     BATCH_011.batch_id: BATCH_011,
+    BATCH_012.batch_id: BATCH_012,
 }
 
 

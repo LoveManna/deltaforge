@@ -97,10 +97,25 @@ node after its origins, so four kernels in rental 56's dump carry both the nibbl
 `mm` in their names and none of them performs a matmul. The allocation and the grid size are
 the evidence.
 
-The live experiment is one line and two slots: `torch_dequant_gemv_int4` asks for an **fp32**
-matmul (`flat.float() @ dense.float()`), which is what makes the materialised operand fp32
-and plausibly what selects the `mm` template over a reduction. The bf16 variant beside it,
-one variable apart, in one process.
+The live experiment is one line, and it is **registered as batch 012** (2026-10-02):
+`torch_dequant_gemv_int4` asks for an **fp32** matmul (`flat.float() @ dense.float()`), which
+is what makes the materialised operand fp32 and plausibly what selects the `mm` template over
+a reduction. `torch_dequant_gemv_int4_bf16` is that expression with the matmul left in bf16 —
+one operator, no new kernel — and `012-the-matmul-dtype` runs the pair at three site widths:
+14.80% (`075`/`076`), 52.75% (`077`/`078`) and 97.85% (`081`).
+
+**The ranked prediction is that bf16 still materialises**, because this section's own
+mechanism says so: inductor materialises when it can afford to, and halving the operand to
+47.2 MB a site makes it more affordable, not less. So `078` is registered a **loss at ~0.60**
+and a win is what refutes that reading in favour of the dtype selecting the template. The
+arithmetic separates the three outcomes well enough that the ratio names the mechanism:
+**~0.37** fp32 materialisation, **~0.60** bf16 materialisation, **>=1.09** fusion.
+
+**A local dump cannot settle it, and this is the case `docs/BATCHES.md` warns about.**
+`cli fusion --install` on the two arms returns **byte-identical** reports — cpp +5, +7
+allocations, largest buffer 32768 elements, both of them — because the CPU backend sends `mm`
+to MKL where CUDA generated a Triton template. The free check that refuted the ladder cannot
+see this variable; only a rental can.
 
 ## 2. The arithmetic that decides whether your hypothesis is worth trying
 
@@ -339,6 +354,18 @@ variable has a name**: the host driver separates seven identity slots where cloc
 and toolchain do not, so `DF_MAX_CUDA` now refuses a too-new driver at the offer line.
 $0.769, and $1.147 across the session's two rentals. See
 [`results/batches/011-bytes-not-kernels/`](results/batches/011-bytes-not-kernels/).
+
+**Batch 012 is registered (2026-10-02): `012-the-matmul-dtype`, eight slots, and it is
+three pairs one operator apart.** §1.2 has the mechanism and the ranked prediction. Two
+things in it are deliberate and are the lesson of rental 46 applied in both directions.
+**`077-int4-mlp-torch-dequant` runs ungated** — 52.75% of per-token bytes, registered a win
+twice and executed neither time, now registered a **loss at 0.33-0.45** and run as the
+control the batch is read against; a declined slot is an unexecuted slot. And
+**`081-int4-wide-torch-dequant-bf16` is gated on the dtype margin `078 - 077`, not on `078`
+beating the reference**, because on the ranked branch `078` is a loss and declining 97.85% of
+the model's bytes for that would repeat rental 46 exactly. Only `079` and `080`, whose
+content is profitability rather than mechanism, are gated on beating the reference. Run it
+with `--dump-install int4_mlp_torch_dequant_bf16`.
 
 **Batch 011 is registered (2026-09-30): `011-bytes-not-kernels`, ten slots.** It is the
 first batch built on §1.1: nothing in it writes a kernel. The pair this repository *ships*

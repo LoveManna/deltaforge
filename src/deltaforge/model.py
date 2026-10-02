@@ -468,9 +468,30 @@ def _install_int4_wide_torch_dequant(model: ReferenceModel, entry: KernelEntry) 
     install_int4_wide_torch_dequant(model, entry)
 
 
+def _install_int4_head_torch_dequant_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_head_torch_dequant_bf16  # noqa: PLC0415
+
+    install_int4_head_torch_dequant_bf16(model, entry)
+
+
+def _install_int4_mlp_torch_dequant_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_mlp_torch_dequant_bf16  # noqa: PLC0415
+
+    install_int4_mlp_torch_dequant_bf16(model, entry)
+
+
+def _install_int4_wide_torch_dequant_bf16(model: ReferenceModel, entry: KernelEntry) -> None:
+    from .kernels.visible_int4_head import install_int4_wide_torch_dequant_bf16  # noqa: PLC0415
+
+    install_int4_wide_torch_dequant_bf16(model, entry)
+
+
 register_installer("int4_head_torch_dequant", _install_int4_head_torch_dequant)
 register_installer("int4_mlp_torch_dequant", _install_int4_mlp_torch_dequant)
 register_installer("int4_wide_torch_dequant", _install_int4_wide_torch_dequant)
+register_installer("int4_head_torch_dequant_bf16", _install_int4_head_torch_dequant_bf16)
+register_installer("int4_mlp_torch_dequant_bf16", _install_int4_mlp_torch_dequant_bf16)
+register_installer("int4_wide_torch_dequant_bf16", _install_int4_wide_torch_dequant_bf16)
 
 
 def _install_rollback_state(model: ReferenceModel, entry: KernelEntry) -> None:
