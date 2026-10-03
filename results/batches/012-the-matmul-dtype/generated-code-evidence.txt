@@ -1,0 +1,46 @@
+# Evidence excerpt — rental 57 (2026-10-02), bf16 MLP candidate
+# Source: results/diagnostics/inductor-output-code.txt (overwritten each rental)
+# Dumped with: --dump-install int4_mlp_torch_dequant_bf16
+
+## Weight-sized allocations, by shape and dtype (summed over BOTH candidate graphs; halve for per-step)
+     32 empty_strided_cuda((1, 2560, 9216), (23592960, 9216, 1), torch.float32)
+      2 empty_strided_cuda((1, 9216, 2560), (23592960, 2560, 1), torch.float32)
+
+## bf16 buffers of the dequantised-weight shape
+count: 0
+0
+
+## extern_kernels.mm in the whole file
+count: 0
+0
+
+## Kernel launch census (top)
+     96 triton_red_fused__to_copy__unsafe_view_add_clone_copy__div_exp_expand_mm_mul_neg_rsqrt_select_sigmoid_silu_softplus_split_with_sizes_sub_sum_transpose_unsqueeze_view_9.run
+     96 triton_poi_fused__unsafe_view_cat_mm_transpose_5.run
+     96 triton_poi_fused_copy_copy__slice_6.run
+     64 triton_red_fused__unsafe_view_mm_mul_silu_t_view_14.run
+     64 triton_red_fused__to_copy__unsafe_view_add_mean_mm_mul_pow_rsqrt_silu_t_transpose_view_zeros_like_11.run
+     64 triton_red_fused_mm_25.run
+     64 triton_red_fused_mm_16.run
+     64 triton_poi_fused___rshift____to_copy_bitwise_and_cat_mm_mul_silu_sub_unsqueeze_view_15.run
+     32 triton_red_fused__to_copy__unsafe_view_add_mean_mm_pow_22.run
+     32 triton_red_fused__to_copy_mean_pow_23.run
+
+## The unpack kernel and the separate matmuls, in context
+buf51 = empty_strided_cuda((1, 8192, 4), (32768, 4, 1), torch.bfloat16)
+buf51 = empty_strided_cuda((1, 8192, 4), (32768, 4, 1), torch.bfloat16)
+triton_poi_fused___rshift____to_copy_bitwise_and_cat_mm_mul_silu_sub_unsqueeze_view_15.run(buf21, buf23, arg22_1, arg23_1, buf24, 23592960, stream=stream0)
+triton_red_fused_mm_16.run(buf24, buf25, 122880, 192, stream=stream0)
+buf51 = empty_strided_cuda((1, 2560, 9216), (23592960, 9216, 1), torch.float32)
+triton_red_fused_mm_25.run(buf48, buf49, 147456, 160, stream=stream0)
+triton_red_fused_mm_25.run(buf51, buf52, 147456, 160, stream=stream0)
+triton_poi_fused___rshift____to_copy_bitwise_and_cat_mm_mul_silu_sub_unsqueeze_view_15.run(buf50, buf53, arg41_1, arg42_1, buf54, 23592960, stream=stream0)
+
+## Per-graph attribution (this is the figure to quote)
+graph [0/0] reference : gate/up fp32 buffers=0   down_proj=0   unpack launches=0
+graph [0/1] reference : gate/up fp32 buffers=0   down_proj=0   unpack launches=0
+graph [0/2] candidate : gate/up fp32 buffers=16  down_proj=1   unpack launches=32
+graph [0/3] candidate : gate/up fp32 buffers=16  down_proj=1   unpack launches=32
+
+# 17 of 96 MLP sites hold a weight-sized fp32 buffer per decode step.
+# The reference graphs hold none, which is what attributes the rest to the candidate.

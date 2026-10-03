@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-10-02T23:58:12.753040+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "078-int4-mlp-torch-dequant-bf16",
+    "batch": "012-the-matmul-dtype",
+    "statement": "**The batch's hypothesis, and one operator from `077`.** The same 96 sites and the same group-128 nibbles with the matmul in bf16: the materialised operand, if there still is one, halves from 94.4 MB a site to 47.2, and a bf16 `mm` reaches tensor cores an fp32 `mm` cannot, which may select a template that carries the unpack as a prologue the way the head's does.",
+    "prediction": "loss",
+    "rationale": "**Three landing zones, far enough apart that the ratio names the mechanism.** ~0.37: the dtype changed nothing and inductor materialises fp32 regardless of what was asked for. ~**0.60**: it materialises **bf16** -- 184.65 + 1132.46 + 4529.85 written + 4529.85 read = 14250.11 MB/token, **0.6026** -- so the dtype halved the bill without removing it. **>=1.09**: it fuses, and the floor of that zone is the 13.7% of its excess ceiling the head collected (1.0171 of 1.1249) applied to 1.6545, with the upper end at 1.45 if it collects what the bytes say. **Ranked outcome: loss at 0.60**, and the reason is rental 56's own mechanism rather than pessimism -- 'inductor materialises when it can afford to' is the ranked reading of why 2.54 GB fused at the head and 94.4 MB did not at the MLP, and a **47.2 MB** operand is more affordable still. So the honest prediction is that this slot improves the number by 63% and stays a loss. **A win refutes that reading** and replaces it with the dtype selecting the template, which would be the more useful finding of the two: it would mean 91.85% of this model's bytes are behind one operator rather than behind a site-shape threshold, and `081` is registered to test exactly that. Run it whatever `077` returns -- the pair is the measurement, and `--dump-install int4_mlp_torch_dequant_bf16` is set so the generated code says why either way. Bars are `077`'s, for the reason `076`'s are `075`'s.",
+    "category": "B",
+    "byte_share": 0.5275,
+    "kernels": [
+      "int4_mlp_torch_dequant_bf16"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "random"
+  },
+  "phases": {
+    "candidate_build": 0.14508235966786742,
+    "correctness": 10.506743904203176,
+    "compile_candidate_compiled": 0.007151124067604542,
+    "bench": 94.6126936157234
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
+    "hostname": "f4d5d14cf241",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2895,
+      "memory": 13801,
+      "observed_at": "2026-10-02T23:58:12.895187+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0",
+    "gpu_power": {
+      "draw_w": 105.38,
+      "limit_w": 500.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        928.4730834960938,
+        938.7320556640625,
+        929.8815307617188,
+        930.1594848632812,
+        924.812744140625,
+        981.6175537109375,
+        983.8497314453125,
+        976.0582885742188,
+        988.0492553710938,
+        935.6502685546875,
+        932.197998046875,
+        936.14599609375,
+        930.5093383789062,
+        932.9030151367188,
+        936.1201171875,
+        934.91748046875,
+        961.45068359375
+      ],
+      "candidate_compiled": [
+        47256.546875,
+        1449.7615966796875,
+        1448.9658203125,
+        1448.9932861328125,
+        1449.115478515625,
+        1449.541015625,
+        1449.8607177734375,
+        1449.6328125,
+        1449.5528564453125,
+        1450.0965576171875,
+        1449.944091796875,
+        1449.94580078125,
+        1450.134521484375,
+        1449.6392822265625,
+        1449.99951171875,
+        1449.8670654296875,
+        1449.3953857421875
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        929.8815307617188,
+        930.1594848632812,
+        924.812744140625,
+        981.6175537109375,
+        983.8497314453125,
+        976.0582885742188,
+        988.0492553710938,
+        935.6502685546875,
+        932.197998046875,
+        936.14599609375,
+        930.5093383789062,
+        932.9030151367188,
+        936.1201171875,
+        934.91748046875,
+        961.45068359375
+      ],
+      "candidate_compiled": [
+        1448.9658203125,
+        1448.9932861328125,
+        1449.115478515625,
+        1449.541015625,
+        1449.8607177734375,
+        1449.6328125,
+        1449.5528564453125,
+        1450.0965576171875,
+        1449.944091796875,
+        1449.94580078125,
+        1450.134521484375,
+        1449.6392822265625,
+        1449.99951171875,
+        1449.8670654296875,
+        1449.3953857421875
+      ]
+    },
+    "median_ms": {
+      "compiled": 935.6502685546875,
+      "candidate_compiled": 1449.6392822265625
+    },
+    "achieved_gbps": {
+      "compiled": 1174.8392612915184,
+      "candidate_compiled": 458.3024478997016
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.6417553248848687,
+        0.6419349860107111,
+        0.6381911985978785,
+        0.6771919822411459,
+        0.6785822385451054,
+        0.6733141524928188,
+        0.6816234751135962,
+        0.6452330802661562,
+        0.6429199603769744,
+        0.6456420616476437,
+        0.6416710481634668,
+        0.6435414841296474,
+        0.6456002982220832,
+        0.6448297935450205,
+        0.6633460359068433
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.6452330802661562
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.02590262100598828
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "random"
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "078-int4-mlp-torch-dequant-bf16",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=9216]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 22,
+        "total_elements": 2560,
+        "note": "headline decode step: batch 1, one token; N=2560 K=9216"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=9216]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 798,
+        "total_elements": 81920,
+        "note": "secondary decode step: batch 32, one token; N=2560 K=9216"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=9216 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          9216
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 171,
+        "total_elements": 9216,
+        "note": "headline decode step: batch 1, one token; N=9216 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=9216 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          9216
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 5159,
+        "total_elements": 294912,
+        "note": "secondary decode step: batch 32, one token; N=9216 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.9053030610084534,
+      "top1_interval": [
+        0.8639464651012687,
+        0.9350336513221642
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.04916069656610489,
+      "max_kl": 3.159818649291992,
+      "num_positions": 264,
+      "top1_threshold": 0.8787878787878788,
+      "kl_threshold": 0.06,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_sequence": null,
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

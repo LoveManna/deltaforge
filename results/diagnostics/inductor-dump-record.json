@@ -2,7 +2,7 @@
   "schema_version": 1,
   "kind": "baseline",
   "outcome": "baseline",
-  "timestamp": "2026-10-01T00:47:24.902439+00:00",
+  "timestamp": "2026-10-02T23:45:00.522853+00:00",
   "config_name": "Qwen/Qwen3.5-4B",
   "hypothesis": null,
   "workload": {
@@ -19,26 +19,26 @@
   },
   "environment": {
     "python_version": "3.12.3",
-    "platform": "Linux-6.8.0-139-generic-x86_64-with-glibc2.39",
-    "hostname": "6487e9c5368f",
+    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
+    "hostname": "f4d5d14cf241",
     "torch_version": "2.11.0+cu128",
     "triton_version": "3.6.0",
     "cuda_available": true,
     "cuda_version": "12.8",
     "gpu_name": "NVIDIA GeForce RTX 5090",
     "gpu_count": 1,
-    "driver_version": "610.43.02",
-    "gpu_memory_total_mb": 32149,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
     "gpu_clocks_mhz": {
-      "sm": 2355,
+      "sm": 2887,
       "memory": 13801,
-      "observed_at": "2026-10-01T00:47:25.008007+00:00"
+      "observed_at": "2026-10-02T23:45:00.716311+00:00"
     },
     "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
     "compute_capability": "12.0",
     "gpu_power": {
-      "draw_w": 136.24,
-      "limit_w": 400.0,
+      "draw_w": 348.75,
+      "limit_w": 500.0,
       "throttle_reasons": "0x0000000000000000"
     }
   },
@@ -52,32 +52,32 @@
     "baseline": "compiled",
     "timings_ms": {
       "compiled": [
-        474600.875
+        193176.984375
       ],
       "candidate_compiled": [
-        517992.75
+        213834.390625
       ]
     },
     "scoring_timings_ms": {
       "compiled": [
-        474600.875
+        193176.984375
       ],
       "candidate_compiled": [
-        517992.75
+        213834.390625
       ]
     },
     "median_ms": {
-      "compiled": 474600.875,
-      "candidate_compiled": 517992.75
+      "compiled": 193176.984375,
+      "candidate_compiled": 213834.390625
     },
     "achieved_gbps": {},
     "ratios": {
       "candidate_compiled": [
-        0.9162307290980424
+        0.9033953042369749
       ]
     },
     "median_ratio": {
-      "candidate_compiled": 0.9162307290980424
+      "candidate_compiled": 0.9033953042369749
     },
     "iqr_ratio": {
       "candidate_compiled": 0.0

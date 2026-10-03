@@ -159,6 +159,36 @@ question, and it does **not** answer whether a dequantise prologue fuses into a 
 because the CPU backend sends `mm` to MKL where CUDA generated a Triton template. A CPU dump
 of `056-int4-head-torch-dequant` predicts the loss rental 46 refuted.
 
+## Measured costs, rental 57 (2026-10-02) — batch 012, six slots run and two declined
+
+$0.388 for **56.85 billed minutes**, the cheapest useful rental this project has run.
+
+| phase | measured |
+|---|---|
+| fixed cost before slot 0 | ~37 min (cold compile + a full `output_code` dump) |
+| slots | 107, 208, 139, 147, 105, 312 s — **1018 s for six** |
+| `bench` alone, `077` | 136 s of its 147 |
+| compile cache | push **refused** at 3411 MB (ceiling 512); compiled cold, deliberately |
+
+**A scoring round cost ~1.8 s of wall time, not ~18 s.** Rental 46's note that a round costs
+~18 s is what sized this batch, and on this rental consecutive identity rounds landed 1.8 s
+apart: rounds 1 to 12 of `000-identity` spanned 20 s. Seventeen rounds cost ~30 s of the
+107 s slot, and the rest is build, correctness and compile. **The 18 s figure does not
+generalise and should not size the next batch** — re-derive it, or read `phases.bench` off a
+slot record, which is where the number actually lives.
+
+**The compile cache has passed the point of no return.** It only grows, `DF_CACHE_MAX_PUSH_MB`
+is 512, and the directory is 3411 MB, so **every future rental on this card compiles cold**.
+That is the correct failure direction and it is no longer a deferred cleanup: pruning the
+cache is the only thing that restores a warm start.
+
+**A zero-floor margin gate passes on noise.** `081` was gated on `ratio[078] - ratio[077] >=
+0.0` — a margin, deliberately, because rental 46's absolute floor declined the backlog's
+largest hypothesis. The margin came in at **+0.0062 against an IQR of 0.0259**. The gate
+passed, the slot was worth running, and the gate tested *nothing*: the same noise with its
+sign flipped would have declined 97.85% of the model's bytes. **A margin floor belongs above
+the IQR of the slots it reads, not at zero**, and nothing in `batch.py` enforces or warns.
+
 ## A precondition belongs on the proposition its slot depends on
 
 `Precondition(slug, floor, reason)` puts a floor on one slot's absolute ratio.

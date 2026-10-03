@@ -1,0 +1,515 @@
+{
+  "schema_version": 1,
+  "kind": "hypothesis",
+  "outcome": "loss",
+  "timestamp": "2026-10-03T00:03:27.537447+00:00",
+  "config_name": "Qwen/Qwen3.5-4B",
+  "hypothesis": {
+    "slug": "081-int4-wide-torch-dequant-bf16",
+    "batch": "012-the-matmul-dtype",
+    "statement": "Every layer projection except the two 32-channel gates, plus the tied head, at group-128 int4 with the bf16 matmul: 200 sites, **97.85% of what the compiled column moves, a 3.7578x ceiling** -- the whole weight stream bar 7.86 MB/token.",
+    "prediction": "loss",
+    "rationale": "**The width question, which is the one `AGENT.md` \u00a71.2 says is now open.** The fusion `056` found held at 248320 channels and failed at 9216; every site this slot adds over `078` is *narrower still* -- 2560, 4096, the full-attention projections -- so with the MLP pair measured beside it, this says whether the **dtype's** effect follows width the way the fusion does. The zones again read themselves: fp32-style materialisation lands at **0.24** (184.65 + 2100.79 + 2x16806.30 = 35898.04 MB/token), bf16 materialisation at **0.45**, and fusion up to 3.76. Predicted **loss, 0.40-0.55** -- the bf16 materialisation zone -- for the same reason `078` is: a narrower site makes a materialised operand cheaper, not dearer. **It is the riskiest install in the batch and runs last of the mechanism slots**: 200 sites including the two that feed an exponential through `A_log` are excluded, and the one measurement of these sites at 4 bits is `014-int4-full` (rental 37), **226/264 at 0.09185 nats, gate passed**, through a row-major packing and a 141 GB/s kernel -- so its correctness transfers and its ratio does not. Bars sit at 220/264 and 0.12, one measurement's headroom above that point, and this slot excludes the gates `014` included.",
+    "category": "B",
+    "byte_share": 0.9785,
+    "kernels": [
+      "int4_wide_torch_dequant_bf16"
+    ]
+  },
+  "workload": {
+    "batch_size": 1,
+    "context_length": 2048,
+    "decode_tokens": 128,
+    "prompt": "random"
+  },
+  "phases": {
+    "candidate_build": 0.23048930382356048,
+    "correctness": 10.873011784162372,
+    "compile_candidate_compiled": 0.007267958950251341,
+    "bench": 300.9008326740004
+  },
+  "git": {
+    "sha": null,
+    "branch": null,
+    "dirty": null
+  },
+  "environment": {
+    "python_version": "3.12.3",
+    "platform": "Linux-5.15.0-185-generic-x86_64-with-glibc2.39",
+    "hostname": "f4d5d14cf241",
+    "torch_version": "2.11.0+cu128",
+    "triton_version": "3.6.0",
+    "cuda_available": true,
+    "cuda_version": "12.8",
+    "gpu_name": "NVIDIA GeForce RTX 5090",
+    "gpu_count": 1,
+    "driver_version": "580.159.03",
+    "gpu_memory_total_mb": 32109,
+    "gpu_clocks_mhz": {
+      "sm": 2430,
+      "memory": 13801,
+      "observed_at": "2026-10-03T00:03:27.723024+00:00"
+    },
+    "gpu_clocks_note": "Observed at capture time, not locked. Clock locking needs privileged container access we do not reliably have, so the methodology never depends on it; interleaved rounds absorb drift instead.",
+    "compute_capability": "12.0",
+    "gpu_power": {
+      "draw_w": 83.17,
+      "limit_w": 500.0,
+      "throttle_reasons": "0x0000000000000000"
+    }
+  },
+  "bench": {
+    "labels": [
+      "compiled",
+      "candidate_compiled"
+    ],
+    "rounds": 17,
+    "warmup_rounds": 2,
+    "baseline": "compiled",
+    "timings_ms": {
+      "compiled": [
+        974.3075561523438,
+        971.4571533203125,
+        960.3721313476562,
+        962.4129028320312,
+        966.0819702148438,
+        969.0768432617188,
+        968.6365356445312,
+        968.0767822265625,
+        967.856689453125,
+        967.5120849609375,
+        964.7533569335938,
+        969.011962890625,
+        972.2907104492188,
+        971.440673828125,
+        971.2560424804688,
+        967.6697387695312,
+        971.5999755859375
+      ],
+      "candidate_compiled": [
+        249157.78125,
+        1574.5289306640625,
+        1572.025634765625,
+        1572.14501953125,
+        1573.4525146484375,
+        1573.5814208984375,
+        1573.7052001953125,
+        1573.669677734375,
+        1573.74560546875,
+        1573.8330078125,
+        1573.5643310546875,
+        1574.8232421875,
+        1575.7427978515625,
+        1574.1717529296875,
+        1575.0029296875,
+        1573.97802734375,
+        2364.440185546875
+      ]
+    },
+    "scoring_timings_ms": {
+      "compiled": [
+        960.3721313476562,
+        962.4129028320312,
+        966.0819702148438,
+        969.0768432617188,
+        968.6365356445312,
+        968.0767822265625,
+        967.856689453125,
+        967.5120849609375,
+        964.7533569335938,
+        969.011962890625,
+        972.2907104492188,
+        971.440673828125,
+        971.2560424804688,
+        967.6697387695312,
+        971.5999755859375
+      ],
+      "candidate_compiled": [
+        1572.025634765625,
+        1572.14501953125,
+        1573.4525146484375,
+        1573.5814208984375,
+        1573.7052001953125,
+        1573.669677734375,
+        1573.74560546875,
+        1573.8330078125,
+        1573.5643310546875,
+        1574.8232421875,
+        1575.7427978515625,
+        1574.1717529296875,
+        1575.0029296875,
+        1573.97802734375,
+        2364.440185546875
+      ]
+    },
+    "median_ms": {
+      "compiled": 968.0767822265625,
+      "candidate_compiled": 1573.74560546875
+    },
+    "achieved_gbps": {
+      "compiled": 1135.4870713950675,
+      "candidate_compiled": 185.87540878747737
+    },
+    "ratios": {
+      "candidate_compiled": [
+        0.6109137854427159,
+        0.6121654751156378,
+        0.6139886404075557,
+        0.6158415639582371,
+        0.615513334723882,
+        0.6151715292756422,
+        0.615001996567827,
+        0.6147488838766323,
+        0.61310067716581,
+        0.6153147457644986,
+        0.6170364299141223,
+        0.6171122509473181,
+        0.616669356083787,
+        0.6147924062209265,
+        0.41092178246886574
+      ]
+    },
+    "median_ratio": {
+      "candidate_compiled": 0.615001996567827
+    },
+    "iqr_ratio": {
+      "candidate_compiled": 0.002132790554376651
+    },
+    "call_order": [
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled",
+      "compiled",
+      "candidate_compiled"
+    ],
+    "metadata": {
+      "workload": {
+        "batch_size": 1,
+        "context_length": 2048,
+        "decode_tokens": 128,
+        "prompt": "random"
+      },
+      "columns": [
+        "compiled",
+        "candidate_compiled"
+      ],
+      "batch_mode": true,
+      "hypothesis": "081-int4-wide-torch-dequant-bf16",
+      "prediction": "loss",
+      "reference_compilation": "The reference columns were compiled once for the whole batch and reused. Their TIMINGS are not reused: the compiled column is re-timed inside this hypothesis's own interleaved rounds, so per-round drift divides out exactly as it does in a single-hypothesis run.",
+      "cross_slot_comparability": "Ratios are comparable within a slot. Across slots they are only loosely comparable: the slots share one card and one thermal history, and interleaving divides out drift within a slot, not between them.",
+      "correctness_max_new_tokens": 32
+    }
+  },
+  "correctness": {
+    "passed": true,
+    "worst_max_abs_err": 0.0,
+    "worst_max_rel_err": 0.0,
+    "layer1_kernel_checks": [
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=1024 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          1024
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 21,
+        "total_elements": 1024,
+        "note": "headline decode step: batch 1, one token; N=1024 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=1024 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          1024
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 455,
+        "total_elements": 32768,
+        "note": "secondary decode step: batch 32, one token; N=1024 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=4096]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 33,
+        "total_elements": 2560,
+        "note": "headline decode step: batch 1, one token; N=2560 K=4096"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=4096]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 862,
+        "total_elements": 81920,
+        "note": "secondary decode step: batch 32, one token; N=2560 K=4096"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=9216]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 23,
+        "total_elements": 2560,
+        "note": "headline decode step: batch 1, one token; N=2560 K=9216"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=2560 K=9216]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          2560
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 853,
+        "total_elements": 81920,
+        "note": "secondary decode step: batch 32, one token; N=2560 K=9216"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=4096 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          4096
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 40,
+        "total_elements": 4096,
+        "note": "headline decode step: batch 1, one token; N=4096 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=4096 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          4096
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 1518,
+        "total_elements": 131072,
+        "note": "secondary decode step: batch 32, one token; N=4096 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=8192 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 122,
+        "total_elements": 8192,
+        "note": "headline decode step: batch 1, one token; N=8192 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=8192 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          8192
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3408,
+        "total_elements": 262144,
+        "note": "secondary decode step: batch 32, one token; N=8192 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=9216 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          9216
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 143,
+        "total_elements": 9216,
+        "note": "headline decode step: batch 1, one token; N=9216 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=9216 K=2560]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          9216
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 5183,
+        "total_elements": 294912,
+        "note": "secondary decode step: batch 32, one token; N=9216 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          1,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 3185,
+        "total_elements": 248320,
+        "note": "headline decode step: batch 1, one token; N=248320 K=2560"
+      },
+      {
+        "name": "visible_int4_head.torch_dequant_gemv_int4_bf16[N=248320 K=2560 (tied lm head)]",
+        "replaces": "decode_step",
+        "passed": true,
+        "max_abs_err": 0.0,
+        "max_rel_err": 0.0,
+        "rtol": 0.01,
+        "atol": 0.01,
+        "shape": [
+          32,
+          1,
+          248320
+        ],
+        "dtype": "torch.bfloat16",
+        "excluded_near_zero": 97555,
+        "total_elements": 7946240,
+        "note": "secondary decode step: batch 32, one token; N=248320 K=2560"
+      }
+    ],
+    "layer2_end_to_end": null,
+    "layer2_distribution": {
+      "policy": "approximate",
+      "passed": true,
+      "top1_agreement": 0.8636363744735718,
+      "top1_interval": [
+        0.8169930848503351,
+        0.8998488887632123
+      ],
+      "top1_resolved": false,
+      "mean_kl": 0.09081663936376572,
+      "max_kl": 1.5481284856796265,
+      "num_positions": 264,
+      "top1_threshold": 0.8333333333333334,
+      "kl_threshold": 0.12,
+      "prompt_digest": "7e7f95150a170228c8ff7e77eed800ca9d92cc6be7e9747958b41dae19e25cfd",
+      "context_tokens": 264
+    },
+    "layer2_sequence": null,
+    "layer2_policy": "approximate",
+    "metadata": {}
+  },
+  "cost": null,
+  "notes": ""
+}

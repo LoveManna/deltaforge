@@ -285,41 +285,45 @@ dequantisation into a GEMV prologue" but "it fused at the one site where materia
 unaffordable": the head's dequantised fp32 operand would be **2.54 GB** where the MLP's is
 94.4 MB. The ranked reading is that **inductor materialises when it can afford to.**
 
-**What reopens it, and it is one line. REGISTERED as batch 012 (2026-10-02).**
-`torch_dequant_gemv_int4` asks for an **fp32** matmul — `flat.float() @ dense.float()` —
-which is what makes the materialised operand fp32 and plausibly what selects a `mm` template
-over a reduction that could carry the prologue. A bf16 matmul with fp32 accumulation is what
-the Triton kernel does and what the correctness reference means; `torch_dequant_gemv_int4_bf16`
-is that one operator changed, and `012-the-matmul-dtype` runs the pair at three widths.
+**CLOSED on rental 57 (2026-10-02). It was one line, the line was measured, and it is a
+no-op.** `torch_dequant_gemv_int4_bf16` is `torch_dequant_gemv_int4` with the matmul left in
+bf16 — one operator — and batch 012 ran the pair at two widths:
 
-**Where the fp32 came from matters, because nobody chose it as a benchmark.** The expression
-was written as the *hand-written kernel's correctness reference*, where fp32 accumulation is a
-virtue, and it became the shipped candidate on rental 46 when it beat the kernel. The dtype
-was never a hypothesis; it was an inherited default that the dump has now made load-bearing.
+| pair | fp32 | bf16 | margin | IQRs |
+|---|---:|---:|---:|---|
+| tied head, 248320 wide | **1.0251** | **1.0218** | −0.0033 | 0.0104 / 0.0081 |
+| 96 MLP projections | **0.6390** | **0.6452** | +0.0062 | 0.0060 / 0.0259 |
 
-**The ranked prediction is a loss, and it follows from this entry's own mechanism.** If
-inductor materialises when it can afford to, a **47.2 MB** bf16 operand is more affordable
-than the 94.4 MB fp32 one it already materialised, so the dtype halves the bill without
-removing it. Three zones, far enough apart that the ratio names the mechanism:
+Both inside their own spreads and pointing opposite ways; candidate columns at **458 against
+458 GB/s**; layer 2 agreeing to five decimals at the head (0.0167417 / 0.0167412) and four at
+the MLP. **The dtype does nothing.**
 
-| what inductor does at the 96 MLP sites | candidate MB/token | ratio |
-|---|---:|---:|
-| materialises fp32 (the dtype changed nothing) | 23309.81 | **0.37** |
-| materialises bf16 (**ranked**) | 14250.11 | **0.60** |
-| fuses the unpack into the prologue | 5190.41 | **1.09 – 1.45** |
+**The dump says why, and it is a fact about where inductor decides rather than about dtypes.**
+The reference's graphs hold no dequantised weight buffers at all; the **bf16** candidate's two
+graphs each hold **16 fp32 `(1, 2560, 9216)` buffers and one `down_proj`-shaped one — 17 of 96
+MLP sites — and zero bf16 buffers of either shape**, with the unpack as a pointwise kernel,
+the matmuls as separate `mm` reductions, and zero `extern_kernels.mm`. **Inductor materialises
+upstream of `.to(x.dtype)`** — the cast is applied to a buffer already written at full fp32
+width, so no spelling of the matmul can move it.
 
-A win refutes the affordability reading in favour of the dtype selecting the template, and
-that is the more useful of the two outcomes: it would put 91.85% of this model's bytes behind
-one operator rather than behind a site-shape threshold.
+**The affordability reading does not extrapolate either.** It predicted narrower sites
+materialise *more*; the census says the 9216-wide output sites carry 16 of 64 buffers and
+`down_proj` carries **1 of 32**. `081-int4-wide-torch-dequant-bf16` at 200 sites and 97.85% of
+the bytes returned **0.6150**, no worse than the MLP's 0.639.
 
-**The free check cannot answer this one.** `cli fusion --install` on the two arms returns
-byte-identical reports — cpp +5, +7 allocations, largest buffer 32768 elements, both — because
-the CPU backend sends `mm` to MKL where CUDA generated a Triton template. The dump that
-refuted the ladder for nothing is blind to the variable that replaced it, which is exactly
-the limitation `docs/BATCHES.md` records. Still **dump the generated code at a new site
-before extending any fusion result to it**, and do not read fusion off a kernel *name* — four
-kernels in rental 56's dump carry both the nibble unpack and `mm` in their names and none
-performs a matmul.
+**One thing in this entry is NOT settled, and it is the size of the loss.** 17 materialised
+operands written and read back are 3.21 GB/token, against an 8.25 GB gap between the
+candidate's byte model and the traffic its achieved bandwidth implies. **~5 GB/token is
+unattributed.** `012`'s first writeup back-solved a per-weight multiplier from the ratios
+instead and read the result as evidence about fusion; that arithmetic assumed all excess
+traffic was the weight, and the allocation count refutes it. Count buffers from the dump,
+which is on disk and costs nothing.
+
+**So this entry's route to the 91.85% is closed, and exactly one untested route remains**:
+make the fp32 intermediate never exist — bf16 group scales, or an unpack whose cast precedes
+the arithmetic — so there is no fp32 buffer for inductor to choose to write. That is a
+different hypothesis from this one and nothing has measured it. Full account in
+[`012-the-matmul-dtype`](../results/batches/012-the-matmul-dtype/).
 
 **Registered as a ladder, batch 011 (2026-09-30), and four rungs declined unmeasured.** The
 card ran at 0.34x, so `067` fell below the identity slot and every gate behind it read

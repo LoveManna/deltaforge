@@ -97,25 +97,38 @@ node after its origins, so four kernels in rental 56's dump carry both the nibbl
 `mm` in their names and none of them performs a matmul. The allocation and the grid size are
 the evidence.
 
-The live experiment is one line, and it is **registered as batch 012** (2026-10-02):
-`torch_dequant_gemv_int4` asks for an **fp32** matmul (`flat.float() @ dense.float()`), which
-is what makes the materialised operand fp32 and plausibly what selects the `mm` template over
-a reduction. `torch_dequant_gemv_int4_bf16` is that expression with the matmul left in bf16 —
-one operator, no new kernel — and `012-the-matmul-dtype` runs the pair at three site widths:
-14.80% (`075`/`076`), 52.75% (`077`/`078`) and 97.85% (`081`).
+**MEASURED, rental 57 (2026-10-02): the dtype is a no-op, and the reason closes this
+section's own question.** Batch 012 ran the pair at two widths. The head: **1.0251** fp32
+against **1.0218** bf16, margin −0.0033. The 96 MLP projections: **0.6390** against
+**0.6452**, margin +0.0062. Both inside their IQRs, pointing opposite ways, with the
+candidate columns at **458 against 458 GB/s** and layer 2 agreeing to five decimal places.
 
-**The ranked prediction is that bf16 still materialises**, because this section's own
-mechanism says so: inductor materialises when it can afford to, and halving the operand to
-47.2 MB a site makes it more affordable, not less. So `078` is registered a **loss at ~0.60**
-and a win is what refutes that reading in favour of the dtype selecting the template. The
-arithmetic separates the three outcomes well enough that the ratio names the mechanism:
-**~0.37** fp32 materialisation, **~0.60** bf16 materialisation, **>=1.09** fusion.
+**Why, from the dump of the bf16 candidate:** the reference's graphs hold zero dequantised
+weight buffers; the candidate's two hold **16 fp32 `(1, 2560, 9216)` buffers plus one
+`down_proj`-shaped one each — 17 of 96 MLP sites — and zero bf16 buffers of either shape**,
+with the unpack as a pointwise kernel and the matmuls as separate `mm` reductions, and zero
+`extern_kernels.mm`. **Inductor picks its materialisation point upstream of `.to(x.dtype)`**,
+so the cast is applied to a buffer already written at full fp32 width. A matmul's dtype
+cannot move a decision made before the matmul. `flat.float() @ dense.float()` was never the
+lever, and no spelling of this expression is.
 
-**A local dump cannot settle it, and this is the case `docs/BATCHES.md` warns about.**
-`cli fusion --install` on the two arms returns **byte-identical** reports — cpp +5, +7
-allocations, largest buffer 32768 elements, both of them — because the CPU backend sends `mm`
-to MKL where CUDA generated a Triton template. The free check that refuted the ladder cannot
-see this variable; only a rental can.
+**The affordability reading also fails as a predictor of direction**, but read it off the
+*census*, not off the ratios: the 9216-wide output sites carry 16 of 64 buffers and
+`down_proj` carries 1 of 32, so the cheaper narrower operand materialises **less**. `081` at
+200 sites and 97.85% of the bytes returned **0.6150**, no worse than the MLP's 0.639.
+
+**Count allocations; do not back-solve a multiplier from a ratio.** `012`'s writeup first
+inferred "2.07x the quantised weight at the MLP, 1.64x at the wide sites" from the achieved
+bandwidths and read the difference as evidence about fusion. The dump refutes that arithmetic:
+17 operands account for **3.21 GB/token of the 8.25 GB** by which the candidate exceeds its own
+byte model, and **~5 GB is unattributed** — the first thing the next session should count, for
+free, from the dump already on disk.
+
+**What is left of the 91.85%, stated precisely.** Not a dtype and not a kernel: the only
+untested route is making the fp32 intermediate *never exist* — bf16 group scales, or an
+unpack whose cast precedes the arithmetic — so there is no fp32 buffer for inductor to choose
+to write. Everything else in this line is closed; see
+`results/batches/012-the-matmul-dtype/`.
 
 ## 2. The arithmetic that decides whether your hypothesis is worth trying
 
@@ -340,7 +353,7 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Fifty-three instances created, fifty-three destroyed, $9.954 lifetime, zero leaked. Both
+**Fifty-six instances created, fifty-six destroyed, $11.489 lifetime, zero leaked. Both
 champions are kernels this project deleted rather than wrote.**
 
 **Rental 56 (2026-10-01): batch 011 ran six of ten slots and the two findings are both
@@ -354,6 +367,19 @@ variable has a name**: the host driver separates seven identity slots where cloc
 and toolchain do not, so `DF_MAX_CUDA` now refuses a too-new driver at the offer line.
 $0.769, and $1.147 across the session's two rentals. See
 [`results/batches/011-bytes-not-kernels/`](results/batches/011-bytes-not-kernels/).
+
+**Rental 57 (2026-10-02): batch 012 ran six of eight slots for $0.388 and the dtype line is
+closed.** §1.2 has the finding and the dump. Three things worth carrying forward. **The
+52.75% prize is executed at last** — `077-int4-mlp-torch-dequant`, registered a win twice
+(`061`, `071`) and declined unexecuted both times, ran ungated and returned **0.6390 at an
+IQR of 0.0060**; its registered 1.25-1.55 is refuted by measurement now, not by a dump. **The
+head is at its best ever measured**, `075` at **1.0251** against 1.0171 (r46) and 0.9971
+(r56), on a 1220 GB/s card the `DF_MAX_CUDA` gate won by rejecting the CUDA 13.3 branch.
+**And a zero-floor margin gate passes on noise**: `081` was gated on `078 - 077 >= 0.0` and
+cleared it by **+0.0062 against an IQR of 0.0259**. A margin floor belongs above the IQR of
+the slots it reads; `batch.py` neither enforces that nor warns. Power telemetry also landed
+for the first time (426 W of 500, throttle `0x0`), which rules out blocker 18's suspect on
+this host.
 
 **Batch 012 is registered (2026-10-02): `012-the-matmul-dtype`, eight slots, and it is
 three pairs one operator apart.** §1.2 has the mechanism and the ranked prediction. Two

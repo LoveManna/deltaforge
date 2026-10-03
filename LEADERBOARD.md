@@ -8,13 +8,29 @@
 |---|---|---|
 | Replaces | `causal_conv` | `decode_step` |
 | Kernel | `inline_causal_conv` | `int4_head_torch_dequant` |
-| Median ratio | **1.0765** (r45), **1.0650** (r46), **1.0778** (r56) | **1.0171** (r46), **0.9971** (r56) |
-| IQR | 0.0552; **0.0213**; 0.0322 | **0.0130**; 0.0230 |
+| Median ratio | **1.0765** (r45), **1.0650** (r46), **1.0778** (r56) | **1.0171** (r46), 0.9971 (r56), **1.0251** (r57) |
+| IQR | 0.0552; **0.0213**; 0.0322 | 0.0130; 0.0230; **0.0104** |
 | Correctness | **bit-identical** — 264/264, 0.00000 nats | 0.9318 agreement, 0.01674 nats |
 | Result record | [`008`](results/batches/008-ingredients-and-barriers/) | [`009`](results/batches/009-visible-kernels/) |
 
 **Both were obtained by deleting a hand-written kernel rather than writing one, and each
 beat the Triton kernel it replaced in the same process on the same card.**
+
+**Rental 57 (2026-10-02): the head champion's best measurement yet, and the dtype line
+closed.** `075-int4-head-torch-dequant` returned **1.0251 at an IQR of 0.0104** on a 1220
+GB/s card with the identity slot at 1.0024 — against 1.0171 (r46) and 0.9971 (r56), the
+spread between those being the card and not the kernel. **Nothing is promoted and nothing is
+retired.**
+
+What batch 012 settled is a *negative* that closes a line: the matmul dtype is a no-op at
+every width this model has. One operator apart, the head measured 1.0251 fp32 against 1.0218
+bf16 and the 96 MLP projections 0.6390 against 0.6452 — both margins inside their IQRs, both
+candidate columns at 458 GB/s at the MLP. The bf16 candidate's graphs hold **17 fp32 weight
+buffers per decode step and zero bf16 ones**, because inductor materialises upstream of the
+cast. Why the level is 0.64 rather than the 1.02 those 17 operands alone would predict is
+**open**: ~5 GB/token of the candidate's traffic is unattributed. And the
+52.75% prize, twice registered a win and twice declined unexecuted, is now a **measured loss
+at 0.6390 (IQR 0.0060)**. See [`012`](results/batches/012-the-matmul-dtype/).
 
 **Rental 56 (2026-10-01) measured the pair for the first time: `068-champion-pair` returned
 1.2179**, the largest raw margin this project has recorded, and **16% above the product of
