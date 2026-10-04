@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="description" content="Twelve measured batches of hand-written Triton kernels scored against torch.compile on the Qwen3.5-4B decode path - what beat the compiler, what lost, and the mechanism for each.">
 <meta property="og:type" content="article">
+<meta property="og:url" content="https://lovemanna.github.io/deltaforge/">
+<link rel="canonical" href="https://lovemanna.github.io/deltaforge/">
 <meta property="og:title" content="DeltaForge Results - where the compiler wins, and why">
 <meta property="og:description" content="Twelve measured batches of hand-written Triton kernels scored against torch.compile on the Qwen3.5-4B decode path - what beat the compiler, what lost, and the mechanism for each.">
 <meta name="twitter:card" content="summary">
@@ -77,6 +79,8 @@ img { max-width: 100%; }
   }
 
   * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
   body {
     margin: 0;
     background: var(--ground);
@@ -118,6 +122,11 @@ img { max-width: 100%; }
     text-decoration: none; letter-spacing: .02em;
   }
   .topnav a:hover { color: var(--accent); }
+  .topnav a.repo {
+    color: var(--accent-ink); border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent);
+    background: var(--accent-wash); border-radius: 999px; padding: 3px 10px; font-weight: 500;
+  }
+  .topnav a.repo:hover { border-color: var(--accent); }
   .topnav a:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 
   /* ---------- masthead ---------- */
@@ -145,7 +154,7 @@ img { max-width: 100%; }
   .chip b { color: var(--ink); font-weight: 600; }
 
   /* ---------- sections ---------- */
-  section { padding-block: 44px; border-bottom: 1px solid var(--rule); }
+  section { padding-block: 44px; border-bottom: 1px solid var(--rule); scroll-margin-top: 62px; }
   section:last-of-type { border-bottom: 0; }
   .sec-head { display: flex; gap: 14px; align-items: baseline; margin-bottom: 20px; }
   .sec-num {
@@ -329,6 +338,7 @@ img { max-width: 100%; }
 
   footer { padding-block: 32px 44px; }
   footer p { font-family: var(--mono); font-size: 12px; color: var(--ink-3); max-width: none; }
+  footer a { color: var(--accent-ink); }
 
   #tip {
     position: fixed; z-index: 50; pointer-events: none; opacity: 0;
@@ -351,6 +361,7 @@ img { max-width: 100%; }
       <a href="#findings">Findings</a>
       <a href="#method">Method</a>
       <a href="#open">Open</a>
+      <a class="repo" href="https://github.com/LoveManna/deltaforge">Repository ↗</a>
     </nav>
   </div>
 </div>
@@ -369,7 +380,7 @@ img { max-width: 100%; }
       <span class="chip"><b>56</b> GPU rentals</span>
       <span class="chip"><b>$11.49</b> billed compute</span>
       <span class="chip"><b>1621</b> billed GPU minutes</span>
-      <span class="chip">2026-09-03 → 2026-10-02</span>
+      <span class="chip">2026-10-02</span>
     </div>
   </div>
 </header>
@@ -384,26 +395,34 @@ img { max-width: 100%; }
       <p>
         <b>The two shipped champions, composed, run this model's decode 1.2179× faster than
         <code>torch.compile(mode="max-autotune")</code></b> — 21.8% off the step, ~19% after correcting for
-        that card's calibration offset — against a baseline already moving bytes at
-        <b>65.7–71.5% of an RTX 5090's vendor peak bandwidth</b>, which is the hard part: there was very
-        little room above it to win.
-        They are a four-tap causal convolution at <b>1.0765–1.0778</b>, bit-identical to the reference at
-        264/264 tokens and 0.00000 nats, and a group-128 int4 tied LM head at <b>1.0251</b> (IQR 0.0104) —
-        and both were obtained by <b>deleting my hand-written Triton kernel</b> and expressing the same
-        arithmetic as plain torch operations, so that the compiler generates the GPU code instead of me.
-        They won because an opaque <code>torch.library.custom_op</code> is a <b>fusion barrier</b> that costs
-        its own kernel plus everything inductor can no longer fuse across it: the identical, bit-identical
-        convolution measured <b>0.7854 behind the custom op against 1.0765 as fusible ops</b> — one variable,
-        37% — because the barrier drove buffer allocations from 59 to 190 and made the linear-attention state
-        reduction run twice per layer, 24 times per token.
-        At the LM head the same deletion beat my own kernel <b>by 3.2% in the same process on the same
-        card</b>, because a custom op forfeits the RMSNorm fusion inductor welds into the matmul <em>and</em>
-        the register-level 4-bit unpack that was the kernel's whole claim to necessity is something the
-        compiler emits inline — the two being the same program is not an assumption: layer 2 returned 0.9318
-        agreement and 0.01674 nats for both, digit for digit, on six rentals.
-        Every number here came off a rented card with its outcome and magnitude <b>registered in a manifest
-        committed before the GPU existed</b> — 12 batches, 56 rentals, $11.49, an identity control that can
-        void a batch, two correctness gates, and 56 of 56 instances destroyed.
+        that card's calibration offset. The margin comes off a <em>strong</em> baseline, which is the whole
+        difficulty: the compiled reference already moves bytes at <b>65.7–71.5% of an RTX 5090's vendor peak
+        bandwidth</b>, so the headroom above it is thin, and finding any of it meant knowing exactly where the
+        compiler's remaining slack was and proving it before renting a card.
+      </p>
+      <p>
+        The champions are a four-tap causal convolution at <b>1.0765–1.0778</b>, bit-identical to the
+        reference at 264/264 tokens and 0.00000 nats, and a group-128 int4 tied LM head at <b>1.0251</b>
+        (IQR 0.0104). Both follow from this project's central finding, which is a fact about the compiler rather
+        than about any one kernel: <b>an opaque <code>torch.library.custom_op</code> is a fusion barrier, and it
+        costs its own kernel plus everything inductor can no longer fuse across it — a bill that is invisible
+        at the call site.</b> Keeping the same arithmetic visible to inductor, as fusible torch operations, wins at
+        both sites.
+      </p>
+      <p>
+        The convolution is bit-identical either way and measured <b>0.7854 behind the custom op against 1.0765 as
+        fusible ops — one variable, 37%</b>, because the barrier drove buffer allocations from 59 to 190 and
+        made the linear-attention state reduction run twice per layer, 24 times per token. At the LM head the
+        fusible form beat a hand-written Triton GEMV <b>by 3.2% in the same process on the same card</b>: a custom
+        op forfeits the RMSNorm fusion inductor welds into the matmul, <em>and</em> the register-level 4-bit unpack
+        that was the kernel's reason to exist is something the compiler emits inline. That the two are the same
+        program is not an assumption — layer 2 returned 0.9318 agreement and 0.01674 nats for both, digit for
+        digit, on six rentals.
+      </p>
+      <p>
+        <b>Every number here came off a rented card, with its outcome and magnitude registered in a manifest
+        committed before the GPU existed</b> — 12 batches, 56 rentals, $11.49 of compute, an identity control
+        that can void a batch, two correctness gates, and 56 of 56 instances destroyed.
       </p>
     </div>
 
@@ -423,6 +442,46 @@ img { max-width: 100%; }
         <div class="v">65.7–71.5<small>%</small></div>
         <div class="d">Of an RTX 5090's 1792 GB/s vendor peak, at 6.70–7.30 ms/token. The compiler is two thirds of the way to the memory wall before anyone writes a kernel.</div>
       </div>
+    </div>
+
+    <h3>What this project demonstrates</h3>
+    <div class="cards">
+      <div class="card">
+        <h4>Compiler internals, read rather than guessed <span>inductor</span></h4>
+        <p>Every mechanism on this page comes out of inductor's own <code>output_code</code>: buffer censuses,
+          reduction counts, where a materialisation point actually sits. <code>cli fusion</code> compiles a
+          candidate locally and diffs the generated code, so “does this registration install a fusion
+          barrier?” is answered <b>before</b> a card is rented — and it refuted one whole
+          generalisation for free.</p>
+      </div>
+      <div class="card">
+        <h4>Triton kernels, written and then judged <span>authoring</span></h4>
+        <p>Grouped int4 and int8 dequantise-GEMVs with the unpack fused into the K-loop, a fused causal
+          convolution, split-K and K-major tiling, register-level nibble unpack — authored, gated to one
+          bf16 ULP, measured per site, and retired when the measurement said so. The kernel that won at
+          <b>656 GB/s</b> on the LM head and lost at <b>67 GB/s</b> on the MLP is the same kernel.</p>
+      </div>
+      <div class="card">
+        <h4>Measurement sharp enough to change a conclusion <span>method</span></h4>
+        <p>Interleaved scoring against a reference resident in the same process on one shared parameter set; an
+          identity control that can <b>void its own batch</b>; interquartile spread as the significance test, so a
+          margin thinner than its noise band is never promoted; fifteen scoring rounds, which took a worst-case
+          IQR from <b>0.1511 to 0.0213</b>. Three conclusions flipped when the instrument got sharper, and the
+          write-ups say which.</p>
+      </div>
+      <div class="card">
+        <h4>Rented-GPU infrastructure, gated in code <span>systems</span></h4>
+        <p>One command provisions, syncs, gates correctness, benchmarks a batch, pulls results back and destroys
+          the instance — POSIX shell so it runs before the environment exists, with budget gates, per-slot
+          wall-clock caps, a watchdog, a teardown trap and a compile cache that carries between rentals.
+          <b>56 of 56 instances destroyed, zero leaked, $11.49 lifetime.</b></p>
+      </div>
+    </div>
+    <div class="chips" style="margin:16px 0 0">
+      <span class="chip">~<b>37k</b> lines of Python and POSIX shell</span>
+      <span class="chip"><b>1160</b> tests, <b>1142</b> green with no GPU</span>
+      <span class="chip"><b>12</b> batch write-ups, wins and losses alike</span>
+      <span class="chip">every result traceable to a named rental</span>
     </div>
   </div>
 </section>
@@ -737,7 +796,7 @@ img { max-width: 100%; }
         reduction is the mechanism; the allocation count is a symptom.</li>
     </ul>
 
-    <h3><span class="h3num">4.2</span> The compiler beat the hand-written kernel at the one site I had ever won on</h3>
+    <h3><span class="h3num">4.2</span> At the project’s best site, the compiler beat the hand-written kernel</h3>
     <p>
       Three registrations of <b>one program</b> — the group-128 int4 dequantise-GEMV on the tied LM head — ran
       in a single process on a single card. They compute the same function, and the record proves it: layer 2
@@ -1137,6 +1196,11 @@ uv run python -m deltaforge.cli fusion --install inline_causal_conv</code></pre>
 
 <footer>
   <div class="wrap">
+    <p>
+      <a href="https://github.com/LoveManna/deltaforge">github.com/LoveManna/deltaforge</a> ·
+      <a href="https://github.com/LoveManna/deltaforge/blob/main/RESULTS.md">RESULTS.md</a> ·
+      <a href="https://github.com/LoveManna/deltaforge/blob/main/LEADERBOARD.md">LEADERBOARD.md</a>
+    </p>
     <p>DeltaForge · Apache-2.0, matching the target model · every number on this page came off a rented card, and the rental is named beside it.</p>
   </div>
 </footer>
