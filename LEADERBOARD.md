@@ -167,13 +167,15 @@ resolve and the shape of it is worth reading, not because the question is open.
 since rental 35 has. Note the sign: rental 42 carried a **+0.53% offset**, so every ratio
 in batch 006 is that much flattering and `034`'s 1.0196 is ~1.4% net.
 
-**Forty-one instances have now been created and forty-one destroyed, $7.177 lifetime,
-zero leaked.** Every one was destroyed cleanly by the trap, including two cancelled
-mid-flight with SIGTERM. The cheapest informative rental in the set remains rental 28 at
-$0.0478; the most expensive mistake remains rental 32 at $1.3878, which spent its entire
-cap inside one compile. (The count is the ledger's, and it is one lower than the "forty
-rentals" this file carried before rental 42 created two instances: the prose had drifted
-one ahead of `ledger/spend.jsonl`, which is the authority.)
+**Fifty-six instances have now been created and fifty-six destroyed, 1620.97 billed
+minutes, $11.4887 lifetime, zero leaked.** Every one was destroyed cleanly by the trap,
+including two cancelled mid-flight with SIGTERM. The cheapest informative rental in the set
+remains rental 28 at $0.0478; the most expensive mistake remains rental 32 at $1.3878, which
+spent its entire cap inside one compile. (These are `ledger/spend.jsonl` summed on
+2026-10-03, which is the authority. This line carried "forty-one instances, $7.177" — rental
+42's numbers — for fourteen rentals afterwards, so re-sum the ledger rather than editing the
+sentence by hand: `python3 -c "import json;print(sum(json.loads(l)['actual_cost_usd'] or 0
+for l in open('ledger/spend.jsonl') if json.loads(l)['event']=='destroy'))"`.)
 
 ### The chain of blockers, and where it stands
 

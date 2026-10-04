@@ -608,8 +608,20 @@ failure mode this project exists to avoid.
 | `docs/GPU-ACCESS.md` | **Read if a run hangs before sshd.** The container-pull blocker and its fix. |
 | `remote/lib.sh` | The same two gates in awk, plus the Vast API and lifecycle helpers. |
 | `docs/superpowers/specs/2026-08-29-deltaforge-design.md` | The original design spec. Historical. |
+| `RESULTS.md` | **The outward-facing write-up**, for a reader who was not here. Headline numbers, mechanisms, method, open questions. |
+| `site/index.html` | `RESULTS.md` as one standalone HTML page. The `gh-pages` branch serves a copy at <https://lovemanna.github.io/deltaforge/>; `site/README.md` has the three commands that publish a change. |
 
 Tests are colocated as `<module>_test.py`; `testpaths` is `src` and `remote`.
+
+**This repository has been public since 2026-10-03**, and a page built from it is served on
+github.io. Three things follow. Anything committed from here is world-readable the moment it
+is pushed, `ledger/spend.jsonl` and `docs/GPU-ACCESS.md` included — the CI secret-scan job in
+`.github/workflows/ci.yml` is now load-bearing rather than belt-and-braces. A number this
+project has retracted is visible until the prose carrying it is fixed, so §6.1's "fix what
+this session proved wrong" is the difference between a stale line and a public one. And
+`RESULTS.md` and `site/index.html` carry the same headline numbers in the same order as
+`LEADERBOARD.md`: a rental that moves a champion moves all three, or the public page starts
+contradicting the record.
 
 ## 7a. What the first working session actually learned (2026-09-07)
 
