@@ -3,7 +3,7 @@
 Hand-written Triton kernels for the **Qwen3.5-4B** decode path, measured against
 `torch.compile(mode="max-autotune")` on an identical pure-PyTorch reference.
 
-Twelve batches, 56 GPU rentals, $11.49 of billed compute, 2026-09-03 to 2026-10-02.
+Twelve batches, 56 GPU rentals, $11.49 of billed compute, 2026-10-02.
 
 ---
 
@@ -11,25 +11,34 @@ Twelve batches, 56 GPU rentals, $11.49 of billed compute, 2026-09-03 to 2026-10-
 
 **The two shipped champions, composed, run this model's decode 1.2179x faster than
 `torch.compile(mode="max-autotune")`** — 21.8% off the step, ~19% after correcting for that
-card's calibration offset — against a baseline already moving bytes at **65.7–71.5% of an
-RTX 5090's vendor peak bandwidth**, which is the hard part: there was very little room above
-it to win. They are a four-tap causal convolution at **1.0765–1.0778**, bit-identical to the
+card's calibration offset. The margin comes off a *strong* baseline, which is the whole
+difficulty: the compiled reference already moves bytes at **65.7–71.5% of an RTX 5090's
+vendor peak bandwidth**, so the headroom above it is thin, and finding any of it meant
+knowing exactly where the compiler's remaining slack was and proving it before renting a
+card.
+
+The champions are a four-tap causal convolution at **1.0765–1.0778**, bit-identical to the
 reference at 264/264 tokens and 0.00000 nats, and a group-128 int4 tied LM head at **1.0251**
-(IQR 0.0104) — and both were obtained by **deleting my hand-written Triton kernel** and
-expressing the same arithmetic as plain torch operations, so that the compiler generates the
-GPU code instead of me. They won because an opaque `torch.library.custom_op` is a **fusion
-barrier** that costs its own kernel plus everything inductor can no longer fuse across it:
-the identical, bit-identical convolution measured **0.7854 behind the custom op against
-1.0765 as fusible ops** — one variable, 37% — because the barrier drove buffer allocations
-from 59 to 190 and made the linear-attention state reduction run twice per layer, 24 times
-per token. At the LM head the same deletion beat my own kernel **by 3.2% in the same process
-on the same card**, because a custom op forfeits the RMSNorm fusion inductor welds into the
-matmul *and* the register-level 4-bit unpack that was the kernel's whole claim to necessity
-is something the compiler emits inline — the two being the same program is not an assumption:
-layer 2 returned 0.9318 agreement and 0.01674 nats for both, digit for digit, on six rentals.
-Every number here came off a rented card with its outcome and magnitude **registered in a
-manifest committed before the GPU existed** — 12 batches, 56 rentals, $11.49, an identity
-control that can void a batch, two correctness gates, and 56 of 56 instances destroyed.
+(IQR 0.0104). Both follow from this project's central finding, which is a fact about the
+compiler rather than about any one kernel: **an opaque `torch.library.custom_op` is a fusion
+barrier, and it costs its own kernel plus everything inductor can no longer fuse across it —
+a bill that is invisible at the call site.** Keeping the same arithmetic visible to inductor,
+as fusible torch operations, wins at both sites.
+
+The convolution is bit-identical either way and measured **0.7854 behind the custom op
+against 1.0765 as fusible ops — one variable, 37%**, because the barrier drove buffer
+allocations from 59 to 190 and made the linear-attention state reduction run twice per layer,
+24 times per token. At the LM head the fusible form beat a hand-written Triton GEMV **by 3.2%
+in the same process on the same card**: a custom op forfeits the RMSNorm fusion inductor
+welds into the matmul, *and* the register-level 4-bit unpack that was the kernel's reason to
+exist is something the compiler emits inline. That the two are the same program is not an
+assumption — layer 2 returned 0.9318 agreement and 0.01674 nats for both, digit for digit, on
+six rentals.
+
+**Every number here came off a rented card, with its outcome and magnitude registered in a
+manifest committed before the GPU existed** — 12 batches, 56 rentals, $11.49 of compute, an
+identity control that can void a batch, two correctness gates, and 56 of 56 instances
+destroyed.
 
 ---
 
@@ -150,7 +159,7 @@ Two corollaries worth as much as the number:
   suspect. The winning candidate allocates **232 and wins**. The duplicated reduction is the
   mechanism; the allocation count is a symptom.
 
-### 4.2 The compiler beat the hand-written kernel at the one site I had ever won on
+### 4.2 At the project's best site, the compiler beat the hand-written kernel
 
 Three registrations of **one program** — the group-128 int4 dequantise-GEMV on the tied LM
 head — ran in a single process on a single card. They compute the same function, and the

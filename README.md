@@ -6,6 +6,12 @@ Hand-written Triton kernels for the **Qwen3.5-4B** decode path, measured against
 Every attempt is recorded — the wins and the losses — so that independent working
 sessions compound instead of rediscovering the same dead ends.
 
+**Start with the write-up:** [**RESULTS.md**](RESULTS.md) — the result first, then each
+finding mechanism-first, the method, and the loose ends. The same write-up is served as a
+page at **<https://lovemanna.github.io/deltaforge/>** (source in [`site/`](site/)).
+[`LEADERBOARD.md`](LEADERBOARD.md) has every hypothesis attempted, with its ratio, noise
+band, correctness and the rental it belongs to.
+
 ---
 
 ## Headline result
@@ -393,5 +399,7 @@ remote/run_remote.sh --session-id "$(date -u +%Y%m%dT%H%M%SZ)" --batch 001-calib
 | `src/deltaforge/batches.py` | The batch manifests, predictions registered in advance. |
 | `AGENT.md` | **Start here.** The single entry point for a working session. |
 | `LEADERBOARD.md` | The current champion, and every hypothesis attempted. |
+| `RESULTS.md` | The write-up: the result, the findings and the method, for a reader who was not here. |
+| `site/index.html` | The same write-up as one standalone page, served at [lovemanna.github.io/deltaforge](https://lovemanna.github.io/deltaforge/). |
 
 Licensed Apache-2.0, matching the target model.
