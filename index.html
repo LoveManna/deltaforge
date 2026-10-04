@@ -1,0 +1,1179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="Twelve measured batches of hand-written Triton kernels scored against torch.compile on the Qwen3.5-4B decode path - what beat the compiler, what lost, and the mechanism for each.">
+<meta property="og:type" content="article">
+<meta property="og:title" content="DeltaForge Results - where the compiler wins, and why">
+<meta property="og:description" content="Twelve measured batches of hand-written Triton kernels scored against torch.compile on the Qwen3.5-4B decode path - what beat the compiler, what lost, and the mechanism for each.">
+<meta name="twitter:card" content="summary">
+<style>
+/* Baseline reset, matching the environment the page was authored against. */
+:root { color-scheme: light; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; font: 14px system-ui, -apple-system, "Segoe UI", sans-serif; background: #fafaf9; }
+img { max-width: 100%; }
+[hidden] { display: none !important; }
+</style>
+<title>DeltaForge Results</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap">
+<style>
+  :root {
+    color-scheme: light;
+    --ground:        #f4f6f8;
+    --surface:       #ffffff;
+    --surface-sunk:  #eef1f4;
+    --ink:           #12171c;
+    --ink-2:         #4b545e;
+    --ink-3:         #7d8792;
+    --rule:          #dde2e8;
+    --rule-faint:    #e8ecf0;
+    --accent:        #0b6675;
+    --accent-ink:    #084f5b;
+    --accent-wash:   #e4eff1;
+    --good:          #0ca30c;
+    --critical:      #d03b3b;
+    --shadow:        0 1px 2px rgba(18,23,28,.05), 0 8px 24px -16px rgba(18,23,28,.18);
+
+    --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --ground:       #0d1013;
+      --surface:      #15191e;
+      --surface-sunk: #11151a;
+      --ink:          #eef1f4;
+      --ink-2:        #a9b3bd;
+      --ink-3:        #78828d;
+      --rule:         #262d35;
+      --rule-faint:   #1e242b;
+      --accent:       #4cb3c4;
+      --accent-ink:   #7ccfdd;
+      --accent-wash:  #16272c;
+      --good:         #0ca30c;
+      --critical:     #d03b3b;
+      --shadow:       0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --ground:       #0d1013;
+    --surface:      #15191e;
+    --surface-sunk: #11151a;
+    --ink:          #eef1f4;
+    --ink-2:        #a9b3bd;
+    --ink-3:        #78828d;
+    --rule:         #262d35;
+    --rule-faint:   #1e242b;
+    --accent:       #4cb3c4;
+    --accent-ink:   #7ccfdd;
+    --accent-wash:  #16272c;
+    --good:         #0ca30c;
+    --critical:     #d03b3b;
+    --shadow:       0 1px 2px rgba(0,0,0,.4), 0 10px 28px -18px rgba(0,0,0,.8);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--ground);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap {
+    max-width: 1060px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 0;
+  }
+  @media (max-width: 560px) { .wrap { padding-inline: 16px; } }
+
+  /* ---------- top bar ---------- */
+  .topbar {
+    position: sticky;
+    top: env(safe-area-inset-top, 0px);
+    z-index: 20;
+    background: color-mix(in srgb, var(--ground) 88%, transparent);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--rule);
+  }
+  .topbar .wrap {
+    display: flex; align-items: center; gap: 16px;
+    min-height: 48px; flex-wrap: wrap;
+  }
+  .brand {
+    font-family: var(--mono); font-weight: 600; font-size: 13px;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--ink);
+    margin-right: auto;
+  }
+  .topnav { display: flex; gap: 14px; flex-wrap: wrap; padding-block: 6px; }
+  .topnav a {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+    text-decoration: none; letter-spacing: .02em;
+  }
+  .topnav a:hover { color: var(--accent); }
+  .topnav a:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+
+  /* ---------- masthead ---------- */
+  header.masthead { padding-block: 48px 36px; border-bottom: 1px solid var(--rule); }
+  .eyebrow {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent); margin: 0 0 14px;
+  }
+  h1 {
+    font-family: var(--sans); font-weight: 600; font-size: clamp(30px, 6vw, 46px);
+    line-height: 1.08; letter-spacing: -.02em; margin: 0 0 16px; text-wrap: balance;
+    max-width: 22ch;
+  }
+  .standfirst {
+    font-family: var(--serif); font-size: clamp(17px, 2.6vw, 19px); line-height: 1.55;
+    color: var(--ink-2); max-width: 62ch; margin: 0 0 26px;
+  }
+  .standfirst code { font-size: .92em; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-2);
+    background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 999px; padding: 4px 11px; font-variant-numeric: tabular-nums;
+  }
+  .chip b { color: var(--ink); font-weight: 600; }
+
+  /* ---------- sections ---------- */
+  section { padding-block: 44px; border-bottom: 1px solid var(--rule); }
+  section:last-of-type { border-bottom: 0; }
+  .sec-head { display: flex; gap: 14px; align-items: baseline; margin-bottom: 20px; }
+  .sec-num {
+    font-family: var(--mono); font-size: 12px; color: var(--ink-3);
+    letter-spacing: .08em; padding-top: 6px; flex: none;
+  }
+  h2 {
+    font-family: var(--sans); font-weight: 600; font-size: clamp(21px, 3.4vw, 27px);
+    letter-spacing: -.01em; line-height: 1.2; margin: 0; text-wrap: balance;
+  }
+  h3 {
+    font-family: var(--sans); font-weight: 600; font-size: 17px; line-height: 1.3;
+    margin: 34px 0 10px; text-wrap: balance;
+  }
+  h3 .h3num { font-family: var(--mono); font-size: 13px; color: var(--accent); margin-right: 8px; }
+  p { font-family: var(--serif); font-size: 17px; line-height: 1.6; max-width: 66ch; margin: 0 0 14px; color: var(--ink); }
+  p.tight { margin-bottom: 8px; }
+  .lede p { font-size: clamp(17px, 2.5vw, 19px); max-width: 64ch; }
+  strong, b { font-weight: 600; }
+  em { font-style: italic; }
+  code, .num, kbd {
+    font-family: var(--mono); font-size: .88em;
+    background: var(--surface-sunk); border: 1px solid var(--rule-faint);
+    border-radius: 3px; padding: .08em .3em;
+  }
+  p code { white-space: nowrap; }
+  .num { background: none; border: 0; padding: 0; font-variant-numeric: tabular-nums; }
+
+  ul, ol { max-width: 66ch; padding-left: 20px; margin: 0 0 16px; }
+  li { font-family: var(--serif); font-size: 17px; line-height: 1.58; margin-bottom: 9px; }
+  li::marker { color: var(--ink-3); }
+
+  /* ---------- stat tiles ---------- */
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; margin: 26px 0 6px; }
+  @media (max-width: 720px) { .tiles { grid-template-columns: 1fr; } }
+  .tile {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 18px; box-shadow: var(--shadow);
+  }
+  .tile .k {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-3); margin-bottom: 10px;
+  }
+  .tile .v {
+    font-family: var(--sans); font-weight: 600; font-size: 34px; line-height: 1;
+    letter-spacing: -.02em; color: var(--ink); margin-bottom: 8px;
+  }
+  .tile .v small { font-size: 17px; font-weight: 500; color: var(--ink-2); letter-spacing: 0; }
+  .tile .d { font-family: var(--serif); font-size: 14.5px; line-height: 1.45; color: var(--ink-2); }
+
+  /* ---------- pull quote ---------- */
+  .pull {
+    border-left: 3px solid var(--accent); background: var(--accent-wash);
+    padding: 16px 18px; margin: 22px 0; border-radius: 0 5px 5px 0;
+  }
+  .pull p { font-family: var(--sans); font-size: 16.5px; line-height: 1.5; margin: 0; max-width: 60ch; }
+
+  .note {
+    font-family: var(--sans); font-size: 14px; line-height: 1.5; color: var(--ink-2);
+    border-top: 1px solid var(--rule-faint); padding-top: 10px; margin-top: 14px; max-width: 72ch;
+  }
+
+  /* ---------- tables ---------- */
+  .tscroll { overflow-x: auto; margin: 18px 0 6px; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  caption {
+    caption-side: top; text-align: left; font-family: var(--mono); font-size: 11.5px;
+    letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3);
+    padding: 12px 14px 0;
+  }
+  th, td { padding: 9px 14px; text-align: left; border-bottom: 1px solid var(--rule-faint); vertical-align: top; }
+  thead th {
+    font-family: var(--mono); font-size: 11.5px; font-weight: 500; letter-spacing: .05em;
+    text-transform: uppercase; color: var(--ink-3); background: var(--surface-sunk);
+    border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td { font-family: var(--sans); color: var(--ink-2); }
+  td:first-child { color: var(--ink); }
+  td.n, th.n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.n { color: var(--ink); }
+  td.k, th.k { font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
+  td b { color: var(--ink); }
+  .tag {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+    border-radius: 3px; padding: 2px 6px; white-space: nowrap; border: 1px solid;
+  }
+  .tag.win  { color: var(--good);     border-color: color-mix(in srgb, var(--good) 40%, transparent);     background: color-mix(in srgb, var(--good) 9%, transparent); }
+  .tag.loss { color: var(--critical); border-color: color-mix(in srgb, var(--critical) 40%, transparent); background: color-mix(in srgb, var(--critical) 9%, transparent); }
+  .tag.flat { color: var(--ink-2);    border-color: var(--rule);                                          background: var(--surface-sunk); }
+
+  /* ---------- figures ---------- */
+  figure {
+    margin: 24px 0; background: var(--surface); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 18px; box-shadow: var(--shadow);
+  }
+  figcaption { font-family: var(--sans); font-size: 13.5px; line-height: 1.5; color: var(--ink-2); margin-top: 14px; }
+  figcaption b { color: var(--ink); }
+  .fig-title { font-family: var(--sans); font-weight: 600; font-size: 15px; margin-bottom: 2px; }
+  .fig-sub { font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; color: var(--ink-3); text-transform: uppercase; margin-bottom: 16px; }
+
+  /* share bars (byte budget) */
+  .bars { display: grid; gap: 7px; }
+  .bar-row { display: grid; grid-template-columns: minmax(130px, 200px) minmax(0,1fr) 68px; gap: 12px; align-items: center; }
+  @media (max-width: 620px) { .bar-row { grid-template-columns: minmax(0,1fr) 62px; } .bar-row .track-cell { grid-column: 1 / -1; order: 3; } }
+  .bar-label { font-family: var(--sans); font-size: 13.5px; color: var(--ink-2); min-width: 0; }
+  .track-cell { min-width: 0; }
+  .track { background: var(--surface-sunk); border-radius: 2px; height: 16px; position: relative; overflow: hidden; }
+  .fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 0 2px 2px 0; }
+  .bar-val { font-family: var(--mono); font-size: 12.5px; text-align: right; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  /* dot + whisker plot */
+  .plot { position: relative; }
+  .rows { display: grid; gap: 4px; }
+  .prow { display: grid; grid-template-columns: minmax(118px, 210px) minmax(0,1fr) 112px; gap: 12px; align-items: center; }
+  @media (max-width: 700px) {
+    .prow { grid-template-columns: minmax(0,1fr) 104px; }
+    .prow .lane-cell { grid-column: 1 / -1; order: 3; }
+  }
+  .prow .slot { font-family: var(--mono); font-size: 12px; color: var(--ink-2); min-width: 0; overflow-wrap: anywhere; }
+  .lane-cell { min-width: 0; }
+  .lane { position: relative; height: 24px; }
+  .lane .laneline { position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--rule-faint); }
+  .lane .zero { position: absolute; top: -2px; bottom: -2px; left: 27.27%; width: 1px; background: var(--ink-3); opacity: .45; }
+  .whisk { position: absolute; top: 50%; transform: translateY(-50%); height: 2px; background: var(--ink-3); opacity: .55; border-radius: 1px; }
+  .mark {
+    position: absolute; top: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
+    border-radius: 50%; background: var(--ink-2); border: 2px solid var(--surface);
+  }
+  .mark.win  { background: var(--good); }
+  .mark.loss { background: var(--critical); border-radius: 2px; transform: rotate(45deg); }
+  .mark.ref  { background: var(--surface); border: 2px solid var(--ink-2); }
+  .prow .val { font-family: var(--mono); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; }
+  .prow .val span { color: var(--ink-3); font-size: 11.5px; }
+  .axis { position: relative; height: 22px; margin-top: 4px; }
+  .axis .tick { position: absolute; transform: translateX(-50%); font-family: var(--mono); font-size: 11px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+  .axis-pad { display: grid; grid-template-columns: minmax(118px, 210px) minmax(0,1fr) 112px; gap: 12px; }
+  @media (max-width: 700px) { .axis-pad { grid-template-columns: 1fr; } .axis-pad .spacer { display: none; } }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 14px; }
+  .legend span { font-family: var(--mono); font-size: 11.5px; color: var(--ink-2); display: inline-flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .swatch.win { background: var(--good); }
+  .swatch.loss { background: var(--critical); border-radius: 2px; }
+  .swatch.ref { background: transparent; border: 2px solid var(--ink-2); }
+
+  /* diverging pair (one variable) */
+  .dv { display: grid; gap: 10px; }
+  .dv-row { display: grid; grid-template-columns: minmax(130px, 230px) minmax(0,1fr) 150px; gap: 12px; align-items: center; }
+  @media (max-width: 680px) { .dv-row { grid-template-columns: 1fr; } .dv-row .dv-val { text-align: left; } }
+  .dv-label { font-family: var(--mono); font-size: 12px; color: var(--ink-2); }
+  .dv-track { position: relative; height: 30px; background: var(--surface-sunk); border-radius: 3px; }
+  .dv-center { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--ink-3); }
+  .dv-fill { position: absolute; top: 5px; bottom: 5px; border-radius: 2px; }
+  .dv-fill.loss { background: color-mix(in srgb, var(--critical) 82%, transparent); }
+  .dv-fill.win  { background: color-mix(in srgb, var(--good) 82%, transparent); }
+  .dv-val { font-family: var(--mono); font-size: 12.5px; color: var(--ink); font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
+  .dv-val span { display: block; font-size: 11px; color: var(--ink-3); }
+
+  /* meter for scorecard */
+  .meter { display: inline-block; width: 72px; height: 7px; background: var(--surface-sunk); border-radius: 4px; position: relative; vertical-align: middle; margin-right: 8px; }
+  .meter i { position: absolute; inset: 0 auto 0 0; background: var(--accent); border-radius: 4px; }
+
+  /* cards */
+  .cards { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; margin: 20px 0; }
+  @media (max-width: 720px) { .cards { grid-template-columns: 1fr; } }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 16px 18px; }
+  .card h4 {
+    font-family: var(--sans); font-size: 14px; font-weight: 600; margin: 0 0 8px;
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .card h4 span { font-family: var(--mono); font-size: 11px; color: var(--accent); letter-spacing: .06em; text-transform: uppercase; }
+  .card p { font-size: 15px; margin: 0 0 8px; max-width: none; }
+  .card p:last-child { margin-bottom: 0; }
+
+  pre {
+    background: var(--surface-sunk); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 14px; overflow-x: auto; margin: 18px 0;
+  }
+  pre code { background: none; border: 0; padding: 0; font-size: 12.5px; line-height: 1.7; color: var(--ink-2); }
+  pre code .c { color: var(--ink-3); }
+
+  footer { padding-block: 32px 44px; }
+  footer p { font-family: var(--mono); font-size: 12px; color: var(--ink-3); max-width: none; }
+
+  #tip {
+    position: fixed; z-index: 50; pointer-events: none; opacity: 0;
+    background: var(--ink); color: var(--ground); font-family: var(--mono); font-size: 11.5px;
+    padding: 6px 9px; border-radius: 4px; max-width: 260px; line-height: 1.45;
+    transition: opacity .1s linear;
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<div class="topbar">
+  <div class="wrap">
+    <div class="brand">DeltaForge</div>
+    <nav class="topnav">
+      <a href="#summary">Summary</a>
+      <a href="#setup">Setup</a>
+      <a href="#bytes">Bytes</a>
+      <a href="#results">Results</a>
+      <a href="#findings">Findings</a>
+      <a href="#method">Method</a>
+      <a href="#open">Open</a>
+    </nav>
+  </div>
+</div>
+
+<header class="masthead">
+  <div class="wrap">
+    <p class="eyebrow">Qwen3.5-4B decode path · twelve measured batches</p>
+    <h1>Where the compiler wins, and why</h1>
+    <p class="standfirst">
+      Hand-written Triton kernels for the Qwen3.5-4B decode path, scored against
+      <code>torch.compile(mode="max-autotune")</code> running an identical pure-PyTorch reference.
+      Every attempt is recorded — the wins and the losses — with the mechanism that produced it.
+    </p>
+    <div class="chips">
+      <span class="chip"><b>12</b> batches</span>
+      <span class="chip"><b>56</b> GPU rentals</span>
+      <span class="chip"><b>$11.49</b> billed compute</span>
+      <span class="chip"><b>1621</b> billed GPU minutes</span>
+      <span class="chip">2026-09-03 → 2026-10-02</span>
+    </div>
+  </div>
+</header>
+
+<section id="summary">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">00</div>
+      <h2>The result, in short</h2>
+    </div>
+    <div class="lede">
+      <p>
+        <b>The two shipped champions, composed, run this model's decode 1.2179× faster than
+        <code>torch.compile(mode="max-autotune")</code></b> — 21.8% off the step, ~19% after correcting for
+        that card's calibration offset — against a baseline already moving bytes at
+        <b>65.7–71.5% of an RTX 5090's vendor peak bandwidth</b>, which is the hard part: there was very
+        little room above it to win.
+        They are a four-tap causal convolution at <b>1.0765–1.0778</b>, bit-identical to the reference at
+        264/264 tokens and 0.00000 nats, and a group-128 int4 tied LM head at <b>1.0251</b> (IQR 0.0104) —
+        and both were obtained by <b>deleting my hand-written Triton kernel</b> and expressing the same
+        arithmetic as plain torch operations, so that the compiler generates the GPU code instead of me.
+        They won because an opaque <code>torch.library.custom_op</code> is a <b>fusion barrier</b> that costs
+        its own kernel plus everything inductor can no longer fuse across it: the identical, bit-identical
+        convolution measured <b>0.7854 behind the custom op against 1.0765 as fusible ops</b> — one variable,
+        37% — because the barrier drove buffer allocations from 59 to 190 and made the linear-attention state
+        reduction run twice per layer, 24 times per token.
+        At the LM head the same deletion beat my own kernel <b>by 3.2% in the same process on the same
+        card</b>, because a custom op forfeits the RMSNorm fusion inductor welds into the matmul <em>and</em>
+        the register-level 4-bit unpack that was the kernel's whole claim to necessity is something the
+        compiler emits inline — the two being the same program is not an assumption: layer 2 returned 0.9318
+        agreement and 0.01674 nats for both, digit for digit, on six rentals.
+        Every number here came off a rented card with its outcome and magnitude <b>registered in a manifest
+        committed before the GPU existed</b> — 12 batches, 56 rentals, $11.49, an identity control that can
+        void a batch, two correctness gates, and 56 of 56 instances destroyed.
+      </p>
+    </div>
+
+    <div class="tiles">
+      <div class="tile">
+        <div class="k">Champion pair vs. compiler</div>
+        <div class="v">1.2179<small>×</small></div>
+        <div class="d">The two shipped champions composed, rental 56 — the largest raw margin recorded here. Its card's identity slot carried +2.36%, so read ~1.19 corrected.</div>
+      </div>
+      <div class="tile">
+        <div class="k">Cost of one fusion barrier</div>
+        <div class="v">37<small>%</small></div>
+        <div class="d">Identical arithmetic, bit-identical outputs: 0.7854 behind a <code>custom_op</code> against 1.0765 as fusible torch ops, same card, minutes apart.</div>
+      </div>
+      <div class="tile">
+        <div class="k">What the baseline already reaches</div>
+        <div class="v">65.7–71.5<small>%</small></div>
+        <div class="d">Of an RTX 5090's 1792 GB/s vendor peak, at 6.70–7.30 ms/token. The compiler is two thirds of the way to the memory wall before anyone writes a kernel.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">01</div>
+      <h2>What was measured, and against what</h2>
+    </div>
+
+    <div class="tscroll">
+      <table>
+        <tbody>
+          <tr><td class="k">Model</td><td><code>Qwen/Qwen3.5-4B</code>, text decoder only — ~4.21 B params; vision tower and MTP head excluded in <code>weights.py</code>, which reports every tensor it skips</td></tr>
+          <tr><td class="k">Workload</td><td>batch 1, context 2048, 128 decoded tokens</td></tr>
+          <tr><td class="k">Baseline</td><td><code>src/deltaforge/reference.py</code> — pure PyTorch, <b>no custom kernels of any kind</b> — under <code>torch.compile(mode="max-autotune")</code></td></tr>
+          <tr><td class="k">Score</td><td><code>median(t_compiled / t_candidate)</code> over interleaved rounds; greater than 1 beats the compiler</td></tr>
+          <tr><td class="k">Noise band</td><td>interquartile spread of the per-round ratios. <b>A margin smaller than its IQR is not a win.</b></td></tr>
+          <tr><td class="k">Hardware</td><td>47 RTX 5090 rentals, 9 RTX 4090; torch 2.11.0+cu128, Triton 3.6.0</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>The baseline is deliberately mine</h3>
+    <p>
+      HuggingFace's own Qwen3.5 modeling code dispatches Gated DeltaNet to hand-written Triton via
+      <code>flash-linear-attention</code>, and its attention to FlashAttention. Benchmarking against that
+      would compare hand-tuned Triton to hand-tuned Triton while claiming to beat a compiler, and a
+      knowledgeable reader would catch it in a minute. <code>transformers</code> is used only to load weights,
+      tokenize, and act as a correctness oracle — never as the baseline. For the same reason
+      <code>reference.py</code> never calls <code>scaled_dot_product_attention</code>: SDPA <em>is</em> the
+      fused kernel under test. <code>reference_purity_test.py</code> enforces that line in CI.
+    </p>
+
+    <div class="pull">
+      <p>
+        <code>torch.compile(mode="max-autotune")</code> runs this decode path at
+        <b>6.70–7.30 ms/token — 1177–1282 GB/s, 65.7–71.5% of an RTX 5090's 1792 GB/s vendor peak</b>,
+        against a 4.79 ms/token roofline on the bytes it actually moves. That is the project's most
+        reusable number, and it is a property of the compiler, not of any kernel here.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="bytes">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">02</div>
+      <h2>Arithmetic before kernels</h2>
+    </div>
+    <p>
+      <code>docs/roofline.py</code> prints where every byte of one decode step goes. It needs no GPU and no
+      checkpoint, and it decides what <em>can</em> win — a hypothesis cannot beat the share of bytes it touches.
+    </p>
+
+    <figure>
+      <div class="fig-title">Per-token traffic, by what moves it</div>
+      <div class="fig-sub">Share of 9158.23 MB/token · linear scale · one decode step at batch 1</div>
+      <div class="bars" id="bytebars">
+        <div class="bar-row">
+          <div class="bar-label">Weights, streamed once</div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:100%" data-tip="Weights: 8411.51 MB/token — 91.846% of per-token traffic"></div></div></div>
+          <div class="bar-val">91.85%</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">GQA <code>repeat_interleave</code></div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:6.78%" data-tip="GQA head expansion: 570.43 MB/token — 6.229%. Inductor folds it into index arithmetic and never materialises it."></div></div></div>
+          <div class="bar-val">6.23%</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Recurrent state, read + write</div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:1.20%" data-tip="Recurrent state: 100.66 MB/token — 1.099%"></div></div></div>
+          <div class="bar-val">1.10%</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">KV cache read</div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:0.85%;min-width:2px" data-tip="KV cache read: 71.30 MB/token — 0.779%"></div></div></div>
+          <div class="bar-val">0.78%</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">SwiGLU intermediates</div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:0.03%;min-width:2px" data-tip="SwiGLU intermediates: 2.36 MB/token — 0.026%"></div></div></div>
+          <div class="bar-val">0.026%</div>
+        </div>
+        <div class="bar-row">
+          <div class="bar-label">Norm + residual</div>
+          <div class="track-cell"><div class="track"><div class="fill" style="width:0.02%;min-width:2px" data-tip="Norm + residual: 1.64 MB/token — 0.018%"></div></div></div>
+          <div class="bar-val">0.018%</div>
+        </div>
+      </div>
+      <figcaption>
+        Batch-1 decode is a weight-streaming problem. Hand-writing a fused RMSNorm has a ceiling of
+        <b>0.018%</b> — below the harness's own noise band — so <b>five hypotheses are in the graveyard with
+        the arithmetic that closed them</b>, at a cost of zero GPU minutes.
+      </figcaption>
+    </figure>
+
+    <h3>Then I read the generated code, which three rentals had skipped</h3>
+    <ul>
+      <li><b>Inductor already eliminates the GQA head expansion</b> — <code>x1 // 4</code> indexing on the
+        unexpanded KV cache, never materialised. That closes the backlog's second-largest hypothesis
+        (6.23% of per-token bytes) <b>without a kernel</b>, and corrects the baseline's true traffic from
+        9158.23 to <b>8587.80 MB/token</b>.</li>
+      <li><b>There is no cuBLAS in this decode path.</b> <code>extern_kernels</code> is called for convolution
+        and nothing else: inductor generates Triton for every matmul and welds the residual add and the
+        RMSNorm <em>into</em> them. A hand-written GEMV gives all of that fusion up — 248 times per token.</li>
+      <li><b>The compiled baseline runs with no CUDA graphs at all</b>, because the causal conv mutates its
+        cache in place — 0 recorded and 128 skipped on every slot of rental 40.</li>
+    </ul>
+    <p>
+      That reframed the exercise. The compiler is two thirds of the way to the memory wall <em>and</em> fusing
+      everything around the matmuls it emits, so the only large win left is to move fewer bytes — and taking
+      a matmul away from inductor has a price that is measurable.
+    </p>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">03</div>
+      <h2>Headline results</h2>
+    </div>
+    <p><b>Two champions, and neither contains a line of Triton.</b></p>
+
+    <div class="tscroll">
+      <table>
+        <caption>Current champions</caption>
+        <thead>
+          <tr><th></th><th class="k">045-inline-causal-conv</th><th class="k">056-int4-head-torch-dequant</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Replaces</td><td class="k">causal_conv</td><td class="k">decode_step</td></tr>
+          <tr><td>Median ratio</td><td class="n"><b>1.0765</b> r45 · <b>1.0650</b> r46 · <b>1.0778</b> r56</td><td class="n"><b>1.0171</b> r46 · 0.9971 r56 · <b>1.0251</b> r57</td></tr>
+          <tr><td>IQR</td><td class="n">0.0552 / 0.0213 / 0.0322</td><td class="n">0.0130 / 0.0230 / <b>0.0104</b></td></tr>
+          <tr><td>Correctness</td><td><b>bit-identical</b> — 264/264 tokens, 0.00000 nats</td><td>0.9318 top-1 agreement, 0.01674 nats</td></tr>
+          <tr><td>Best candidate bandwidth</td><td class="n"><b>1254 GB/s</b> — 70% of peak</td><td class="n">1068 GB/s</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>
+      <b>Composed, they are the largest margin this project has recorded: <code>068-champion-pair</code> =
+      1.2179</b> (rental 56), and <b>16% above the product of its two ingredients measured alone in the same
+      process</b> (1.0778 × 0.9971 = 1.0747). Read with two caveats the leaderboard states before it declines
+      to promote on the number: that card's identity slot carried <b>+2.36%</b>, and the comparison against
+      the ingredients is cross-slot on a card whose reference column moved 423 → 432 GB/s between them.
+    </p>
+
+    <figure>
+      <div class="fig-title">One card, one process, fifteen scoring rounds</div>
+      <div class="fig-sub">Rental 46 · RTX 5090 · reference at 1214 GB/s · mark = median ratio, bar = interquartile spread</div>
+      <div class="plot">
+        <div class="rows" id="plotrows">
+          <div class="prow">
+            <div class="slot">000-identity</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:26.05%;width:10.45%"></div>
+              <div class="mark ref" style="left:31.27%" data-tip="000-identity — installs nothing. 1.0044, IQR 0.0115. Calibrated: every other number in the batch depends on this one landing at 1.00."></div>
+            </div></div>
+            <div class="val">1.0044 <span>±0.0115</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">053-inline-causal-conv</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:76.68%;width:19.36%"></div>
+              <div class="mark win" style="left:86.36%" data-tip="053-inline-causal-conv — win. 1.0650, IQR 0.0213. Bit-identical, 264/264 at 0.00000 nats; candidate column 1254 GB/s."></div>
+            </div></div>
+            <div class="val">1.0650 <span>±0.0213</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">054-int4-head <span style="color:var(--ink-3)">(ours, Triton)</span></div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:9.23%;width:9.00%"></div>
+              <div class="mark loss" style="left:13.73%" data-tip="054-int4-head — loss. 0.9851, IQR 0.0099. The hand-written group-128 int4 GEMV behind a custom_op; retired after this slot."></div>
+            </div></div>
+            <div class="val">0.9851 <span>±0.0099</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">056-int4-head-torch-dequant</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:36.91%;width:11.82%"></div>
+              <div class="mark win" style="left:42.82%" data-tip="056-int4-head-torch-dequant — win. 1.0171, IQR 0.0130. The same function as 054 with no kernel of ours at all; registered in advance as a predicted loss."></div>
+            </div></div>
+            <div class="val">1.0171 <span>±0.0130</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">057-static-decode-cache</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:35.32%;width:11.18%"></div>
+              <div class="mark win" style="left:40.91%" data-tip="057-static-decode-cache — win. 1.0150, IQR 0.0123. First resolved measurement in three attempts: +1.5% alone, +0.0% on top of the fused conv."></div>
+            </div></div>
+            <div class="val">1.0150 <span>±0.0123</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">058-conv-and-head</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:54.82%;width:6.55%"></div>
+              <div class="mark win" style="left:58.09%" data-tip="058-conv-and-head — win. 1.0339, IQR 0.0072. 7.251 ms/token."></div>
+            </div></div>
+            <div class="val">1.0339 <span>±0.0072</span></div>
+          </div>
+          <div class="prow">
+            <div class="slot">060-conv-head-cache</div>
+            <div class="lane-cell"><div class="lane">
+              <div class="laneline"></div>
+              <div class="zero"></div>
+              <div class="whisk" style="left:52.36%;width:7.64%"></div>
+              <div class="mark win" style="left:56.18%" data-tip="060-conv-head-cache — win. 1.0318, IQR 0.0084. The same 7.251 ms/token as 058 from a separate run: dispatch savings do not add."></div>
+            </div></div>
+            <div class="val">1.0318 <span>±0.0084</span></div>
+          </div>
+        </div>
+        <div class="axis-pad">
+          <div class="spacer"></div>
+          <div class="axis">
+            <div class="tick" style="left:9.09%">0.98</div>
+            <div class="tick" style="left:27.27%">1.00</div>
+            <div class="tick" style="left:45.45%">1.02</div>
+            <div class="tick" style="left:63.64%">1.04</div>
+            <div class="tick" style="left:81.82%">1.06</div>
+            <div class="tick" style="left:100%">1.08</div>
+          </div>
+          <div class="spacer"></div>
+        </div>
+      </div>
+      <div class="legend">
+        <span><i class="swatch win"></i> win — beat the incumbent by more than its IQR</span>
+        <span><i class="swatch loss"></i> loss</span>
+        <span><i class="swatch ref"></i> identity slot — installs nothing, must measure 1.00</span>
+      </div>
+      <figcaption>
+        Everything above shares one card, one process and one compile of the reference, so the slots are
+        comparable to each other in a way that cross-rental numbers are not. <b>Fifteen scoring rounds instead
+        of five</b> is what made these resolvable: it took the worst IQR in a batch from 0.1511 to 0.0213 and
+        <code>inconclusive</code> slots from six of eleven to one of ten, on the same host drifting the same way.
+      </figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="findings">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">04</div>
+      <h2>Findings</h2>
+    </div>
+
+    <h3><span class="h3num">4.1</span> An opaque custom op is a fusion barrier, and the bill is invisible at the call site</h3>
+    <p>
+      The cleanest controlled pair in the project. <code>044-fused-causal-conv</code> and
+      <code>045-inline-causal-conv</code> compute <b>the same function</b> — both bit-identical to the
+      reference, layer-1 relative error <code>0.0</code>, layer-2 264/264 at 0.00000 nats — and differ only in
+      whether the four taps reach inductor as a <code>torch.library.custom_op</code> or as torch operations it
+      may fuse.
+    </p>
+
+    <figure>
+      <div class="fig-title">One variable: how the same four taps reach the compiler</div>
+      <div class="fig-sub">Rental 45 · same card, same process, minutes apart · bars measured from the compiled baseline at 1.00</div>
+      <div class="dv">
+        <div class="dv-row">
+          <div class="dv-label">044 — behind <code>custom_op</code></div>
+          <div class="dv-track">
+            <div class="dv-center" style="left:70.6%"></div>
+            <div class="dv-fill loss" style="left:7.5%;width:63.1%" data-tip="044-fused-causal-conv — loss. Ratio 0.7854, IQR 0.0446, +1.919 ms/token. Bit-identical to the reference."></div>
+          </div>
+          <div class="dv-val">0.7854 <span>+1.919 ms/token</span></div>
+        </div>
+        <div class="dv-row">
+          <div class="dv-label">045 — as fusible torch ops</div>
+          <div class="dv-track">
+            <div class="dv-center" style="left:70.6%"></div>
+            <div class="dv-fill win" style="left:70.6%;width:22.5%" data-tip="045-inline-causal-conv — win, and champion. Ratio 1.0765, IQR 0.0552, −0.727 ms/token. Candidate column 1219 GB/s."></div>
+          </div>
+          <div class="dv-val">1.0765 <span>−0.727 ms/token</span></div>
+        </div>
+      </div>
+      <figcaption>The hairline in each track is the compiled baseline at 1.00; bars run left for slower, right
+        for faster. <b>One variable, 37%</b> — and the slower arm is the one with the hand-written kernel in it.</figcaption>
+    </figure>
+
+    <p>
+      The <code>output_code</code> dump gives the mechanism rather than a story: a barrier forces inductor to
+      materialise the op's inputs and outputs (<b>59 → 190 buffer allocations</b> per decode step) and it splits
+      a producer chain it had been fusing, then <em>recomputes</em> the shared prologue rather than reading the
+      buffer it just wrote — the linear-attention state reduction runs <b>twice per layer, 24 times per token</b>
+      (298 reductions in the reference, 297 in the inline candidate, <b>321</b> with the custom op).
+    </p>
+    <p>Two corollaries worth as much as the number:</p>
+    <ul>
+      <li><b>It settled a 20% regression that two earlier rentals had attributed to composing two kernels.</b>
+        There was no composition effect: the conv loses 21% <em>alone</em>, and composed with the int4 head it
+        loses 20% — <code>050</code> − <code>044</code> = +0.011, inside both IQRs. Nobody had measured the
+        ingredient before the composition.</li>
+      <li><b>The allocation count was a red herring.</b> An earlier rental had ranked 59 → 190 allocations as a
+        suspect beside a 19% loss. The winning candidate allocates <b>232 and wins</b>. The duplicated
+        reduction is the mechanism; the allocation count is a symptom.</li>
+    </ul>
+
+    <h3><span class="h3num">4.2</span> The compiler beat the hand-written kernel at the one site I had ever won on</h3>
+    <p>
+      Three registrations of <b>one program</b> — the group-128 int4 dequantise-GEMV on the tied LM head — ran
+      in a single process on a single card. They compute the same function, and the record proves it: layer 2
+      returned <b>0.9318 agreement and 0.01674 nats</b> for every one of them, as it has on six rentals.
+    </p>
+    <div class="tscroll">
+      <table>
+        <thead><tr><th class="k">Slot</th><th>How the program reaches <code>torch.compile</code></th><th class="n">Ratio</th><th class="n">IQR</th></tr></thead>
+        <tbody>
+          <tr><td class="k">054-int4-head</td><td>a hand-written Triton kernel behind <code>torch.library.custom_op</code></td><td class="n"><b>0.9851</b></td><td class="n">0.0099</td></tr>
+          <tr><td class="k">055-int4-head-triton-op</td><td>the same kernel behind <code>torch.library.triton_op</code></td><td class="n"><span class="tag flat">errored</span></td><td class="n">—</td></tr>
+          <tr><td class="k">056-int4-head-torch-dequant</td><td>torch operations, no kernel of mine at all</td><td class="n"><b>1.0171</b></td><td class="n">0.0130</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <b>The slot that won was registered in advance as a predicted loss</b>, on the argument that inductor
+      would materialise the head's 1271.40 MB/token bf16 weight. It does not. Its final kernel is one reduction
+      carrying <code>__rshift__</code>, <code>bitwise_and</code>, the <code>mm</code>, the final RMSNorm and the
+      residual add <b>together</b> — the whole grouped nibble unpack fused into the matmul prologue — and the
+      graph holds <b>no weight-sized buffer anywhere</b>, allocating 48 buffers where the reference allocates 59.
+    </p>
+    <p>
+      So the hand-written kernel lost twice over: a custom op cannot keep the RMSNorm fusion the reference welds
+      into the <code>lm_head</code> matmul, <b>and</b> the register-level unpack that was its whole claim to
+      necessity is something the compiler emits inline. <code>tiled_int4_head</code> is retired.
+    </p>
+    <p class="note">
+      <code>055</code> is a recorded negative with engineering value: <code>torch.library.triton_op</code> does
+      not trace this GEMV on torch 2.11 — dynamo ran the body under <code>FakeTensorMode</code> and the launch
+      reached <code>.data_ptr()</code> instead of being intercepted by <code>wrap_triton</code>. It cost 34 s of
+      GPU time. The CPU suite could assert the op was <em>registered</em> and structurally could not assert it
+      <em>traces</em>, because tracing needs Triton.
+    </p>
+
+    <h3><span class="h3num">4.3</span> The compiler's dequantisation fusion is site-dependent</h3>
+    <p>
+      The obvious generalisation of 4.2 — "inductor fuses grouped dequantisation into a GEMV prologue" — is
+      <b>false</b>, and the dump refuted it before a kernel was written. At the 96 MLP projections inductor
+      materialises the dequantised weight as a full <code>(2560, 9216)</code> <b>fp32</b> tensor — 94.37 MB a
+      site — in a <em>pointwise</em> kernel carrying the unpack, then runs the matmul as a <b>separate</b>
+      reduction that reads the buffer back. Zero <code>extern_kernels.mm</code> anywhere: this is a chosen
+      materialisation, not a cuBLAS fallback.
+    </p>
+    <div class="tscroll">
+      <table>
+        <caption>Weight buffers counted per decode step, from the candidate's own graph</caption>
+        <thead><tr><th class="k">Dequantised operand</th><th>The sites it belongs to</th><th class="n">Buffers / graph</th><th class="n">Of how many sites</th></tr></thead>
+        <tbody>
+          <tr><td class="k">(1, 2560, 9216) fp32</td><td><code>gate_proj</code> / <code>up_proj</code>, K=2560 N=9216</td><td class="n"><b>16</b></td><td class="n">64</td></tr>
+          <tr><td class="k">(1, 9216, 2560) fp32</td><td><code>down_proj</code>, K=9216 N=2560</td><td class="n"><b>1</b></td><td class="n">32</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <b>17 of 96 sites.</b> That also inverts the ranked prediction that cheaper, narrower operands would
+      materialise <em>more</em>: the wide-output sites carry nearly all the buffers and <code>down_proj</code>
+      carries one. And the prize this implied — int4 on 52.75% of per-token bytes — had been registered as a
+      predicted win <b>twice</b> and declined unexecuted both times on a precondition gate. Run ungated, it is a
+      <b>measured loss at 0.6390, IQR 0.0060</b>, the tightest band in its batch; the same construction taken to
+      200 sites and 97.85% of the bytes returned <b>0.6150</b>.
+    </p>
+
+    <h3><span class="h3num">4.4</span> The GEMV was grid-starved, not structurally slow — and an aggregate could not show it</h3>
+    <p>
+      Two batches installed a hand-written GEMV on all 248 layer projections at once and lost by 5×
+      (0.2801, then <b>0.1934 after a rewrite aimed at the diagnosed cause</b>). Measured per site, the same
+      kernel family gives:
+    </p>
+    <div class="tscroll">
+      <table>
+        <thead><tr><th>Where the same kernel family was installed</th><th class="n">Achieved bandwidth</th></tr></thead>
+        <tbody>
+          <tr><td>naive GEMV, 248 layer projections</td><td class="n">319 GB/s</td></tr>
+          <tr><td>tiled GEMV (<code>tl.dot</code>, K-major, split-K), 248 layer projections</td><td class="n">228 GB/s</td></tr>
+          <tr><td>int4, <b>the LM head alone</b></td><td class="n"><b>656 GB/s</b></td></tr>
+          <tr><td>int8, <b>the LM head alone</b></td><td class="n"><b>847 GB/s</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      At BLOCK_N=64 the head launches <b>3880 programs</b> on a 170-SM card; <code>in_proj_a</code> is 32
+      channels wide and launches <b>four</b>. Same kernel, same flop padding, same split-K, opposite result.
+      <b>An aggregate number over 248 sites could not distinguish a slow kernel from a starved grid</b> — which
+      is why the first two quantisation batches drew the wrong conclusion from a correct measurement.
+    </p>
+    <p>
+      Relatedly, those kernels were never bandwidth-bound in the first place: <b>as they removed bytes they got
+      slower</b> — 26.90 → 38.68 → 42.49 ms/token while traffic fell 9158 → 5588 → 2850 MB/token — because a
+      cross-lane <code>tl.sum</code> ran once per K-iteration instead of once per output, and the dequantisation
+      landed on an already-saturated issue port. The 1.85× int8 ceiling is real arithmetic and unreachable by an
+      implementation that is not spending its time on memory.
+    </p>
+
+    <h3><span class="h3num">4.5</span> The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast</h3>
+    <div class="tscroll">
+      <table>
+        <caption>One operator apart · rental 57</caption>
+        <thead><tr><th>Pair</th><th class="n">fp32 arm</th><th class="n">bf16 arm</th><th class="n">Margin</th><th class="n">Arms' IQRs</th></tr></thead>
+        <tbody>
+          <tr><td>tied head, 248320 wide</td><td class="n"><b>1.0251</b></td><td class="n"><b>1.0218</b></td><td class="n">−0.0033</td><td class="n">0.0104 / 0.0081</td></tr>
+          <tr><td>96 MLP projections, 9216 wide</td><td class="n"><b>0.6390</b></td><td class="n"><b>0.6452</b></td><td class="n">+0.0062</td><td class="n">0.0060 / 0.0259</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Both margins sit inside their own interquartile spreads and point in opposite directions; the candidate
+      columns agree to the digit on achieved bandwidth — <b>458 against 458 GB/s</b> at the MLP. The dump says
+      why: the bf16 candidate's graphs hold <b>17 fp32 weight buffers per decode step and zero bf16 ones</b>.
+      The dequantise arithmetic is fp32 because the group scales are fp32, inductor picks its materialisation
+      point <em>upstream of</em> <code>.to(x.dtype)</code>, and the requested cast is applied to a buffer already
+      written at full fp32 width. <b>Changing a matmul's dtype cannot move a decision made before the matmul.</b>
+    </p>
+
+    <h3><span class="h3num">4.6</span> A speculative verify is a step, not a slope</h3>
+    <p>
+      Nobody had put a number on what a <code>k+1</code>-token verify costs at batch 1, so I built instruments
+      rather than candidates: drafters that are <b>wrong on purpose</b>, so acceptance is zero by construction
+      — confirmed by histogram across 2159 cycles — and the measured ratio is exactly <code>1/γ</code>, the
+      inflation factor.
+    </p>
+    <ul>
+      <li>1 → 3 tokens costs <b>31.6%</b>; 3 → 5 costs <b>6.7%</b>. A one-token verify <em>is</em> ordinary
+        decode at γ = 1.000, so <b>~23% of the cost is a discontinuity at the <code>seq=1 → seq&gt;1</code>
+        boundary</b> — dispatch and kernel selection, not traffic. The registered cost model had no term for it.</li>
+      <li>What γ really moves is <b>break-even</b>: from 0.06 to <b>0.317</b> mean accepted tokens per cycle for
+        a free drafter.</li>
+      <li><b>Both registered kill criteria were crossed and both were withdrawn as underived</b> — the spec's own
+        formula with the measured γ still gives 1.34× at k=2 and 1.45× at k=4 for an int4 self-draft at p = 0.9,
+        with k=4 winning by more than the k=2 its criterion spared.</li>
+      <li>The n-gram drafter measurably works and is <b>20× too weak</b>: 0.016 accepted against a 0.317 bar. Its
+        histogram is the reason — <code>{0: 2108, 1: 0, 2: 17}</code>: never one token, and 0.8% of the time the
+        whole block. That is prompt-lookup finding a literal repeat or nothing, which is a property of the
+        workload, not a tuning problem.</li>
+    </ul>
+
+    <h3><span class="h3num">4.7</span> The measurement is the instrument, and it had to be sharpened before three conclusions flipped</h3>
+    <p>
+      The retired int4 head is the clearest case. <b>The kernel never changed</b> and never returned a
+      correctness result other than 0.9318 / 0.01674. What changed is resolution.
+    </p>
+    <div class="tscroll">
+      <table>
+        <thead><tr><th>Same kernel, four rentals</th><th class="n">Rental 40</th><th class="n">Rental 43</th><th class="n">Rental 45</th><th class="n">Rental 46</th></tr></thead>
+        <tbody>
+          <tr><td>Reference achieved</td><td class="n"><b>1282 GB/s</b></td><td class="n">845 GB/s</td><td class="n">1197 GB/s</td><td class="n">1167 GB/s</td></tr>
+          <tr><td>Identity calibration</td><td class="n">1.0008</td><td class="n">1.0101</td><td class="n">0.9972</td><td class="n">1.0044</td></tr>
+          <tr><td>The int4 head</td><td class="n"><b>1.0791</b></td><td class="n">1.0161</td><td class="n">1.0105 <span class="tag flat">inconc.</span></td><td class="n"><b>0.9851</b> <span class="tag loss">loss</span></td></tr>
+          <tr><td>IQR</td><td class="n">0.00034</td><td class="n">0.00407</td><td class="n">0.0263</td><td class="n">0.0099</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      <b>The card is an uncontrolled variable the size of the effects under test</b>, and every write-up names
+      the rental for every number. Two RTX 5090s reporting the same memory clock, driver and torch differed by
+      <b>1.61×</b> on the baseline; one card lost 17% of its SM clock mid-rental (2910 → 2400 MHz). Seven
+      identity slots separate on exactly one field — the <b>host driver</b>: every driver seen twice sits in
+      1197–1283 GB/s, and the only outliers (441 GB/s, the worst in the project) are the only drivers seen once.
+      Interleaving the reference and candidate <em>within</em> each round divides drift out of every ratio, which
+      is why no slot was voided; absolute predictions and cross-rental comparisons do not survive it.
+    </p>
+    <p>
+      <b>And the obvious next step was refuted rather than assumed.</b> If the GEMV won at the head because the
+      head has parallelism, a better <em>tile</em> should unlock the other 83% of the bytes. Searched on the card
+      — BLOCK_N, split-K, BLOCK_K, warps, pipeline depth — the search made the champion's own site <b>2.3×
+      slower</b> (656 → 282 GB/s) while the MLP came back at 67 GB/s, within noise of the 65 measured two rentals
+      earlier at a different tile in a different kernel. Two more tiles were then pinned in advance (0.9343,
+      0.9502) and the last untried direction after that (0.9617). <b>Five measured points, four deliberate
+      attempts, and the heuristic tile nobody chose on purpose is the best of them. The tile question is closed.</b>
+    </p>
+  </div>
+</section>
+
+<section id="method">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">05</div>
+      <h2>Method</h2>
+    </div>
+    <p>
+      The methodology is the part I would most want to be judged on, because it is what makes the negative
+      results usable.
+    </p>
+
+    <div class="cards">
+      <div class="card">
+        <h4>Interleaved scoring <span>the score</span></h4>
+        <p>Both models are resident at once and timed in alternating rounds, so thermal drift and clock changes
+          cancel. They are separate module trees — installing a kernel swaps a class on the candidate's modules
+          — but they <b>share one set of parameter tensors</b>, since nothing writes to a weight under
+          <code>no_grad</code>: 8.4 GB on the card instead of 16.8, and one read of the checkpoint instead of
+          two. <code>cli._assert_parameters_are_shared</code> fails the run if that silently stops being true.</p>
+      </div>
+      <div class="card">
+        <h4>A calibration slot that can void the batch <span>the control</span></h4>
+        <p>Every batch opens with an identity champion that installs nothing and must measure 1.00 ± noise. It
+          has measured 1.0009, 1.0018, 1.0024, 0.9913, 1.0008, 1.0053 (IQR 0.00086) and 1.0002 (IQR
+          <b>0.0001</b>). When it carried +2.36% on rental 56, that batch's write-up reports every slot in a
+          <em>corrected</em> column and promotes nothing. A batch whose identity slot misses 1.00 voids every
+          number in it, in writing.</p>
+      </div>
+      <div class="card">
+        <h4>Two correctness gates, with magnitudes <span>the floor</span></h4>
+        <p>Per kernel, <code>allclose</code> against the reference operation at bf16 tolerance on real model
+          shapes, with max absolute and max relative error recorded rather than reduced to pass/fail. End to
+          end, greedy-decode 128 tokens from five fixed prompts checked into the repo; the candidate's token
+          sequence must match eager exactly. Failures are kept with their error magnitudes, because a candidate
+          that was fast but wrong is among the most useful things to read.</p>
+      </div>
+      <div class="card">
+        <h4>Batching, because fixed cost dominates <span>the economics</span></h4>
+        <p>A rental's fixed cost — image, torch, a 9.32 GB checkpoint, the GPU test suite and one
+          <code>max-autotune</code> compile of the reference — is ~19 minutes measured; each additional
+          hypothesis costs 3–6. So a rental measures <b>7–12 hypotheses</b>, compiling the reference once, with
+          the reference column re-timed inside every hypothesis's own interleaved rounds so per-round drift still
+          divides out exactly. Each slot runs in its own try/except and writes its record the moment it finishes.</p>
+      </div>
+    </div>
+
+    <h3>The gates were wrong more often than the kernels</h3>
+    <p>
+      That discipline paid directly: <b>none of batch 003's six <code>incorrect</code> verdicts was a kernel
+      bug.</b> Every Triton kernel passed its numerics gate at every probe, worst relative error 7.8e-3 — about
+      one bf16 ULP. All six were defects in the <em>gates</em>: an <code>exact</code> gate on a kernel that
+      computes the same function but not the same bits (fp32 accumulation in a different order from cuBLAS lands
+      one ULP away, and this model's top-2 logit gaps flip an argmax on that); a top-1 agreement bar set finer
+      than the statistic can resolve — at n=264, agreement quantises to 1/264 = 0.0038, and <b>one slot missed
+      its bar by 0.000303, eight hundredths of a single token</b>; and a slot gated against a reference it never
+      claimed to match. Five more gate defects have been found and recorded since, including a zero-floor margin
+      gate that passes on +0.0062 against an IQR of 0.0259.
+    </p>
+
+    <h3>Predictions registered before the rental</h3>
+    <p>
+      Each hypothesis commits its predicted outcome, magnitude range and reasoning to
+      <code>src/deltaforge/batches.py</code> <b>before</b> the GPU is created, and every batch write-up scores
+      them against what was measured.
+    </p>
+    <div class="tscroll">
+      <table>
+        <caption>Prediction scorecard, by batch</caption>
+        <thead><tr><th>Batch</th><th>Predictions scored</th></tr></thead>
+        <tbody>
+          <tr><td class="k">003 int8 weight-only</td><td><span class="meter"><i style="width:14%"></i></span>1 of 7</td></tr>
+          <tr><td class="k">004 bandwidth-bound GEMV</td><td><span class="meter"><i style="width:50%"></i></span>1 of 2 <span style="color:var(--ink-3)">— five slots declined, recorded as untested</span></td></tr>
+          <tr><td class="k">005 launch and head</td><td><span class="meter"><i style="width:60%"></i></span>3 of 5</td></tr>
+          <tr><td class="k">006 tile and sites</td><td><span class="meter"><i style="width:25%"></i></span>1 of 4</td></tr>
+          <tr><td class="k">007 compose and retile</td><td><span class="meter"><i style="width:33%"></i></span>2 of 6</td></tr>
+          <tr><td class="k">008 ingredients and barriers</td><td><span class="meter"><i style="width:45%"></i></span>5 of 11</td></tr>
+          <tr><td class="k">009 visible kernels</td><td><span class="meter"><i style="width:50%"></i></span>5 of 10</td></tr>
+          <tr><td class="k">010 speculative verify</td><td><span class="meter"><i style="width:60%"></i></span>3 of 5</td></tr>
+          <tr><td class="k">011 bytes not kernels</td><td><span class="meter"><i style="width:80%"></i></span>4 of 5 scored slots <span style="color:var(--ink-3)">— identity did not calibrate</span></td></tr>
+          <tr><td class="k">012 the matmul dtype</td><td><span class="meter"><i style="width:83%"></i></span>5 of 6 verdicts, <b>3 of 6 magnitudes</b></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p>
+      Low scores are the point: an unfalsifiable account scores 100%. The three misses that mattered most each
+      corrected a mechanism — the predicted-loss slot that won (4.2), the generalisation the dump refuted for
+      free (4.3), and a cost model with no dispatch term (4.6). Batch 012 scores <em>magnitudes</em> separately
+      from verdicts, because a registered prediction that gets the verdict right for the wrong reason is worth
+      less than a verdict column makes it look.
+    </p>
+
+    <h3>An explicit outcome taxonomy</h3>
+    <p>
+      So that "we didn't measure it" never reads as "it doesn't work": <code>win</code>, <code>loss</code>,
+      <code>inconclusive</code> (inside the noise band — neither promoted nor buried),
+      <code>graveyarded on mechanism</code> (closed by arithmetic, with the numbers that closed it),
+      <code>incorrect</code> (failed a gate, with error magnitudes), <code>precondition_failed</code> and
+      <code>error</code>. A precondition-skipped slot is recorded as <b>unexecuted, not refuted</b> — two defects
+      survived a rental that way, and the 52.75% prize in 4.3 was declined twice before it was finally measured.
+    </p>
+
+    <h3>Cost control in code, not discipline</h3>
+    <p>
+      $50/month: a month-to-date gate that refuses at $45, a session soft gate at 180 billed minutes checked
+      before a run and never during one, a <b>pre-flight refusal when the remaining budget cannot fit the
+      identity slot plus one kernel slot</b>, per-slot wall-clock caps, a local-side watchdog that destroys the
+      instance at 210 minutes regardless of what the remote is doing, a batch that stops <em>itself</em> before
+      a hypothesis it cannot finish, teardown that pulls results back <b>before</b> destroying, and a shell trap
+      on <code>EXIT</code>/<code>INT</code>/<code>TERM</code> so a crash still destroys the instance. Every
+      script in <code>remote/</code> supports <code>--dry-run</code>, which exercises every gate and the teardown
+      trap without contacting the create or destroy endpoints.
+    </p>
+    <div class="chips" style="margin:18px 0 6px">
+      <span class="chip"><b>56</b> instances provisioned</span>
+      <span class="chip"><b>56</b> destroyed, zero leaked</span>
+      <span class="chip"><b>1621</b> billed GPU minutes</span>
+      <span class="chip"><b>$11.4887</b> lifetime</span>
+      <span class="chip">cheapest informative rental <b>$0.0478</b></span>
+      <span class="chip">most expensive mistake <b>$1.3878</b></span>
+    </div>
+    <p class="note">
+      The most expensive mistake spent its entire cap inside one compile — which is also how the compile cache
+      became a measured artifact rather than a hope. A cold <code>max-autotune</code> compile had never finished
+      inside a session (6980.9 s, unfinished) until an unrolled prefill scan was found and fixed; it then
+      completed in <b>267.5 s</b>, and <b>57.4 s</b> warm off the cache banked from the previous rental on the
+      same card. Teardown reports warmth from bytes that actually landed on disk, because a log that overstates
+      it would corrupt the number the cache exists to improve. A later rental spent ~33 minutes pushing a 2.2 GB
+      cache to save ~3.5 minutes of compiling, so pushes above <code>DF_CACHE_MAX_PUSH_MB</code> are now refused
+      — fixed cost on the same host fell from ~72 minutes to ~22.
+    </p>
+
+    <h3>Infrastructure, honestly</h3>
+    <p>
+      Twenty-two numbered blockers are tracked with status and proof, because each rental that got further than
+      its predecessor did so by exposing the next one. Three of them could not even be <em>seen</em> until the
+      one before was fixed: a cold compile that never finished hid a teardown bug that only fires
+      <em>between</em> slots, which in turn hid dynamo's <code>recompile_limit</code> (8) silently timing
+      <b>eager</b> candidates against a compiled reference — the cause of six unrelated kernels all returning
+      ratios between 0.146 and 0.157. Those six numbers are kept in the leaderboard marked
+      <code>void — candidate ran eager</code>, because deleting evidence is worse than labelling it.
+    </p>
+    <div class="chips" style="margin:18px 0 6px">
+      <span class="chip">~<b>37k</b> lines of Python and POSIX shell</span>
+      <span class="chip"><b>1160</b> tests — <b>1142</b> pass with no GPU, 18 skip</span>
+      <span class="chip"><code>cli fusion</code>: read the generated code before renting</span>
+    </div>
+    <p class="note">
+      <code>cli fusion</code> compiles a candidate locally and diffs the generated code, so "does this
+      registration install a fusion barrier?" is answered <b>before</b> renting a card. That tool is what refuted
+      4.3's generalisation for free.
+    </p>
+  </div>
+</section>
+
+<section id="open">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">06</div>
+      <h2>What is not claimed, and what is still open</h2>
+    </div>
+
+    <div class="cards">
+      <div class="card">
+        <h4>Not claimed <span>non-goals</span></h4>
+        <p><b>Not beating cuBLAS on dense bf16 GEMM.</b> At batch 1 the linear layers are at the bandwidth
+          roofline; you do not beat a roofline with a better kernel, only by moving fewer bytes or running a
+          different algorithm.</p>
+        <p><b>Not beating a compiler at elementwise fusion.</b> Inductor's home turf, and it emits Triton. Those
+          hypotheses are in the graveyard with the arithmetic that closed them.</p>
+        <p><b>Not beating vLLM or SGLang.</b> Those are already hand-tuned Triton and CUDA; out of scope as a win
+          condition.</p>
+        <p><b>Not a serving engine, not training, not multi-GPU.</b> Single-card inference decode only.</p>
+        <p><b>No estimated, placeholder or illustrative numbers anywhere in the repository.</b> Every number came
+          off a real card, and the ones that do not mean what they appear to mean say so in the line that reports
+          them.</p>
+      </div>
+      <div class="card">
+        <h4>Open, and recorded as open <span>loose ends</span></h4>
+        <p><b>The loss level in 4.3 is unexplained.</b> The candidate's actual traffic is 13.44 GB/token against
+          a 5.19 GB/token byte model; the fp32 write and read-back of 17 operands accounts for 3.21 GB, leaving
+          <b>~5.04 GB unattributed</b>. My first reading of those ratios back-solved a "multiplier on the
+          quantised weight" and treated it as evidence about where fusion happens; the buffer census refuted that
+          arithmetic, and the file says so rather than keeping the tidier story.</p>
+        <p><b>One rental-40 number has never reproduced.</b> The int4 head's 1.0791 belongs to that rental; later
+          rentals on healthy cards gave 1.0161, 1.0105 and 0.9851. The leaderboard does not pretend otherwise.</p>
+        <p><b>One infrastructure blocker has no real fix</b>, only a manual <code>--exclude-machines</code>
+          workaround: a phantom ask traps the deterministic, price-ordered offer search.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="repo">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">07</div>
+      <h2>Where to look</h2>
+    </div>
+    <div class="tscroll">
+      <table>
+        <thead><tr><th class="k">Path</th><th>What it is</th></tr></thead>
+        <tbody>
+          <tr><td class="k">README.md</td><td>The project's own front page: claims, non-goals, reproduction</td></tr>
+          <tr><td class="k">LEADERBOARD.md</td><td>Every hypothesis attempted, with ratio, IQR, correctness, outcome and the rental it belongs to</td></tr>
+          <tr><td class="k">docs/roofline.py</td><td>Where the bytes go. No GPU, no checkpoint — run it first</td></tr>
+          <tr><td class="k">docs/HYPOTHESES.md</td><td>The backlog, and the graveyard with the arithmetic that closed each entry</td></tr>
+          <tr><td class="k">docs/BATCHES.md</td><td>How a batch works and what filling one requires</td></tr>
+          <tr><td class="k">src/deltaforge/reference.py</td><td>The baseline. Pure PyTorch, no custom kernels, ever</td></tr>
+          <tr><td class="k">src/deltaforge/fusion.py</td><td>What inductor generated, parsed; which registrations are opaque. No GPU</td></tr>
+          <tr><td class="k">src/deltaforge/batches.py</td><td>Batch manifests — the predictions, committed before each rental</td></tr>
+          <tr><td class="k">src/deltaforge/harness/</td><td>Interleaved timing, correctness gates, result records</td></tr>
+          <tr><td class="k">remote/</td><td>Instance lifecycle in POSIX shell, so it works before the environment exists</td></tr>
+          <tr><td class="k">results/batches/0NN-*/README.md</td><td>One write-up per rental, scored against its registered predictions</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <pre><code><span class="c"># reproduce the parts that need no GPU</span>
+uv sync --extra dev &amp;&amp; uv run pytest          <span class="c"># 1142 pass, 18 skip, no card needed</span>
+uv run python docs/roofline.py                <span class="c"># where the bytes go</span>
+remote/run_remote.sh --dry-run --session-id smoke --batch 001-calibration
+uv run python -m deltaforge.cli fusion --install inline_causal_conv</code></pre>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>DeltaForge · Apache-2.0, matching the target model · every number on this page came off a rented card, and the rental is named beside it.</p>
+  </div>
+</footer>
+
+<div id="tip" role="status" aria-live="polite"></div>
+
+<script>
+  (function () {
+    var tip = document.getElementById('tip');
+    if (!tip) return;
+    var show = function (el, x, y) {
+      var text = el.getAttribute('data-tip');
+      if (!text) return;
+      tip.textContent = text;
+      tip.style.opacity = '1';
+      var r = tip.getBoundingClientRect();
+      var left = Math.min(Math.max(8, x + 12), window.innerWidth - r.width - 8);
+      var top = y - r.height - 12;
+      if (top < 8) top = y + 18;
+      tip.style.left = left + 'px';
+      tip.style.top = top + 'px';
+    };
+    var hide = function () { tip.style.opacity = '0'; };
+    document.addEventListener('mousemove', function (e) {
+      var el = e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (el) show(el, e.clientX, e.clientY); else hide();
+    }, { passive: true });
+    document.addEventListener('mouseleave', hide);
+    document.addEventListener('touchstart', function (e) {
+      var el = e.target.closest ? e.target.closest('[data-tip]') : null;
+      if (el) {
+        var t = e.touches[0];
+        show(el, t.clientX, t.clientY);
+        setTimeout(hide, 2600);
+      }
+    }, { passive: true });
+  })();
+</script>
+</body>
+</html>
