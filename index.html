@@ -247,6 +247,8 @@ img { max-width: 100%; }
   .tag.flat { color: var(--ink-2);    border-color: var(--rule);                                          background: var(--surface-sunk); }
 
   /* ---------- figures ---------- */
+  .bx-wall  { fill: color-mix(in srgb, var(--critical) 12%, transparent); stroke: var(--critical); }
+  .bx-fused { fill: color-mix(in srgb, var(--good) 10%, transparent);     stroke: var(--good); }
   figure {
     margin: 24px 0; background: var(--surface); border: 1px solid var(--rule);
     border-radius: 6px; padding: 18px; box-shadow: var(--shadow);
@@ -355,6 +357,7 @@ img { max-width: 100%; }
     <div class="brand">DeltaForge</div>
     <nav class="topnav">
       <a href="#summary">Summary</a>
+      <a href="#how">How it works</a>
       <a href="#setup">Setup</a>
       <a href="#bytes">Bytes</a>
       <a href="#results">Results</a>
@@ -486,10 +489,145 @@ img { max-width: 100%; }
   </div>
 </section>
 
-<section id="setup">
+<section id="how">
   <div class="wrap">
     <div class="sec-head">
       <div class="sec-num">01</div>
+      <h2>How it works, in plain terms</h2>
+    </div>
+    <div class="lede">
+      <p>
+        To produce <em>one</em> token, the GPU reads every one of the model's 4.21 billion weights, and then
+        reads them all again for the next token. The arithmetic is nearly free; the fetching is
+        <b>91.85%</b> of the work. So there are only two ways to go faster: <b>move fewer bytes</b>, or
+        <b>stop interrupting the flow</b>. There is one champion for each.
+      </p>
+    </div>
+    <p>
+      <code>torch.compile</code> turns the model into GPU kernels, and its most valuable trick is
+      <b>fusion</b>: when several steps in a row touch the same data, it welds them into one pass over
+      memory instead of several. It is good enough at this to reach 65.7–71.5% of the card's peak
+      bandwidth before anyone hand-writes anything.
+    </p>
+    <p>
+      But it can only weld across code it can <em>see into</em>. An opaque call — a vendor library
+      kernel, a <code>torch.library.custom_op</code>, a hand-written Triton kernel — is a wall:
+      inductor has to write that call's inputs out to memory, hand over, and read the results back, and the
+      steps on either side can no longer be welded to each other. <b>That wall is what “fusion
+      barrier” means on this page, and both champions are the removal of one.</b>
+    </p>
+
+    <figure>
+      <div class="fig-title">What a fusion barrier costs, at one of the 24 linear-attention layers</div>
+      <div class="fig-sub">Rental 45 · the same four taps, the same bits out · one variable</div>
+      <svg viewBox="0 0 720 300" width="100%" role="img" aria-labelledby="bt bd" style="display:block;overflow:visible">
+        <title id="bt">A fusion barrier splits one welded kernel into four, with a memory round trip between each</title>
+        <desc id="bd">With an opaque call in the middle, inductor emits the qkv projection, the vendor
+          convolution, and the state reduction as separate kernels that each round-trip through GPU memory,
+          and the state reduction is recomputed a second time. Written as fusible torch operations, the same
+          work is one kernel and one pass.</desc>
+        <defs>
+          <marker id="ah" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+            <path d="M0 0 L8 4 L0 8 z" fill="var(--ink-3)"></path>
+          </marker>
+        </defs>
+
+        <text x="0" y="12" font-family="var(--mono)" font-size="11" letter-spacing="1.2" fill="var(--critical)">WITH A WALL — 0.7854, SLOWER THAN CHANGING NOTHING</text>
+
+        <rect x="0"   y="26" width="155" height="42" rx="5" fill="var(--surface-sunk)" stroke="var(--rule)"></rect>
+        <text x="77"  y="51" text-anchor="middle" font-family="var(--mono)" font-size="11.5" fill="var(--ink-2)">qkv projection</text>
+
+        <rect x="175" y="26" width="155" height="42" rx="5" class="bx-wall"></rect>
+        <text x="252" y="45" text-anchor="middle" font-family="var(--mono)" font-size="11.5" fill="var(--critical)">F.conv1d</text>
+        <text x="252" y="59" text-anchor="middle" font-family="var(--mono)" font-size="10" fill="var(--critical)">opaque vendor call</text>
+
+        <rect x="350" y="26" width="155" height="42" rx="5" fill="var(--surface-sunk)" stroke="var(--rule)"></rect>
+        <text x="427" y="51" text-anchor="middle" font-family="var(--mono)" font-size="11.5" fill="var(--ink-2)">state reduction</text>
+
+        <rect x="525" y="26" width="155" height="42" rx="5" fill="var(--surface-sunk)" stroke="var(--rule)" stroke-dasharray="3 3"></rect>
+        <text x="602" y="45" text-anchor="middle" font-family="var(--mono)" font-size="11.5" fill="var(--ink-2)">state reduction</text>
+        <text x="602" y="59" text-anchor="middle" font-family="var(--mono)" font-size="10" fill="var(--critical)">the same work, again</text>
+
+        <path d="M143 68 L165 98 L187 68" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#ah)"></path>
+        <path d="M318 68 L340 98 L362 68" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#ah)"></path>
+        <path d="M493 68 L515 98 L537 68" fill="none" stroke="var(--ink-3)" stroke-width="1.4" marker-end="url(#ah)"></path>
+
+        <rect x="0" y="104" width="680" height="22" rx="4" fill="var(--surface-sunk)" stroke="var(--rule)"></rect>
+        <text x="340" y="119" text-anchor="middle" font-family="var(--mono)" font-size="10.5" letter-spacing="1.4" fill="var(--ink-3)">GPU MEMORY — THREE ROUND TRIPS</text>
+
+        <text x="0" y="178" font-family="var(--mono)" font-size="11" letter-spacing="1.2" fill="var(--good)">NO WALL — 1.0765, AND BIT-IDENTICAL OUTPUT</text>
+
+        <rect x="0" y="192" width="680" height="42" rx="5" class="bx-fused"></rect>
+        <text x="340" y="211" text-anchor="middle" font-family="var(--mono)" font-size="11.5" fill="var(--ink)">qkv projection + four multiplies + state reduction</text>
+        <text x="340" y="226" text-anchor="middle" font-family="var(--mono)" font-size="10" fill="var(--ink-3)">one kernel — nothing in the middle to write out and read back</text>
+
+        <rect x="0" y="270" width="680" height="22" rx="4" fill="var(--surface-sunk)" stroke="var(--rule)"></rect>
+        <text x="340" y="285" text-anchor="middle" font-family="var(--mono)" font-size="10.5" letter-spacing="1.4" fill="var(--ink-3)">GPU MEMORY — ONE PASS</text>
+      </svg>
+      <figcaption>
+        The wall does not only cost its own kernel. It splits a producer chain inductor had been fusing, and
+        then inductor <b>recomputes</b> the shared prologue rather than reading the buffer it just wrote
+        — so the <code>(1, 32, 128, 128)</code> state reduction runs <b>twice per layer, 24 times per
+        token</b>. Both arms here are bit-identical to the reference, 264/264 tokens at 0.00000 nats.
+      </figcaption>
+    </figure>
+
+    <h3><span class="h3num">A</span> Stop interrupting the flow — four multiplies instead of a library call</h3>
+    <p>
+      Twenty-four times per token, the model blends the last four timesteps together:
+      <code>a·w₁ + b·w₂ + c·w₃ + x·w₄</code>, per channel. It is four multiplies
+      and three adds. The reference expressed it as <code>F.conv1d</code>, which inductor hands to
+      <code>extern_kernels.convolution</code> — <b>the only vendor call left anywhere in this decode
+      path</b>, with a <code>cat</code> stranded in front of it and a <code>copy_</code> stranded behind.
+    </p>
+    <p>
+      The champion writes those four multiplies out as torch operations instead.
+      <code>inline_causal_conv.py</code> contains <b>no Triton and no custom op</b>; its own docstring calls
+      it “<em>a deletion rather than a kernel.</em>” The arithmetic does not change and neither
+      does the output. What changes is that inductor can now weld the step into the kernels on either side
+      of it.
+    </p>
+    <p>
+      And the control is what makes it a finding rather than a tweak: <b>the identical arithmetic,
+      hand-written as a fast Triton kernel behind a <code>custom_op</code></b> — a wall in a different
+      place — measured <b>0.7854</b> against this one's <b>1.0765</b>, same card, same process, minutes
+      apart. Writing the kernel was worse than writing nothing, and the reason is the wall, not the kernel.
+    </p>
+
+    <h3><span class="h3num">B</span> Move fewer bytes — the biggest table in the model, stored four times smaller</h3>
+    <p>
+      The tied LM head scores all <b>248,320</b> possible next tokens from a 248,320 × 2,560 table. It is
+      the largest single operand in the model and <b>14.80% of every byte the compiled baseline moves</b>.
+      Storing it at 4 bits instead of 16, with one scale per group of 128 weights, cuts that nearly fourfold.
+    </p>
+    <p>
+      The objection is real, and it is why this slot was <b>registered in advance as a predicted loss</b>:
+      multiplying needs full-width numbers. If inductor unpacks that table into memory before multiplying, the
+      candidate moves the 317.85 MB of packed nibbles <em>and</em> the 1271.40 MB bf16 weight it built from
+      them, and no matmul however good can recover that.
+    </p>
+    <p>
+      <b>It does not unpack it into memory.</b> The unpack happens in registers, inside the matmul's own
+      prologue: one reduction kernel carries the shift, the mask, the <code>mm</code>, the final RMSNorm and
+      the residual add together, and the graph holds <b>no weight-sized buffer anywhere</b>. The same unpack
+      hand-written as a Triton kernel behind a custom op measured <b>0.9851</b>, a loss, because a wall at
+      that site forfeits the RMSNorm fusion the reference welds into the <code>lm_head</code> matmul.
+    </p>
+
+    <div class="pull">
+      <p>
+        Neither champion computes anything faster than the compiler does. Both win by making more of the
+        program <em>visible</em> to it — one by deleting a library call, one by deleting a hand-written
+        kernel. That is the result, and it is why the most valuable entries in the leaderboard are losses.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="setup">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="sec-num">02</div>
       <h2>What was measured, and against what</h2>
     </div>
 
@@ -531,7 +669,7 @@ img { max-width: 100%; }
 <section id="bytes">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">02</div>
+      <div class="sec-num">03</div>
       <h2>Arithmetic before kernels</h2>
     </div>
     <p>
@@ -604,7 +742,7 @@ img { max-width: 100%; }
 <section id="results">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">03</div>
+      <div class="sec-num">04</div>
       <h2>Headline results</h2>
     </div>
     <p><b>Two champions, and neither contains a line of Triton.</b></p>
@@ -740,11 +878,11 @@ img { max-width: 100%; }
 <section id="findings">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">04</div>
+      <div class="sec-num">05</div>
       <h2>Findings</h2>
     </div>
 
-    <h3><span class="h3num">4.1</span> An opaque custom op is a fusion barrier, and the bill is invisible at the call site</h3>
+    <h3><span class="h3num">5.1</span> An opaque custom op is a fusion barrier, and the bill is invisible at the call site</h3>
     <p>
       The cleanest controlled pair in the project. <code>044-fused-causal-conv</code> and
       <code>045-inline-causal-conv</code> compute <b>the same function</b> — both bit-identical to the
@@ -796,7 +934,7 @@ img { max-width: 100%; }
         reduction is the mechanism; the allocation count is a symptom.</li>
     </ul>
 
-    <h3><span class="h3num">4.2</span> At the project’s best site, the compiler beat the hand-written kernel</h3>
+    <h3><span class="h3num">5.2</span> At the project’s best site, the compiler beat the hand-written kernel</h3>
     <p>
       Three registrations of <b>one program</b> — the group-128 int4 dequantise-GEMV on the tied LM head — ran
       in a single process on a single card. They compute the same function, and the record proves it: layer 2
@@ -832,7 +970,7 @@ img { max-width: 100%; }
       <em>traces</em>, because tracing needs Triton.
     </p>
 
-    <h3><span class="h3num">4.3</span> The compiler's dequantisation fusion is site-dependent</h3>
+    <h3><span class="h3num">5.3</span> The compiler's dequantisation fusion is site-dependent</h3>
     <p>
       The obvious generalisation of 4.2 — "inductor fuses grouped dequantisation into a GEMV prologue" — is
       <b>false</b>, and the dump refuted it before a kernel was written. At the 96 MLP projections inductor
@@ -860,7 +998,7 @@ img { max-width: 100%; }
       200 sites and 97.85% of the bytes returned <b>0.6150</b>.
     </p>
 
-    <h3><span class="h3num">4.4</span> The GEMV was grid-starved, not structurally slow — and an aggregate could not show it</h3>
+    <h3><span class="h3num">5.4</span> The GEMV was grid-starved, not structurally slow — and an aggregate could not show it</h3>
     <p>
       Two batches installed a hand-written GEMV on all 248 layer projections at once and lost by 5×
       (0.2801, then <b>0.1934 after a rewrite aimed at the diagnosed cause</b>). Measured per site, the same
@@ -891,7 +1029,7 @@ img { max-width: 100%; }
       implementation that is not spending its time on memory.
     </p>
 
-    <h3><span class="h3num">4.5</span> The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast</h3>
+    <h3><span class="h3num">5.5</span> The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast</h3>
     <div class="tscroll">
       <table>
         <caption>One operator apart · rental 57</caption>
@@ -911,7 +1049,7 @@ img { max-width: 100%; }
       written at full fp32 width. <b>Changing a matmul's dtype cannot move a decision made before the matmul.</b>
     </p>
 
-    <h3><span class="h3num">4.6</span> A speculative verify is a step, not a slope</h3>
+    <h3><span class="h3num">5.6</span> A speculative verify is a step, not a slope</h3>
     <p>
       Nobody had put a number on what a <code>k+1</code>-token verify costs at batch 1, so I built instruments
       rather than candidates: drafters that are <b>wrong on purpose</b>, so acceptance is zero by construction
@@ -933,7 +1071,7 @@ img { max-width: 100%; }
         workload, not a tuning problem.</li>
     </ul>
 
-    <h3><span class="h3num">4.7</span> The measurement is the instrument, and it had to be sharpened before three conclusions flipped</h3>
+    <h3><span class="h3num">5.7</span> The measurement is the instrument, and it had to be sharpened before three conclusions flipped</h3>
     <p>
       The retired int4 head is the clearest case. <b>The kernel never changed</b> and never returned a
       correctness result other than 0.9318 / 0.01674. What changed is resolution.
@@ -973,7 +1111,7 @@ img { max-width: 100%; }
 <section id="method">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">05</div>
+      <div class="sec-num">06</div>
       <h2>Method</h2>
     </div>
     <p>
@@ -1055,8 +1193,8 @@ img { max-width: 100%; }
     </div>
     <p>
       Low scores are the point: an unfalsifiable account scores 100%. The three misses that mattered most each
-      corrected a mechanism — the predicted-loss slot that won (4.2), the generalisation the dump refuted for
-      free (4.3), and a cost model with no dispatch term (4.6). Batch 012 scores <em>magnitudes</em> separately
+      corrected a mechanism — the predicted-loss slot that won (5.2), the generalisation the dump refuted for
+      free (5.3), and a cost model with no dispatch term (5.6). Batch 012 scores <em>magnitudes</em> separately
       from verdicts, because a registered prediction that gets the verdict right for the wrong reason is worth
       less than a verdict column makes it look.
     </p>
@@ -1119,7 +1257,7 @@ img { max-width: 100%; }
     <p class="note">
       <code>cli fusion</code> compiles a candidate locally and diffs the generated code, so "does this
       registration install a fusion barrier?" is answered <b>before</b> renting a card. That tool is what refuted
-      4.3's generalisation for free.
+      5.3's generalisation for free.
     </p>
   </div>
 </section>
@@ -1127,7 +1265,7 @@ img { max-width: 100%; }
 <section id="open">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">06</div>
+      <div class="sec-num">07</div>
       <h2>What is not claimed, and what is still open</h2>
     </div>
 
@@ -1165,7 +1303,7 @@ img { max-width: 100%; }
 <section id="repo">
   <div class="wrap">
     <div class="sec-head">
-      <div class="sec-num">07</div>
+      <div class="sec-num">08</div>
       <h2>Where to look</h2>
     </div>
     <div class="tscroll">
