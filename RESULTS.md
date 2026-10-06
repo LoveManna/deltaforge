@@ -42,7 +42,85 @@ destroyed.
 
 ---
 
-## 1. What was measured, and against what
+## 1. How it works, in plain terms
+
+To produce *one* token, the GPU reads every one of the model's 4.21 billion weights, and then
+reads them all again for the next token. The arithmetic is nearly free; the fetching is
+**91.85%** of the work. So there are only two ways to go faster: **move fewer bytes**, or
+**stop interrupting the flow**. There is one champion for each.
+
+`torch.compile` turns the model into GPU kernels, and its most valuable trick is **fusion**:
+when several steps in a row touch the same data, it welds them into one pass over memory
+instead of several. It is good enough at this to reach 65.7–71.5% of the card's peak bandwidth
+before anyone hand-writes anything.
+
+But it can only weld across code it can *see into*. An opaque call — a vendor library kernel, a
+`torch.library.custom_op`, a hand-written Triton kernel — is a wall: inductor has to write that
+call's inputs out to memory, hand over, and read the results back, and the steps on either side
+can no longer be welded to each other. **That wall is what "fusion barrier" means in this
+document, and both champions are the removal of one.**
+
+```
+WITH A WALL — 0.7854, slower than changing nothing
+  [ qkv projection ]  ╳  [ F.conv1d — opaque ]  ╳  [ state reduction ]  ╳  [ state reduction, again ]
+        └──────────────────┴─ GPU memory ─┴──────────────────┘
+                      three round trips, and the reduction recomputed
+
+NO WALL — 1.0765, and bit-identical output
+  [ qkv projection + four multiplies + state reduction — one kernel ]
+        └────────────────────── GPU memory ──────────────────────┘
+                              one pass
+```
+
+The wall does not only cost its own kernel. It splits a producer chain inductor had been fusing,
+and then inductor *recomputes* the shared prologue rather than reading the buffer it just wrote —
+so the `(1, 32, 128, 128)` state reduction runs **twice per layer, 24 times per token**. Both arms
+are bit-identical to the reference, 264/264 tokens at 0.00000 nats.
+
+### A. Stop interrupting the flow — four multiplies instead of a library call
+
+Twenty-four times per token, the model blends the last four timesteps together:
+`a·w1 + b·w2 + c·w3 + x·w4`, per channel. It is four multiplies and three adds. The reference
+expressed it as `F.conv1d`, which inductor hands to `extern_kernels.convolution` — **the only
+vendor call left anywhere in this decode path** — with a `cat` stranded in front of it and a
+`copy_` stranded behind.
+
+The champion writes those four multiplies out as torch operations instead.
+`inline_causal_conv.py` contains **no Triton and no custom op**; its own docstring calls it "a
+deletion rather than a kernel". The arithmetic does not change and neither does the output. What
+changes is that inductor can now weld the step into the kernels on either side of it.
+
+And the control is what makes it a finding rather than a tweak: **the identical arithmetic,
+hand-written as a fast Triton kernel behind a `custom_op`** — a wall in a different place —
+measured **0.7854** against this one's **1.0765**, same card, same process, minutes apart.
+Writing the kernel was worse than writing nothing, and the reason is the wall, not the kernel.
+
+### B. Move fewer bytes — the biggest table in the model, stored four times smaller
+
+The tied LM head scores all **248,320** possible next tokens from a 248,320 x 2,560 table. It is
+the largest single operand in the model and **14.80% of every byte the compiled baseline moves**.
+Storing it at 4 bits instead of 16, with one scale per group of 128 weights, cuts that nearly
+fourfold.
+
+The objection is real, and it is why this slot was **registered in advance as a predicted loss**:
+multiplying needs full-width numbers. If inductor unpacks that table into memory before
+multiplying, the candidate moves the 317.85 MB of packed nibbles *and* the 1271.40 MB bf16 weight
+it built from them, and no matmul however good can recover that.
+
+**It does not unpack it into memory.** The unpack happens in registers, inside the matmul's own
+prologue: one reduction kernel carries the shift, the mask, the `mm`, the final RMSNorm and the
+residual add together, and the graph holds **no weight-sized buffer anywhere**. The same unpack
+hand-written as a Triton kernel behind a custom op measured **0.9851**, a loss, because a wall at
+that site forfeits the RMSNorm fusion the reference welds into the `lm_head` matmul.
+
+> Neither champion computes anything faster than the compiler does. Both win by making more of
+> the program *visible* to it — one by deleting a library call, one by deleting a hand-written
+> kernel. That is the result, and it is why the most valuable entries in the leaderboard are
+> losses.
+
+---
+
+## 2. What was measured, and against what
 
 | | |
 |---|---|
@@ -69,7 +147,7 @@ test. `reference_purity_test.py` enforces this in CI.
 
 ---
 
-## 2. Arithmetic before kernels
+## 3. Arithmetic before kernels
 
 `docs/roofline.py` prints where every byte of one decode step goes. It needs no GPU and no
 checkpoint, and it decides what *can* win:
@@ -107,7 +185,7 @@ bytes — and taking a matmul away from inductor has a price that is measurable.
 
 ---
 
-## 3. Headline results
+## 4. Headline results
 
 **Two champions, and neither contains a line of Triton.**
 
@@ -127,9 +205,9 @@ so the leaderboard declines to promote on it and says why.
 
 ---
 
-## 4. Findings
+## 5. Findings
 
-### 4.1 An opaque custom op is a fusion barrier, and the bill is invisible at the call site
+### 5.1 An opaque custom op is a fusion barrier, and the bill is invisible at the call site
 
 The cleanest controlled pair in the project. `044-fused-causal-conv` and
 `045-inline-causal-conv` compute **the same function** — both bit-identical to the reference,
@@ -159,7 +237,7 @@ Two corollaries worth as much as the number:
   suspect. The winning candidate allocates **232 and wins**. The duplicated reduction is the
   mechanism; the allocation count is a symptom.
 
-### 4.2 At the project's best site, the compiler beat the hand-written kernel
+### 5.2 At the project's best site, the compiler beat the hand-written kernel
 
 Three registrations of **one program** — the group-128 int4 dequantise-GEMV on the tied LM
 head — ran in a single process on a single card. They compute the same function, and the
@@ -190,7 +268,7 @@ reached `.data_ptr()` instead of being intercepted by `wrap_triton`. It cost 34 
 time. The CPU suite could assert the op was *registered* and structurally could not assert
 it *traces*, because tracing needs Triton.
 
-### 4.3 The compiler's dequantisation fusion is site-dependent
+### 5.3 The compiler's dequantisation fusion is site-dependent
 
 The obvious generalisation of 4.2 — "inductor fuses grouped dequantisation into a GEMV
 prologue" — is **false**, and the dump refuted it before a kernel was written. At the 96 MLP
@@ -215,7 +293,7 @@ predicted win **twice** and declined unexecuted both times on a precondition gat
 ungated, it is a **measured loss at 0.6390, IQR 0.0060**, the tightest band in its batch.
 Taking the same construction to 200 sites and 97.85% of the bytes returned **0.6150**.
 
-### 4.4 The GEMV was grid-starved, not structurally slow — and an aggregate could not show it
+### 5.4 The GEMV was grid-starved, not structurally slow — and an aggregate could not show it
 
 Batches 003 and 004 installed a hand-written GEMV on all 248 layer projections at once and
 lost by 5x (0.2801, then **0.1934 after a rewrite aimed at the diagnosed cause**). Measured
@@ -241,7 +319,7 @@ once per output, and the dequantisation landed on an already-saturated issue por
 int8 ceiling is real arithmetic and unreachable by an implementation that is not spending
 its time on memory.
 
-### 4.5 The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast
+### 5.5 The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast
 
 One operator apart, two arms per site width:
 
@@ -258,7 +336,7 @@ are fp32, inductor picks its materialisation point *upstream of* `.to(x.dtype)`,
 requested cast is applied to a buffer already written at full fp32 width. **Changing a
 matmul's dtype cannot move a decision made before the matmul.**
 
-### 4.6 A speculative verify is a step, not a slope
+### 5.6 A speculative verify is a step, not a slope
 
 Nobody had put a number on what a `k+1`-token verify costs at batch 1, so I built
 instruments rather than candidates: drafters that are **wrong on purpose**, so acceptance is
@@ -279,7 +357,7 @@ exactly `1/γ`, the inflation factor.
   0.8% of the time the whole block. That is prompt-lookup finding a literal repeat or
   nothing, which is a property of the workload, not a tuning problem.
 
-### 4.7 The measurement is the instrument, and it had to be sharpened before three conclusions flipped
+### 5.7 The measurement is the instrument, and it had to be sharpened before three conclusions flipped
 
 The retired int4 head is the clearest case. **The kernel never changed** and never returned a
 correctness result other than 0.9318 / 0.01674. What changed is resolution:
@@ -318,7 +396,7 @@ heuristic tile nobody chose on purpose is the best of them. The tile question is
 
 ---
 
-## 5. Method
+## 6. Method
 
 The methodology is the part I would most want to be judged on, because it is what makes the
 negative results usable.
@@ -372,9 +450,9 @@ and every batch write-up scores them:
 | 012 the matmul dtype | 5 of 6 verdicts, **3 of 6 magnitudes** |
 
 Low scores are the point: an unfalsifiable account scores 100%. The three misses that
-mattered most each corrected a mechanism — the predicted-loss slot that won (4.2), the
-generalisation the dump refuted for free (4.3), and a cost model with no dispatch term
-(4.6). Batch 012 scores *magnitudes* separately from verdicts, because a registered
+mattered most each corrected a mechanism — the predicted-loss slot that won (5.2), the
+generalisation the dump refuted for free (5.3), and a cost model with no dispatch term
+(5.6). Batch 012 scores *magnitudes* separately from verdicts, because a registered
 prediction that gets the verdict right for the wrong reason is worth less than a verdict
 column makes it look.
 
@@ -435,7 +513,7 @@ generalisation for free.
 
 ---
 
-## 6. What is *not* claimed
+## 7. What is *not* claimed
 
 Stated up front because a knowledgeable reader will ask:
 
@@ -453,7 +531,7 @@ Stated up front because a knowledgeable reader will ask:
 
 ---
 
-## 7. Open, and recorded as open
+## 8. Open, and recorded as open
 
 - **The loss level in 4.3 is unexplained.** The candidate's actual traffic is 13.44
   GB/token against a 5.19 GB/token byte model; the fp32 write and read-back of 17 operands
@@ -469,7 +547,7 @@ Stated up front because a knowledgeable reader will ask:
 
 ---
 
-## 8. Where to look
+## 9. Where to look
 
 | Path | What it is |
 |---|---|
