@@ -644,15 +644,20 @@ img { max-width: 100%; }
       </table>
     </div>
 
-    <h3>The baseline is deliberately mine</h3>
+    <h3>The opponent is the compiler</h3>
     <p>
-      HuggingFace's own Qwen3.5 modeling code dispatches Gated DeltaNet to hand-written Triton via
-      <code>flash-linear-attention</code>, and its attention to FlashAttention. Benchmarking against that
-      would compare hand-tuned Triton to hand-tuned Triton while claiming to beat a compiler, and a
-      knowledgeable reader would catch it in a minute. <code>transformers</code> is used only to load weights,
-      tokenize, and act as a correctness oracle — never as the baseline. For the same reason
-      <code>reference.py</code> never calls <code>scaled_dot_product_attention</code>: SDPA <em>is</em> the
-      fused kernel under test. <code>reference_purity_test.py</code> enforces that line in CI.
+      The question is where a hand-written kernel beats <code>torch.compile(mode="max-autotune")</code>, so
+      the baseline has to be the compiler's own output and nothing else. <code>reference.py</code> is pure
+      PyTorch with no custom kernels anywhere in it, and <code>max-autotune</code> compiles it.
+    </p>
+    <p>
+      HuggingFace's Qwen3.5 modeling code answers a different question. It dispatches Gated DeltaNet to
+      hand-written Triton via <code>flash-linear-attention</code> and attention to FlashAttention, so a
+      candidate measured against it would be scored on whether my Triton beats theirs — a worthwhile
+      question, and not this one. <code>transformers</code> loads weights, tokenizes, and serves as a
+      correctness oracle; it is never the baseline. For the same reason <code>reference.py</code> never calls
+      <code>scaled_dot_product_attention</code>: SDPA <em>is</em> the fused kernel under test.
+      <code>reference_purity_test.py</code> enforces that line in CI.
     </p>
 
     <div class="pull">
@@ -972,7 +977,7 @@ img { max-width: 100%; }
 
     <h3><span class="h3num">5.3</span> The compiler's dequantisation fusion is site-dependent</h3>
     <p>
-      The obvious generalisation of 4.2 — "inductor fuses grouped dequantisation into a GEMV prologue" — is
+      The obvious generalisation of 5.2 — "inductor fuses grouped dequantisation into a GEMV prologue" — is
       <b>false</b>, and the dump refuted it before a kernel was written. At the 96 MLP projections inductor
       materialises the dequantised weight as a full <code>(2560, 9216)</code> <b>fp32</b> tensor — 94.37 MB a
       site — in a <em>pointwise</em> kernel carrying the unpack, then runs the matmul as a <b>separate</b>
@@ -1115,8 +1120,8 @@ img { max-width: 100%; }
       <h2>Method</h2>
     </div>
     <p>
-      The methodology is the part I would most want to be judged on, because it is what makes the negative
-      results usable.
+      A kernel is specific to one model on one card; a measurement you can trust is not. This is how every
+      number above was produced, and it is the part of the project that transfers.
     </p>
 
     <div class="cards">
@@ -1206,7 +1211,7 @@ img { max-width: 100%; }
       <code>graveyarded on mechanism</code> (closed by arithmetic, with the numbers that closed it),
       <code>incorrect</code> (failed a gate, with error magnitudes), <code>precondition_failed</code> and
       <code>error</code>. A precondition-skipped slot is recorded as <b>unexecuted, not refuted</b> — two defects
-      survived a rental that way, and the 52.75% prize in 4.3 was declined twice before it was finally measured.
+      survived a rental that way, and the 52.75% prize in 5.3 was declined twice before it was finally measured.
     </p>
 
     <h3>Cost control in code, not discipline</h3>
@@ -1239,11 +1244,10 @@ img { max-width: 100%; }
       — fixed cost on the same host fell from ~72 minutes to ~22.
     </p>
 
-    <h3>Infrastructure, honestly</h3>
+    <h3>Twenty-two blockers, and three that hid each other</h3>
     <p>
-      Twenty-two numbered blockers are tracked with status and proof, because each rental that got further than
-      its predecessor did so by exposing the next one. Three of them could not even be <em>seen</em> until the
-      one before was fixed: a cold compile that never finished hid a teardown bug that only fires
+      They are tracked with status and proof, because each rental that got further than its predecessor did so
+      by exposing the next one. The three could not even be <em>seen</em> until the one before was fixed: a cold compile that never finished hid a teardown bug that only fires
       <em>between</em> slots, which in turn hid dynamo's <code>recompile_limit</code> (8) silently timing
       <b>eager</b> candidates against a compiled reference — the cause of six unrelated kernels all returning
       ratios between 0.146 and 0.157. Those six numbers are kept in the leaderboard marked
@@ -1280,17 +1284,17 @@ img { max-width: 100%; }
         <p><b>Not beating vLLM or SGLang.</b> Those are already hand-tuned Triton and CUDA; out of scope as a win
           condition.</p>
         <p><b>Not a serving engine, not training, not multi-GPU.</b> Single-card inference decode only.</p>
-        <p><b>No estimated, placeholder or illustrative numbers anywhere in the repository.</b> Every number came
-          off a real card, and the ones that do not mean what they appear to mean say so in the line that reports
-          them.</p>
+        <p><b>Every number is measured.</b> Nothing in the repository is estimated, illustrative or
+          placeholder; each figure came off a rented card, and the ones that do not mean what they appear to
+          mean say so in the line that reports them.</p>
       </div>
       <div class="card">
         <h4>Open, and recorded as open <span>loose ends</span></h4>
-        <p><b>The loss level in 4.3 is unexplained.</b> The candidate's actual traffic is 13.44 GB/token against
+        <p><b>The loss level in 5.3 is unexplained.</b> The candidate's actual traffic is 13.44 GB/token against
           a 5.19 GB/token byte model; the fp32 write and read-back of 17 operands accounts for 3.21 GB, leaving
-          <b>~5.04 GB unattributed</b>. My first reading of those ratios back-solved a "multiplier on the
-          quantised weight" and treated it as evidence about where fusion happens; the buffer census refuted that
-          arithmetic, and the file says so rather than keeping the tidier story.</p>
+          <b>~5.04 GB unattributed</b>. An earlier reading of those ratios back-solved a "multiplier on the
+          quantised weight" and treated it as evidence about where fusion happens. The buffer census refuted
+          that arithmetic, and the write-up carries the correction rather than the tidier story.</p>
         <p><b>One rental-40 number has never reproduced.</b> The int4 head's 1.0791 belongs to that rental; later
           rentals on healthy cards gave 1.0161, 1.0105 and 0.9851. The leaderboard does not pretend otherwise.</p>
         <p><b>One infrastructure blocker has no real fix</b>, only a manual <code>--exclude-machines</code>
