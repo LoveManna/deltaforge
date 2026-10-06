@@ -168,9 +168,9 @@ Two things that only a control slot could have established, and both change the 
   three defects in the gates themselves, including a threshold set finer than the statistic
   could resolve: one slot missed its bar by eight hundredths of a single token.
 
-There are no estimated, placeholder or illustrative numbers anywhere in this repo. Every
-number here came off a real card, and the ones that do not mean what they appear to mean say
-so. `LEADERBOARD.md` and `results/batches/003-int8-weight-only/README.md` carry the detail.
+Every number is measured. Nothing in this repository is estimated, illustrative or
+placeholder; each figure came off a rented card, and the ones that do not mean what they
+appear to mean say so. `LEADERBOARD.md` and `results/batches/003-int8-weight-only/README.md` carry the detail.
 
 ## What is being claimed
 
@@ -226,7 +226,7 @@ Four columns are reported by default; `--columns all` adds a fifth:
 
 ## What is *not* being claimed
 
-These are non-goals, stated up front because a knowledgeable reader will ask:
+Non-goals, so that the win condition is unambiguous:
 
 - **Beating cuBLAS on dense bf16 GEMM.** We will not win there and this README says so.
   At batch 1 the linear layers are already at the bandwidth roofline; you cannot beat a
@@ -262,17 +262,18 @@ Benchmarking it would quietly turn "our kernels are faster" into "we enabled spe
 decoding". Both exclusions are enforced in `src/deltaforge/weights.py`, which reports every
 tensor it skipped.
 
-## The baseline is ours, on purpose
+## The opponent is the compiler
 
-The baseline is `src/deltaforge/reference.py` — a pure-PyTorch implementation of the
-decode forward pass containing **no custom kernels of any kind**.
+The question is where a hand-written kernel beats `torch.compile(mode="max-autotune")`, so
+the baseline has to be the compiler's own output and nothing else. It is
+`src/deltaforge/reference.py` — a pure-PyTorch implementation of the decode forward pass
+containing **no custom kernels of any kind** — under `max-autotune`.
 
-HuggingFace's own Qwen3.5 modeling code dispatches the Gated DeltaNet layers to
-hand-written Triton via `flash-linear-attention`, and its attention to FlashAttention.
-Benchmarking against that would compare hand-tuned Triton to hand-tuned Triton while
-claiming to beat a compiler. The claim would be false and a knowledgeable reader would
-catch it in a minute. HuggingFace `transformers` is used only to load weights, tokenize,
-and act as a **correctness oracle**. It is never the baseline.
+HuggingFace's own Qwen3.5 modeling code answers a different question. It dispatches the
+Gated DeltaNet layers to hand-written Triton via `flash-linear-attention`, and its attention
+to FlashAttention, so a candidate measured against it would be scored on whether our Triton
+beats theirs — a worthwhile question, and not this one. HuggingFace `transformers` loads
+weights, tokenizes, and acts as a **correctness oracle**. It is never the baseline.
 
 For the same reason `reference.py` does not call `torch.nn.functional.scaled_dot_product_attention`:
 SDPA *is* the fused attention kernel we are trying to hand-write. See the module docstring

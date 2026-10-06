@@ -131,13 +131,18 @@ that site forfeits the RMSNorm fusion the reference welds into the `lm_head` mat
 | Noise band | interquartile spread of the per-round ratios. **A margin smaller than its IQR is not a win.** |
 | Hardware | 47 RTX 5090 rentals, 9 RTX 4090; torch 2.11.0+cu128, Triton 3.6.0 |
 
-**The baseline is deliberately mine.** HuggingFace's own Qwen3.5 modeling code dispatches
-Gated DeltaNet to hand-written Triton via `flash-linear-attention` and attention to
-FlashAttention. Benchmarking against that would compare hand-tuned Triton to hand-tuned
-Triton while claiming to beat a compiler. `transformers` is used only to load weights,
-tokenize, and act as a correctness oracle — never as the baseline. For the same reason
-`reference.py` never calls `scaled_dot_product_attention`: SDPA *is* the fused kernel under
-test. `reference_purity_test.py` enforces this in CI.
+**The opponent is the compiler.** The question is where a hand-written kernel beats
+`torch.compile(mode="max-autotune")`, so the baseline has to be the compiler's own output and
+nothing else: `reference.py` is pure PyTorch with no custom kernels anywhere in it, and
+`max-autotune` compiles it.
+
+HuggingFace's Qwen3.5 modeling code answers a different question. It dispatches Gated DeltaNet
+to hand-written Triton via `flash-linear-attention` and attention to FlashAttention, so a
+candidate measured against it would be scored on whether my Triton beats theirs — a worthwhile
+question, and not this one. `transformers` loads weights, tokenizes, and serves as a correctness
+oracle; it is never the baseline. For the same reason `reference.py` never calls
+`scaled_dot_product_attention`: SDPA *is* the fused kernel under test.
+`reference_purity_test.py` enforces this in CI.
 
 **The baseline is the project's most reusable number:**
 
@@ -270,7 +275,7 @@ it *traces*, because tracing needs Triton.
 
 ### 5.3 The compiler's dequantisation fusion is site-dependent
 
-The obvious generalisation of 4.2 — "inductor fuses grouped dequantisation into a GEMV
+The obvious generalisation of 5.2 — "inductor fuses grouped dequantisation into a GEMV
 prologue" — is **false**, and the dump refuted it before a kernel was written. At the 96 MLP
 projections inductor materialises the dequantised weight as a full `(2560, 9216)` **fp32**
 tensor — 94.37 MB a site — in a *pointwise* kernel carrying the unpack, then runs the matmul
@@ -398,8 +403,8 @@ heuristic tile nobody chose on purpose is the best of them. The tile question is
 
 ## 6. Method
 
-The methodology is the part I would most want to be judged on, because it is what makes the
-negative results usable.
+A kernel is specific to one model on one card; a measurement you can trust is not. This is how
+every number above was produced, and it is the part of the project that transfers.
 
 **Interleaved scoring.** Both models are resident at once and timed in alternating rounds,
 so thermal drift and clock changes cancel. They are separate module trees — installing a
@@ -461,7 +466,7 @@ doesn't work": `win`, `loss`, `inconclusive` (inside the noise band — neither 
 buried), `graveyarded on mechanism` (closed by arithmetic, with the numbers that closed it),
 `incorrect` (failed a gate, with error magnitudes), `precondition_failed` and `error`. A
 precondition-skipped slot is recorded as **unexecuted, not refuted** — two defects survived
-a rental that way, and the 52.75% prize in 4.3 was declined twice before it was finally
+a rental that way, and the 52.75% prize in 5.3 was declined twice before it was finally
 measured.
 
 **Batching, because fixed cost dominates.** A rental's fixed cost — image, torch, a 9.32 GB
@@ -496,9 +501,9 @@ to improve. A later rental spent ~33 minutes pushing a 2.2 GB cache to save ~3.5
 compiling, so pushes above `DF_CACHE_MAX_PUSH_MB` are now refused — fixed cost on the same
 host fell from ~72 minutes to ~22.
 
-**Infrastructure, honestly.** Twenty-two numbered blockers are tracked with status and
+**Twenty-two blockers, and three that hid each other.** They are tracked with status and
 proof, because each rental that got further than its predecessor did so by exposing the next
-one. Three of them could not even be *seen* until the one before was fixed: a cold compile
+one. The three could not even be *seen* until the one before was fixed: a cold compile
 that never finished hid a teardown bug that only fires *between* slots, which in turn hid
 dynamo's `recompile_limit` (8) silently timing **eager** candidates against a compiled
 reference — the cause of six unrelated kernels all returning ratios between 0.146 and 0.157.
@@ -508,14 +513,14 @@ deleting evidence is worse than labelling it.
 **Scale:** ~37k lines of Python and POSIX shell and **1160 tests — 1142 of which pass on a
 laptop with no GPU and no checkpoint** (18 skip without a card), plus `cli fusion` — which compiles a
 candidate locally and diffs the generated code, so "does this registration install a fusion
-barrier?" is answered **before** renting a card. That tool is what refuted 4.3's
+barrier?" is answered **before** renting a card. That tool is what refuted 5.3's
 generalisation for free.
 
 ---
 
 ## 7. What is *not* claimed
 
-Stated up front because a knowledgeable reader will ask:
+Stated so that the win condition is unambiguous:
 
 - **Not beating cuBLAS on dense bf16 GEMM.** At batch 1 the linear layers are at the
   bandwidth roofline; you do not beat a roofline with a better kernel, only by moving fewer
@@ -525,20 +530,20 @@ Stated up front because a knowledgeable reader will ask:
 - **Not beating vLLM or SGLang.** Those are already hand-tuned Triton and CUDA; out of scope
   as a win condition.
 - **Not a serving engine, not training, not multi-GPU.** Single-card inference decode only.
-- **No estimated, placeholder or illustrative numbers anywhere in the repository.** Every
-  number came off a real card, and the ones that do not mean what they appear to mean say so
-  in the line that reports them.
+- **Every number is measured.** Nothing in the repository is estimated, illustrative or
+  placeholder; each figure came off a rented card, and the ones that do not mean what they
+  appear to mean say so in the line that reports them.
 
 ---
 
 ## 8. Open, and recorded as open
 
-- **The loss level in 4.3 is unexplained.** The candidate's actual traffic is 13.44
+- **The loss level in 5.3 is unexplained.** The candidate's actual traffic is 13.44
   GB/token against a 5.19 GB/token byte model; the fp32 write and read-back of 17 operands
-  accounts for 3.21 GB, leaving **~5.04 GB unattributed**. My first reading of those ratios
+  accounts for 3.21 GB, leaving **~5.04 GB unattributed**. An earlier reading of those ratios
   back-solved a "multiplier on the quantised weight" and treated it as evidence about where
-  fusion happens; the buffer census refuted that arithmetic, and the file says so rather
-  than keeping the tidier story.
+  fusion happens. The buffer census refuted that arithmetic, and the write-up carries the
+  correction rather than the tidier story.
 - **One rental-40 number has never reproduced.** The int4 head's 1.0791 belongs to that
   rental; later rentals on healthy cards gave 1.0161, 1.0105 and 0.9851. The leaderboard
   does not pretend otherwise.
