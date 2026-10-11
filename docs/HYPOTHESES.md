@@ -271,59 +271,50 @@ to them is now `int4_head_torch_dequant`'s, applied to the MLP — `061`, 52.75%
 bytes at a 1.6545x ceiling, registered and **declined on a floor that tested the wrong
 proposition** (see the graveyard note below). It is the first slot of the next batch.
 
-**MEASURED, rental 56 (2026-10-01): the fusion is site-dependent and does not reach the
-MLP. The ladder below is SUSPENDED.** `--dump-install int4_mlp_torch_dequant` cost one step
-and refuted the ladder's premise without a slot running. At the 96 MLP projections inductor
-emits a **pointwise kernel that writes two complete `(2560, 9216)` fp32 weight tensors** and
-a **separate** reduction kernel for the matmul — 94.4 MB a site, 34 such allocations in the
-graph, **zero `extern_kernels.mm`**, so it is not a cuBLAS fallback but a deliberate
-materialisation. That is **18.12 GB/token** against a reference moving 8587.80, and
-`071-int4-mlp-torch-dequant` would have measured **~0.37** against its registered 1.25-1.55.
+**CORRECTED 2026-10-06: at the MLP the compiler writes the matmul's product, and that is an
+inductor bug.** Rentals 56 and 57's dumps show a pointwise kernel that writes a `(1, K, N)`
+fp32 tensor (94.4 MB a site) and a separate split-K reduction that reads it back, with zero
+`extern_kernels.mm`. This entry first recorded that tensor as the dequantised weight. It is
+the product of inductor's M=1 `mm` decomposition, `(x.unsqueeze(2) * W.unsqueeze(0)).sum(1)`
+in fp32 under `pw_cast_for_opmath`, which `max-autotune` enables. It is written to memory
+when the fused producers of `x` and `W` together exceed `realize_opcount_threshold` (30)
+while neither does alone. Counted by kernel launch, it is written at **64 of 96 MLP sites**
+per decode step: all 32 `down_proj`, and 32 of 64 `gate`/`up`. The "17 of 96" census counted
+allocations and missed `# reuse`, and the "inductor materialises when it can afford to"
+reading is withdrawn, because the rule counts ops and never looks at size. Reported upstream
+as [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539), with a fix in
+draft PR [#200540](https://github.com/pytorch/pytorch/pull/200540). `RESULTS.md` §7 and
+`AGENT.md` §1.2 have the detail.
 
-**So `056`'s win was narrower than this entry recorded it.** Not "inductor fuses a grouped
-dequantisation into a GEMV prologue" but "it fused at the one site where materialising was
-unaffordable": the head's dequantised fp32 operand would be **2.54 GB** where the MLP's is
-94.4 MB. The ranked reading is that **inductor materialises when it can afford to.**
-
-**CLOSED on rental 57 (2026-10-02). It was one line, the line was measured, and it is a
-no-op.** `torch_dequant_gemv_int4_bf16` is `torch_dequant_gemv_int4` with the matmul left in
-bf16 — one operator — and batch 012 ran the pair at two widths:
+**MEASURED, rental 57 (2026-10-02): the matmul dtype is a no-op.**
+`torch_dequant_gemv_int4_bf16` is `torch_dequant_gemv_int4` with the matmul left in bf16, one
+operator apart, and batch 012 ran the pair at two widths:
 
 | pair | fp32 | bf16 | margin | IQRs |
 |---|---:|---:|---:|---|
 | tied head, 248320 wide | **1.0251** | **1.0218** | −0.0033 | 0.0104 / 0.0081 |
 | 96 MLP projections | **0.6390** | **0.6452** | +0.0062 | 0.0060 / 0.0259 |
 
-Both inside their own spreads and pointing opposite ways; candidate columns at **458 against
-458 GB/s**; layer 2 agreeing to five decimals at the head (0.0167417 / 0.0167412) and four at
-the MLP. **The dtype does nothing.**
+Both margins sit inside their own spreads and point opposite ways. The candidate columns are
+at **458 against 458 GB/s**, and layer 2 agrees to five decimals at the head
+(0.0167417 / 0.0167412) and four at the MLP. The decomposition explains it: it upcasts bf16
+operands to fp32 before the multiply, so both arms write the same fp32 products.
 
-**The dump says why, and it is a fact about where inductor decides rather than about dtypes.**
-The reference's graphs hold no dequantised weight buffers at all; the **bf16** candidate's two
-graphs each hold **16 fp32 `(1, 2560, 9216)` buffers and one `down_proj`-shaped one — 17 of 96
-MLP sites — and zero bf16 buffers of either shape**, with the unpack as a pointwise kernel,
-the matmuls as separate `mm` reductions, and zero `extern_kernels.mm`. **Inductor materialises
-upstream of `.to(x.dtype)`** — the cast is applied to a buffer already written at full fp32
-width, so no spelling of the matmul can move it.
+**The losses are measured with the bug in place.** `077-int4-mlp-torch-dequant` is a loss at
+**0.6390** and `081-int4-wide-torch-dequant-bf16` (200 sites, 97.85% of the bytes) at
+**0.6150**. Priced at full DRAM cost, the 64 product round trips come to 12.08 GB/token,
+which is more than the 8.25 GB gap between the candidate's byte model and its measured
+traffic. How much of that L2 absorbs is not measured.
 
-**The affordability reading does not extrapolate either.** It predicted narrower sites
-materialise *more*; the census says the 9216-wide output sites carry 16 of 64 buffers and
-`down_proj` carries **1 of 32**. `081-int4-wide-torch-dequant-bf16` at 200 sites and 97.85% of
-the bytes returned **0.6150**, no worse than the MLP's 0.639.
-
-**One thing in this entry is NOT settled, and it is the size of the loss.** 17 materialised
-operands written and read back are 3.21 GB/token, against an 8.25 GB gap between the
-candidate's byte model and the traffic its achieved bandwidth implies. **~5 GB/token is
-unattributed.** `012`'s first writeup back-solved a per-weight multiplier from the ratios
-instead and read the result as evidence about fusion; that arithmetic assumed all excess
-traffic was the weight, and the allocation count refutes it. Count buffers from the dump,
-which is on disk and costs nothing.
-
-**So this entry's route to the 91.85% is closed, and exactly one untested route remains**:
-make the fp32 intermediate never exist — bf16 group scales, or an unpack whose cast precedes
-the arithmetic — so there is no fp32 buffer for inductor to choose to write. That is a
-different hypothesis from this one and nothing has measured it. Full account in
-[`012-the-matmul-dtype`](../results/batches/012-the-matmul-dtype/).
+**So this entry is OPEN again, behind one untested slot:** `077` with the product never
+written. That means `realize_opcount_threshold` raised for the candidate column only (the
+harness has no per-column inductor config yet) or the upstream fix installed. Check
+compile time and correctness on the whole model. The route this entry named on rental 57,
+"bf16 group scales, or an unpack whose cast precedes the arithmetic", is withdrawn: the
+product is fp32 because of the decomposition, whatever the operands' dtype. Full accounts in
+[`011`](../results/batches/011-bytes-not-kernels/) and
+[`012-the-matmul-dtype`](../results/batches/012-the-matmul-dtype/), each with a correction
+note.
 
 **Registered as a ladder, batch 011 (2026-09-30), and four rungs declined unmeasured.** The
 card ran at 0.34x, so `067` fell below the identity slot and every gate behind it read

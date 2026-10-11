@@ -50,9 +50,9 @@ has least to gain. That is close to a closed argument.
 **What is not closed is the program.** The compiler picks instructions; it does not pick
 
 * **how many bytes the weights occupy** — quantisation and layout are ours. **Read the
-  correction in §1.2 before building on this**: rental 56 showed `056`'s fusion does not
-  generalise past the one site it was measured at, so the 91.85% is not behind one fact, it
-  is behind one fact *per site shape*.
+  correction in §1.2 before building on this**: at the MLP an inductor bug writes the M=1
+  matmul's fp32 product to memory, so `056`'s fusion did not carry over. The 91.85% is
+  behind that bug at the MLP, and nothing has measured it without the bug.
 * **how many forward passes a token costs** — speculative decoding changes it under a
   property of greedy decoding no scheduler can observe. γ is measured now (§5) and the open
   question is a 23% step, not the drafter.
@@ -70,65 +70,71 @@ replacement has to beat it by **more than the fusion it destroys**, which the ta
 prices at 3-37% depending on what sits next to it. Every slot reports achieved GB/s beside
 its ratio, so any batch can notice this; none has yet.
 
-### 1.2 Correction (rental 56): the compiler's dequant fusion is site-dependent
+### 1.2 Correction (rentals 56-57): at the MLP, inductor writes the matmul's product
 
 §1.1 generalised from `056` — the int4 head written in torch, which inductor compiled into
 one reduction carrying the whole grouped unpack with **no weight-sized buffer in the graph**
-— to "write the quantisation in torch and inductor will fuse it". **That generalisation is
-wrong, and the dump that cost nothing says so.**
+— to "write the quantisation in torch and inductor will fuse it". **At the MLP that is
+false, and the reason is a compiler bug, not the program.**
 
-At the 96 MLP projections, the same source expression produces a **pointwise kernel that
-writes two complete `(2560, 9216)` fp32 weight tensors** and a **separate** reduction kernel
-for the matmul. 94.4 MB a site, 34 such allocations in the graph, zero `extern_kernels.mm`:
-inductor is not falling back to cuBLAS, it is choosing to materialise. That is
-**18.12 GB/token** of extra traffic against a reference that moves 8.59, so
-`071-int4-mlp-torch-dequant` would have returned **~0.37** against its registered 1.25-1.55.
+**What happens.** `max-autotune` turns on `coordinate_descent_tuning`, which makes inductor
+decompose an `mm` with M=1 into `(x.unsqueeze(2) * W.unsqueeze(0)).sum(1)`, computed in fp32
+under `pw_cast_for_opmath`. The producers of `x` (RMSNorm, silu·mul) and of `W` (the nibble
+unpack) are inlined into that `(1, K, N)` product. If the two chains are each ≤30 ops but
+together exceed `realize_opcount_threshold` (30 on GPU), `GraphLowering.run_node` writes
+the product to memory, and a split-K reduction reads it back: 4·K·N bytes each way, 94.4 MB
+a site here. If either chain is over 30 alone, `expand`'s reuse check realises that operand
+first and the product fuses, so the bug fires only inside a window. The fp32 `(1, 2560, 9216)`
+buffers in rentals 56 and 57 are these products. They are **not** the dequantised weight,
+although they have its shape, and they were recorded as weights until 2026-10-06.
 
-The operands differ by 27x — the head's dequantised fp32 weight would be **2.54 GB**, the
-MLP's is 94.4 MB — so the ranked reading is that **inductor materialises when it can afford
-to, and the head's fusion was forced rather than chosen.**
+**Where.** Rentals 56 and 57's candidate graphs each write the product at **64 of 96 MLP
+sites**: all 32 `down_proj`, and 32 of the 64 `gate`/`up` (16 launches of one kernel with two
+outputs). Why the other 32 escape was not checked; the window is the obvious suspect. The
+earlier "17 of 96" counted `empty_strided_cuda` allocations, and inductor recycles buffers
+through `# reuse` lines. The "materialises when it can afford to" reading is dead: the rule
+counts ops and never looks at size.
 
-**How to apply.** "Express it in torch and let the compiler fuse it" is not a law, it is a
-measurement that holds at one site shape. Before extending a fusion result to a new site,
-**dump the generated code at that site** and look for an allocation the size of the operand —
-`--dump-install <kernel>` does it for the price of one step, needs no slot, and answered a
-declined hypothesis here. And do not read fusion off a kernel *name*: inductor names a fused
-node after its origins, so four kernels in rental 56's dump carry both the nibble unpack and
-`mm` in their names and none of them performs a matmul. The allocation and the grid size are
-the evidence.
+**Upstream.** Reproduced standalone on torch nightly and 2.14.1, reported as
+[pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539), with a fix in
+draft PR [#200540](https://github.com/pytorch/pytorch/pull/200540), **not merged**. The fix
+realises the small broadcast input `x` instead of the product. On a 4090, the standalone
+`(silu(a)*b) @ dequant_int4(W)` goes from 179.5 to 27.1 µs. The workaround is
+`torch._inductor.config.realize_opcount_threshold = 1000`, which changes realisation for the
+whole graph. The repro, the evidence and the five rentals ($0.63) are in the sibling
+workspace `~/github/inductor-gemv-materialise/HANDOFF.md`, not in this repository.
+`RESULTS.md` §7 is the public account.
 
-**MEASURED, rental 57 (2026-10-02): the dtype is a no-op, and the reason closes this
-section's own question.** Batch 012 ran the pair at two widths. The head: **1.0251** fp32
-against **1.0218** bf16, margin −0.0033. The 96 MLP projections: **0.6390** against
-**0.6452**, margin +0.0062. Both inside their IQRs, pointing opposite ways, with the
-candidate columns at **458 against 458 GB/s** and layer 2 agreeing to five decimal places.
+**What it reopens, untested.** `077` (int4 MLP, **0.6390**) and `081` (int4 wide, **0.6150**)
+were measured with the bug in place. The int4 line at 52.75-97.85% of per-token bytes is
+**open again** behind one slot: `077` with the product never written. Two things to settle
+before registering it. First, the harness compiles every column with `torch.compile(model,
+mode="max-autotune")` and has no per-column inductor config, so a global threshold also
+changes the reference; patch the config around the candidate's first call, or install the
+fix. Second, check whole-model compile time and correctness, because raising the threshold
+inlines more everywhere. **Withdrawn:** "bf16 scales, or an unpack whose cast precedes the
+arithmetic". The product is fp32 because of `pw_cast_for_opmath`, whatever the operand
+dtypes.
 
-**Why, from the dump of the bf16 candidate:** the reference's graphs hold zero dequantised
-weight buffers; the candidate's two hold **16 fp32 `(1, 2560, 9216)` buffers plus one
-`down_proj`-shaped one each — 17 of 96 MLP sites — and zero bf16 buffers of either shape**,
-with the unpack as a pointwise kernel and the matmuls as separate `mm` reductions, and zero
-`extern_kernels.mm`. **Inductor picks its materialisation point upstream of `.to(x.dtype)`**,
-so the cast is applied to a buffer already written at full fp32 width. A matmul's dtype
-cannot move a decision made before the matmul. `flat.float() @ dense.float()` was never the
-lever, and no spelling of this expression is.
+**MEASURED, rental 57 (2026-10-02): the matmul dtype is a no-op**, and the decomposition is
+why. The head: **1.0251** fp32 against **1.0218** bf16. The 96 MLP projections: **0.6390**
+against **0.6452**. Both margins sit inside their IQRs and point opposite ways, and the
+candidate columns are at **458 against 458 GB/s**. The bf16 arm writes the same fp32
+products, because the decomposition upcasts to fp32 before the multiply.
 
-**The affordability reading also fails as a predictor of direction**, but read it off the
-*census*, not off the ratios: the 9216-wide output sites carry 16 of 64 buffers and
-`down_proj` carries 1 of 32, so the cheaper narrower operand materialises **less**. `081` at
-200 sites and 97.85% of the bytes returned **0.6150**, no worse than the MLP's 0.639.
-
-**Count allocations; do not back-solve a multiplier from a ratio.** `012`'s writeup first
-inferred "2.07x the quantised weight at the MLP, 1.64x at the wide sites" from the achieved
-bandwidths and read the difference as evidence about fusion. The dump refutes that arithmetic:
-17 operands account for **3.21 GB/token of the 8.25 GB** by which the candidate exceeds its own
-byte model, and **~5 GB is unattributed** — the first thing the next session should count, for
-free, from the dump already on disk.
-
-**What is left of the 91.85%, stated precisely.** Not a dtype and not a kernel: the only
-untested route is making the fp32 intermediate *never exist* — bf16 group scales, or an
-unpack whose cast precedes the arithmetic — so there is no fp32 buffer for inductor to choose
-to write. Everything else in this line is closed; see
-`results/batches/012-the-matmul-dtype/`.
+**How to apply.**
+- Before extending a fusion result to a new site, **dump the generated code at that site**.
+  `--dump-install <kernel>` costs one step and needs no slot.
+- **Count kernel launches and their outputs, not allocations.** `# reuse` hides most
+  buffers.
+- **Read what a kernel stores before naming the buffer.** A `(1, K, N)` fp32 buffer next to
+  an M=1 matmul is the product, not `W`.
+- Do not read fusion off a kernel *name*. Inductor names a fused node after its origins, so
+  the product kernel carries both the unpack and `mm` in its name and performs no matmul.
+- **Do not back-solve a mechanism from a ratio.** `012`'s writeup inferred per-weight
+  multipliers from achieved bandwidth. Priced at DRAM cost, the 64 products (12.08 GB/token)
+  now exceed the 8.25 GB gap between the candidate's byte model and its traffic. How much of
+  each round trip L2 absorbs is unmeasured.
 
 ## 2. The arithmetic that decides whether your hypothesis is worth trying
 
@@ -353,7 +359,8 @@ it, or put it in a PR body. CI greps tracked files for it. The same applies to t
 file rather than `argv`, and `remote/scripts_test.py` asserts that.
 
 **If a run hangs before sshd answers, read `docs/GPU-ACCESS.md` before renting again.**
-**Fifty-six instances created, fifty-six destroyed, $11.489 lifetime, zero leaked. Both
+**Sixty-one instances created, sixty-one destroyed, $12.120 lifetime, zero leaked** (five
+of them, $0.631, for the upstream report in §1.2). **Both
 champions are kernels this project deleted rather than wrote.**
 
 **Rental 56 (2026-10-01): batch 011 ran six of ten slots and the two findings are both
@@ -382,7 +389,7 @@ for the first time (426 W of 500, throttle `0x0`), which rules out blocker 18's 
 this host.
 
 **Batch 012 is registered (2026-10-02): `012-the-matmul-dtype`, eight slots, and it is
-three pairs one operator apart.** §1.2 has the mechanism and the ranked prediction. Two
+three pairs one operator apart.** §1.2 has the corrected mechanism. Two
 things in it are deliberate and are the lesson of rental 46 applied in both directions.
 **`077-int4-mlp-torch-dequant` runs ungated** — 52.75% of per-token bytes, registered a win
 twice and executed neither time, now registered a **loss at 0.33-0.45** and run as the

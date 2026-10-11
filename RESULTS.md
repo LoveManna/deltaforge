@@ -35,7 +35,7 @@ exist is something the compiler emits inline. That the two are the same program 
 assumption — layer 2 returned 0.9318 agreement and 0.01674 nats for both, digit for digit, on
 six rentals.
 
-**Every number here came off a rented card, with its outcome and magnitude registered in a
+**Every batch number here came off a rented card, with its outcome and magnitude registered in a
 manifest committed before the GPU existed** — 12 batches, 56 rentals, $11.49 of compute, an
 identity control that can void a batch, two correctness gates, and 56 of 56 instances
 destroyed.
@@ -273,30 +273,39 @@ reached `.data_ptr()` instead of being intercepted by `wrap_triton`. It cost 34 
 time. The CPU suite could assert the op was *registered* and structurally could not assert
 it *traces*, because tracing needs Triton.
 
-### 5.3 The compiler's dequantisation fusion is site-dependent
+### 5.3 At the MLP, inductor writes the matmul's product to memory
 
 The obvious generalisation of 5.2 — "inductor fuses grouped dequantisation into a GEMV
-prologue" — is **false**, and the dump refuted it before a kernel was written. At the 96 MLP
-projections inductor materialises the dequantised weight as a full `(2560, 9216)` **fp32**
-tensor — 94.37 MB a site — in a *pointwise* kernel carrying the unpack, then runs the matmul
-as a **separate** reduction that reads the buffer back. Zero `extern_kernels.mm` anywhere:
-this is a chosen materialisation, not a cuBLAS fallback.
+prologue" — is **false at the MLP**, and the dump showed it before a kernel was written. At
+the MLP projections a *pointwise* kernel carries the activation's producers, the whole
+unpack and a multiply, and writes a full `(1, K, N)` **fp32** tensor — 94.37 MB a site —
+which a **separate** split-K reduction reads back. Zero `extern_kernels.mm` anywhere.
 
-A census counted per decode step from the candidate's own graph, rather than back-solved
-from a ratio:
+That buffer is **not the dequantised weight**, which is what this section first said. It is
+the product of inductor's M=1 `mm` decomposition, `(x.unsqueeze(2) * W.unsqueeze(0)).sum(1)`
+in fp32, which `max-autotune` enables. The kernel stores `x[k] · W[k, n]`, and the shape
+matches `W`'s, which is how it was misread. Inductor writes it out when the op counts of the
+fused producers of `x` and `W` together cross `realize_opcount_threshold`. §7 has the
+mechanism, the standalone repro and the upstream fix.
 
-| dequantised operand | sites | buffers per graph | of how many sites |
+Counted per decode step from the candidate's graph, by kernel **launch** rather than by
+allocation:
+
+| product | sites | written per graph | of how many sites |
 |---|---|---:|---:|
-| `(1, 2560, 9216)` fp32 | `gate_proj` / `up_proj`, K=2560 N=9216 | **16** | 64 |
-| `(1, 9216, 2560)` fp32 | `down_proj`, K=9216 N=2560 | **1** | 32 |
+| `(1, 2560, 9216)` fp32 | `gate_proj` / `up_proj`, K=2560 N=9216 | **32** | 64 |
+| `(1, 9216, 2560)` fp32 | `down_proj`, K=9216 N=2560 | **32** | 32 |
 
-**17 of 96 sites.** This also inverts the ranked prediction that cheaper, narrower operands
-would materialise *more*: the wide-output sites carry nearly all the buffers.
+**64 of 96 sites.** An earlier census counted `empty_strided_cuda` allocations and got 17,
+because inductor recycles the buffers through `# reuse` lines. The size-based reading — that
+inductor "materialises when it can afford to" — is withdrawn: the rule that writes these
+buffers counts ops and never looks at size.
 
-And the prize this implied — int4 on 52.75% of per-token bytes — had been registered as a
+And the prize this hides — int4 on 52.75% of per-token bytes — had been registered as a
 predicted win **twice** and declined unexecuted both times on a precondition gate. Run
 ungated, it is a **measured loss at 0.6390, IQR 0.0060**, the tightest band in its batch.
-Taking the same construction to 200 sites and 97.85% of the bytes returned **0.6150**.
+Taking the same construction to 200 sites and 97.85% of the bytes returned **0.6150**. Both
+were measured with the compiler bug in place, and neither has been re-run without it.
 
 ### 5.4 The GEMV was grid-starved, not structurally slow — and an aggregate could not show it
 
@@ -324,7 +333,7 @@ once per output, and the dequantisation landed on an already-saturated issue por
 int8 ceiling is real arithmetic and unreachable by an implementation that is not spending
 its time on memory.
 
-### 5.5 The matmul dtype is a no-op, because the materialisation decision is made upstream of the cast
+### 5.5 The matmul dtype is a no-op, because the decomposition computes in fp32 either way
 
 One operator apart, two arms per site width:
 
@@ -335,11 +344,11 @@ One operator apart, two arms per site width:
 
 Both margins sit inside their own interquartile spreads and point in opposite directions;
 the candidate columns agree to the digit on achieved bandwidth (**458 against 458 GB/s** at
-the MLP). The dump says why: the bf16 candidate's graphs hold **17 fp32 weight buffers per
-decode step and zero bf16 ones**. The dequantise arithmetic is fp32 because the group scales
-are fp32, inductor picks its materialisation point *upstream of* `.to(x.dtype)`, and the
-requested cast is applied to a buffer already written at full fp32 width. **Changing a
-matmul's dtype cannot move a decision made before the matmul.**
+the MLP). The dump says why: the bf16 candidate writes the same fp32 products as the fp32
+one and no bf16 buffer of either shape. The M=1 decomposition runs under
+`pw_cast_for_opmath`, which upcasts bf16 operands to fp32 before the multiply, so the
+product is fp32 whatever dtype the source asks for. **Changing the matmul's dtype cannot
+change the dtype of a product the compiler computes in fp32 regardless.**
 
 ### 5.6 A speculative verify is a step, not a slope
 
@@ -487,8 +496,9 @@ shell trap on `EXIT`/`INT`/`TERM` so a crash still destroys the instance. Every 
 `remote/` supports `--dry-run`, which exercises every gate and the teardown trap without
 contacting the create or destroy endpoints.
 
-**Ledger:** 56 instances provisioned, **56 destroyed, zero leaked**, 1621 billed GPU
-minutes, **$11.4887 lifetime**, including two cancelled mid-flight with SIGTERM. The
+**Ledger:** 61 instances provisioned, **61 destroyed, zero leaked**, 1714 billed GPU
+minutes, **$12.1196 lifetime**, including two cancelled mid-flight with SIGTERM. Five of
+those instances ($0.63) ran the upstream report in §7 rather than a batch. The
 cheapest informative rental cost $0.0478; the most expensive mistake cost $1.3878 and spent
 its entire cap inside one compile.
 
@@ -518,7 +528,54 @@ generalisation for free.
 
 ---
 
-## 7. What is *not* claimed
+## 7. Upstream: the 5.3 buffers are a compiler bug, now reported with a fix
+
+Reading rental 57's generated code more closely changed what 5.3 and 5.5 are about. **The
+`(1, K, N)` fp32 buffers are not the dequantised weight.** They are the product of inductor's
+M=1 `mm` decomposition, `(x.unsqueeze(2) * w.unsqueeze(0)).sum(1)` in fp32, which
+`coordinate_descent_tuning` (and so `max-autotune`) turns on. The producers of `x` and `w` are
+fused into that product, and when their op counts together cross `realize_opcount_threshold`
+(30 on GPU) while neither crosses it alone, inductor writes the product to memory and reads it
+back: 4·K·N bytes each way, against 2·K·N for a bf16 weight and K·N/2 for int4. Counted
+through the `# reuse` lines that the 17-buffer census missed, rental 57 writes it at **64 of
+96 MLP sites per decode step**. Sections 5.3 and 5.5 carry the corrected account; this
+section is how it was established.
+
+It reproduces outside this project, on torch nightly and the 2.14.1 release. On an RTX 5090,
+nightly, with the threshold raised to 1000 as the comparison (a workaround that changes
+realisation for the whole graph):
+
+| standalone case | K × N | as compiled | threshold 1000 | slower by |
+|---|---|---:|---:|---:|
+| `(silu(a)*b) @ dequant_int4(W)` | 9216 × 2560 | **92.8 µs** | 18.3 µs | 5.1x |
+| same | 2560 × 9216 | **95.4 µs** | 17.0 µs | 5.6x |
+
+It does not need int4. A bf16 `x @ W` (9216 × 2560) with 24 cheap pointwise ops on `x` takes
+**121.9 µs**, against 37.1–37.8 µs with 22 ops or fewer and 39.4–40.2 µs with 28 or more,
+where `x` alone crosses the threshold and inductor realises it instead.
+
+The fix realises the small broadcast input (`x`, K elements) instead of the broadcast result,
+the choice inductor already makes when one input crosses the threshold by itself. On one RTX
+4090, main against the fix: 221.3 → 74.3 µs for the bf16 case and **179.5 → 27.1 µs (6.6x)**
+for the int4 one, with unchanged numerics and no change wherever the rule does not fire.
+
+- **Issue:** [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539), filed
+  2026-10-10.
+- **Fix:** [pytorch/pytorch#200540](https://github.com/pytorch/pytorch/pull/200540), a draft PR
+  with two regression tests that fail on main. It awaits maintainer triage and is **not
+  merged**.
+- **Cost:** five more rentals, $0.63, in the same ledger as the rest. They ran outside the
+  batch harness: no manifest registered predictions for them, and the timings are Triton
+  `do_bench` times of one compiled function, not interleaved ratios against a reference.
+
+**What it means here is untested.** The int4 slots `077` (MLP, 0.6390) and `081` (wide, 0.6150)
+most likely lost to this bug: 64 product round trips are enough bytes to cover the whole gap
+§9 describes. A slot with the threshold raised, or with the fix, is the next experiment;
+until it runs, those losses stand as measured.
+
+---
+
+## 8. What is *not* claimed
 
 Stated so that the win condition is unambiguous:
 
@@ -536,14 +593,16 @@ Stated so that the win condition is unambiguous:
 
 ---
 
-## 8. Open, and recorded as open
+## 9. Open, and recorded as open
 
-- **The loss level in 5.3 is unexplained.** The candidate's actual traffic is 13.44
-  GB/token against a 5.19 GB/token byte model; the fp32 write and read-back of 17 operands
-  accounts for 3.21 GB, leaving **~5.04 GB unattributed**. An earlier reading of those ratios
-  back-solved a "multiplier on the quantised weight" and treated it as evidence about where
-  fusion happens. The buffer census refuted that arithmetic, and the write-up carries the
-  correction rather than the tidier story.
+- **How much of the 5.3 loss the product buffers explain is not measured.** The
+  candidate's traffic, inferred from its achieved bandwidth, is 13.44 GB/token against a
+  5.19 GB/token byte model: a gap of 8.25 GB. The 17-buffer census priced its buffers at
+  3.21 GB and left ~5 GB unattributed. The 64 products actually written, priced at full DRAM
+  cost, come to **12.08 GB/token**, which is more than the gap, so the census no longer
+  under-explains it. A 94 MB buffer read back right after it is written, on a card with a 96 MB
+  L2, probably does not cost its full DRAM price, but nothing has measured that split. The
+  direct test is the one §7 names: run `077` without the product being written.
 - **One rental-40 number has never reproduced.** The int4 head's 1.0791 belongs to that
   rental; later rentals on healthy cards gave 1.0161, 1.0105 and 0.9851. The leaderboard
   does not pretend otherwise.
@@ -552,7 +611,7 @@ Stated so that the win condition is unambiguous:
 
 ---
 
-## 9. Where to look
+## 10. Where to look
 
 | Path | What it is |
 |---|---|

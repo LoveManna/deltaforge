@@ -1,5 +1,15 @@
 # Batch 011 — the compiler's dequant fusion is site-dependent, and the card was the driver
 
+> **Correction (2026-10-11).** Finding 1's mechanism is wrong. The fp32 `(1, K, N)` tensors
+> below are not the dequantised weight. They are the product of inductor's M=1 `mm`
+> decomposition, `(x.unsqueeze(2) * W.unsqueeze(0)).sum(1)` in fp32, which an op-count rule
+> (`realize_opcount_threshold`) writes to memory. That is an inductor bug, now reported as
+> [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539). Counted by
+> launch, this dump writes it at **64 of 96** sites, not 96, so the 18.12 GB/token and ~0.37
+> figures overstate it (`077` later measured 0.6390). "Inductor materialises when it can
+> afford to" is withdrawn: the rule counts ops and never looks at size. The text below is
+> kept as written; `RESULTS.md` §7 and `AGENT.md` §1.2 have the corrected account.
+
 > **Two findings, neither of them the one this batch was built to get.**
 >
 > **1. Inductor does not fuse a grouped int4 dequantisation into an MLP matmul.** It

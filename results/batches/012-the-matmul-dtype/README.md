@@ -3,6 +3,22 @@
 **The matmul dtype is a no-op at every site width this model has, and the reason is that
 the source dtype does not control the dtype of the buffer inductor materialises.**
 
+> **Correction (2026-10-11).** §2, §4 and §5 below misread the buffers. The fp32 `(1, K, N)`
+> tensors are not the dequantised weight: they are the product of inductor's M=1 `mm`
+> decomposition, `(x.unsqueeze(2) * W.unsqueeze(0)).sum(1)` in fp32 under
+> `pw_cast_for_opmath`, which an op-count rule (`realize_opcount_threshold`) writes to memory.
+> That is an inductor bug, now reported as
+> [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539), with a draft
+> fix in [#200540](https://github.com/pytorch/pytorch/pull/200540). Counted by kernel launch
+> rather than by allocation, each candidate graph writes it at **64 of 96** MLP sites (all 32
+> `down_proj`, 32 of 64 `gate`/`up`), not 17: `# reuse` hid the rest. Priced at DRAM cost
+> that is 12.08 GB/token, more than §5's 8.25 GB gap; how much of it L2 absorbs is not
+> measured. The dtype finding stands, with a
+> different reason: the decomposition upcasts to fp32 whatever the source dtype. "Closed at
+> the MLP and wider" no longer holds: the losses were measured with the bug in place, and
+> nothing has measured them without it. The text below is kept as written; `RESULTS.md` §7
+> and `AGENT.md` §1.2 have the corrected account.
+
 RTX 5090, host driver 580.159.03, torch 2.11.0+cu128, triton 3.6.0. Instance 53932253,
 **56.85 billed minutes, $0.388.** Eight slots registered, six run, two declined.
 

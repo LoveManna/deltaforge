@@ -25,10 +25,10 @@ retired.**
 What batch 012 settled is a *negative* that closes a line: the matmul dtype is a no-op at
 every width this model has. One operator apart, the head measured 1.0251 fp32 against 1.0218
 bf16 and the 96 MLP projections 0.6390 against 0.6452 — both margins inside their IQRs, both
-candidate columns at 458 GB/s at the MLP. The bf16 candidate's graphs hold **17 fp32 weight
-buffers per decode step and zero bf16 ones**, because inductor materialises upstream of the
-cast. Why the level is 0.64 rather than the 1.02 those 17 operands alone would predict is
-**open**: ~5 GB/token of the candidate's traffic is unattributed. And the
+candidate columns at 458 GB/s at the MLP. Both arms write the same **fp32 `(1, K, N)`
+products at 64 of 96 MLP sites per decode step**: inductor's M=1 `mm` decomposition computes
+in fp32 whatever the source dtype, and an op-count rule writes the product to memory (see
+[Upstream](#upstream); this paragraph first said 17 dequantised weights). And the
 52.75% prize, twice registered a win and twice declined unexecuted, is now a **measured loss
 at 0.6390 (IQR 0.0060)**. See [`012`](results/batches/012-the-matmul-dtype/).
 
@@ -43,8 +43,10 @@ best recorded** — which is also why `067` came back at 0.9971 where rental 46 
 
 **And the generalisation this block invited is refuted.** `056` was read as "inductor fuses
 a grouped dequantisation into a GEMV prologue", and rental 56's dump shows it does **not** do
-so at the 96 MLP projections — it materialises a 94.4 MB fp32 weight per site and runs the
-matmul separately. The fusion is site-dependent; `AGENT.md` §1.2 has the correction and
+so at the MLP projections: a pointwise kernel writes a 94.4 MB fp32 `(1, K, N)` tensor per
+site and a separate reduction reads it back. That tensor was first read as the dequantised
+weight. It is the M=1 `mm` decomposition's product, an inductor bug now reported upstream
+([Upstream](#upstream)). `AGENT.md` §1.2 has the correction and
 [`011`](results/batches/011-bytes-not-kernels/) has the generated code.
 
 ### `056` beat the champion it replaced by 3.2%, and the champion was ours
@@ -167,12 +169,13 @@ resolve and the shape of it is worth reading, not because the question is open.
 since rental 35 has. Note the sign: rental 42 carried a **+0.53% offset**, so every ratio
 in batch 006 is that much flattering and `034`'s 1.0196 is ~1.4% net.
 
-**Fifty-six instances have now been created and fifty-six destroyed, 1620.97 billed
-minutes, $11.4887 lifetime, zero leaked.** Every one was destroyed cleanly by the trap,
+**Sixty-one instances have now been created and sixty-one destroyed, 1714.17 billed
+minutes, $12.1196 lifetime, zero leaked**: 56 for batches and five, $0.6308, for the
+upstream report ([Upstream](#upstream)). Every one was destroyed cleanly by the trap,
 including two cancelled mid-flight with SIGTERM. The cheapest informative rental in the set
 remains rental 28 at $0.0478; the most expensive mistake remains rental 32 at $1.3878, which
 spent its entire cap inside one compile. (These are `ledger/spend.jsonl` summed on
-2026-10-03, which is the authority. This line carried "forty-one instances, $7.177" — rental
+2026-10-11, which is the authority. This line carried "forty-one instances, $7.177" — rental
 42's numbers — for fourteen rentals afterwards, so re-sum the ledger rather than editing the
 sentence by hand: `python3 -c "import json;print(sum(json.loads(l)['actual_cost_usd'] or 0
 for l in open('ledger/spend.jsonl') if json.loads(l)['event']=='destroy'))"`.)
@@ -222,6 +225,25 @@ which is a claim rather than a driver, and a host sitting exactly on the floor t
 be the risky case. See `docs/GPU-ACCESS.md`,
 `results/batches/002-compile-cost/README.md`, and
 `results/batches/001-calibration/README.md`.
+
+## Upstream
+
+**The fp32 buffers behind the int4 MLP losses are an inductor bug, reported and fixed
+upstream.** They are not a dequantised weight: they are the M=1 `mm` decomposition's
+`(1, K, N)` product, written to memory when the fused producers of `x` and `W` together cross
+`realize_opcount_threshold`. Rental 57 writes it at 64 of 96 MLP sites per decode step.
+
+| | |
+|---|---|
+| Issue | [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539), filed 2026-10-10 |
+| Fix | [pytorch/pytorch#200540](https://github.com/pytorch/pytorch/pull/200540), draft, **not merged** |
+| Standalone, RTX 5090 | `(silu(a)*b) @ dequant_int4(W)`: **92.8 µs** as compiled, 18.3 µs without the buffer |
+| Main vs fix, RTX 4090 | the same case 179.5 → 27.1 µs; numerics unchanged |
+| Cost | five rentals, $0.63, in `ledger/spend.jsonl` |
+
+**Nothing on this board moves on it.** `077` (0.6390) and `081` (0.6150) most likely lost to
+this bug, but no slot has run with the threshold raised or the fix applied. `RESULTS.md` §7
+has the detail.
 
 ## Baseline
 

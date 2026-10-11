@@ -541,8 +541,22 @@ project have not been the loud ones.
 | 54 | 2026-09-30 | **batch 010: all five slots measured**; γ(2)=1.316, γ(4)=1.404 | 25.08 min | $0.1516 |
 | 55 | 2026-09-30 | RTX 5090, CUDA 13.0. `fetch-weights` sat silent at **4/6 files** and the step guard gave up at 2400 s — blocker 21 | 55.32 min | $0.3778 |
 | 56 | 2026-10-01 | **batch 011: six of ten slots measured**; blocker 21 fixed and proven, and the card ran at **0.34x** — blocker 22 | 98.65 min | $0.7686 |
+| 57 | 2026-10-02 | **batch 012: six of eight slots measured**; the matmul dtype is a no-op | 56.85 min | $0.3881 |
+| U1 | 2026-10-06 | upstream report: the M=1 `mm` bug confirmed on nightly and 2.14.1 | 20.20 min | $0.1424 |
+| U2 | 2026-10-07 | upstream report: `pip install` hung on machine 147995, the 1500 s silence guard gave up | 29.55 min | $0.2017 |
+| U3 | 2026-10-07 | upstream report: the issue's snippet and a prototype fix | 11.57 min | $0.0850 |
+| U4 | 2026-10-09 | upstream report: `docker login failed!` on machine 141802, **missed by the stall guard**, cancelled by hand | 12.08 min | $0.0677 |
+| U5 | 2026-10-09 | upstream report: main against the fix, tests and suites, on a 4090 | 19.80 min | $0.1340 |
 
-Forty-eight rentals, $9.954, **zero leaked instances** — every one destroyed cleanly by the
+`U1`-`U5` ran `~/github/inductor-gemv-materialise/gpu/run_on_vast.sh`, which sources
+`remote/*.sh` and writes this ledger, with a job of its own in place of a batch; see
+`RESULTS.md` §7. **U4 is a gap in the stall guard.** The host cycled `status_msg` through
+`docker login failed!`, a registry `Error response from daemon`, `Removing login credentials`
+and a credentials warning. Each change reads as progress, so only the readiness timeout
+would have ended it. If a `loading` status keeps repeating the same few messages, cancel and
+exclude the machine; a healthy boot took ~4 minutes on U1-U5.
+
+The ledger, summed on 2026-10-11: 61 instances, $12.1196, **zero leaked instances** — every one destroyed cleanly by the
 trap, including three cancelled mid-flight with SIGTERM.
 
 **2026-09-30 cost $0.811 across eight rentals and seven of them bought no measurement.**

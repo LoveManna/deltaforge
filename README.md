@@ -172,6 +172,24 @@ Every number is measured. Nothing in this repository is estimated, illustrative 
 placeholder; each figure came off a rented card, and the ones that do not mean what they
 appear to mean say so. `LEADERBOARD.md` and `results/batches/003-int8-weight-only/README.md` carry the detail.
 
+## Upstream
+
+Reading the generated code behind the int4 MLP losses (`077` at 0.6390, `081` at 0.6150)
+turned up an **inductor bug** rather than a property of the program. Under `max-autotune`,
+inductor decomposes an M=1 matmul into a broadcast multiply and a sum. When the fused
+producers of its two operands together cross `realize_opcount_threshold`, inductor writes the
+`(1, K, N)` fp32 product to memory and reads it back. This happens at 64 of the model's 96
+MLP sites per decode step.
+
+- Issue: [pytorch/pytorch#200539](https://github.com/pytorch/pytorch/issues/200539).
+- Fix: draft PR [pytorch/pytorch#200540](https://github.com/pytorch/pytorch/pull/200540),
+  **not merged**. It realises the small input instead of the product.
+- Standalone, on one RTX 4090, `(silu(a)*b) @ dequant_int4(W)` takes **179.5 µs on main and
+  27.1 µs with the fix**.
+
+No DeltaForge slot has been re-measured without the bug. [RESULTS.md §7](RESULTS.md) has
+the detail.
+
 ## What is being claimed
 
 That a hand-written Triton kernel can beat what `torch.compile(mode="max-autotune")`
